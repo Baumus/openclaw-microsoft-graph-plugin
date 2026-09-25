@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+.vitest/
+.clawhub/
+reports/
+*.tgz
+*.log
+.env
+.env.*
+.DS_Store

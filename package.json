@@ -1,0 +1,99 @@
+{
+  "name": "@baumus/openclaw-microsoft-graph",
+  "version": "3.0.0",
+  "description": "Bounded OpenClaw tools for Microsoft Graph OneDrive, Outlook Calendar, Outlook Mail, and Microsoft To Do.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "assets/ICON_PROVENANCE.md",
+    "assets/icon.png",
+    "dist/index.js",
+    "docs/ARCHITECTURE.md",
+    "docs/CREDENTIAL_VAULT_DESIGN.md",
+    "docs/OAUTH_ACCESS_MATRIX.md",
+    "docs/SUPPORT.md",
+    "examples/microsoft-graph-policy.json5",
+    "examples/microsoft-graph-policy-v2.json5",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md",
+    "openclaw.plugin.json",
+    "scripts/bounded-json.mjs"
+  ],
+  "scripts": {
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "npm run typecheck && esbuild src/index.ts --bundle --platform=node --format=esm --target=node24 --packages=external --outfile=dist/index.js",
+    "plugin:build": "npm run build && openclaw plugins build --root . --entry ./dist/index.js",
+    "plugin:build:check": "openclaw plugins build --check --root . --entry ./dist/index.js",
+    "plugin:validate": "openclaw plugins validate --json --root . --entry ./dist/index.js",
+    "package:check": "node scripts/check-package-contents.mjs",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "openclaw",
+    "microsoft-graph",
+    "onedrive",
+    "outlook",
+    "calendar",
+    "email",
+    "todo"
+  ],
+  "author": "Baumus",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/Baumus/openclaw-microsoft-graph#readme",
+  "bugs": {
+    "url": "https://github.com/Baumus/openclaw-microsoft-graph/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Baumus/openclaw-microsoft-graph.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=24.16.0 <25 || >=26.1.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.9.5"
+  },
+  "dependencies": {
+    "@openclaw/fs-safe": "0.13.1",
+    "typebox": "^1.1.38"
+  },
+  "devDependencies": {
+    "clawhub": "0.23.3",
+    "esbuild": "^0.25.9",
+    "openclaw": "2026.9.5",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.11"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.9.5",
+      "minGatewayVersion": ">=2026.9.5"
+    },
+    "build": {
+      "openclawVersion": "2026.9.5",
+      "pluginSdkVersion": "2026.9.5"
+    },
+    "install": {
+      "clawhubSpec": "clawhub:@baumus/openclaw-microsoft-graph",
+      "npmSpec": "@baumus/openclaw-microsoft-graph@3.0.0",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.9.5"
+    }
+  }
+}

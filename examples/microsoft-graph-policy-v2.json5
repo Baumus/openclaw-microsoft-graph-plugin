@@ -1,0 +1,26 @@
+// Synthetic vault-policy example only. Replace every placeholder and keep default deny.
+// Credential locations are intentionally absent: policy is credential-free.
+{
+  version: 2,
+  rules: { default: "deny" },
+  services: {
+    onedrive: {
+      allowed_roots: [{
+        label: "documents",
+        path: "/Documents",
+        drive_id: "replace-with-drive-id",
+        item_id: "replace-with-root-item-id",
+        include_descendants: true,
+        permissions: { read: true, write: false, delete: false },
+        agents: {
+          "replace-with-agent-id": {
+            permissions: { read: true, write: false, delete: false },
+          },
+        },
+      }],
+    },
+    calendar: { agents: {} },
+    mail: { agents: {} },
+    todo: { agents: {} },
+  },
+}
