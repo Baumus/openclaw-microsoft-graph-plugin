@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { Type } from "typebox";
 import { readLocalFileFromRoots, root as secureRoot, type OpenResult } from "openclaw/plugin-sdk/infra-runtime";
@@ -27,8 +27,7 @@ const MAX_CALENDAR_MULTIWRITE_OPERATIONS = 100;
 const MAX_BODY = 64 * 1024;
 const SOURCE_MEDIA_URI_MAX_LENGTH = 4096;
 const MEDIA_INBOUND_URI_PREFIX = "media://inbound/";
-const CHAT_CONFIRMATION_TTL_MS = 5 * 60 * 1000;
-const MAX_CHAT_CONFIRMATIONS = 1024;
+const MAX_WARNING_APPROVAL_TRUST_SCOPES = 1024;
 
 const SecretRefOnly = Type.Unsafe<string>({
   type: "object",
@@ -43,6 +42,7 @@ const SecretRefOnly = Type.Unsafe<string>({
 
 const Config = Type.Object({
   enabled: Type.Optional(Type.Boolean({ default: false })),
+  warningApprovalsRequired: Type.Optional(Type.Boolean({ default: true, description: "Require OpenClaw-native approval for warning-level Microsoft Graph mutations. Missing defaults to true; set false only when policy-authorized warning mutations may proceed without an approval prompt." })),
   credentialVaultKey: Type.Optional(SecretRefOnly),
   policy: Type.Optional(GraphPolicySchema),
   requestTimeoutMs: Type.Optional(Type.Integer({ minimum: 1000, maximum: 30000, default: 5000 })),
@@ -56,8 +56,8 @@ const Config = Type.Object({
   oneDriveTransferTimeoutMs: Type.Optional(Type.Integer({ minimum: 30000, maximum: 7 * 24 * 60 * 60 * 1000, default: DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS, description: "Whole-operation deadline for OneDrive private-media downloads and uploads; each Graph request remains bounded by requestTimeoutMs." })),
 }, { additionalProperties: false });
 
-export type RuntimeConfig = { enabled?: boolean; credentialVaultKey?: unknown; policy?: GraphPolicy; requestTimeoutMs?: number; readOperationTimeoutMs?: number; calendarMultiwriteTimeoutMs?: number; maxConcurrent?: number; maxReadBytes?: number; maxReadOutputBytes?: number; maxAttachmentDownloadBytes?: number; attachmentDownloadTimeoutMs?: number; oneDriveTransferTimeoutMs?: number };
-type OneDriveConfirmationRoot = Pick<AllowedRoot, "label" | "drive_id" | "item_id">;
+export type RuntimeConfig = { enabled?: boolean; warningApprovalsRequired?: boolean; credentialVaultKey?: unknown; policy?: GraphPolicy; requestTimeoutMs?: number; readOperationTimeoutMs?: number; calendarMultiwriteTimeoutMs?: number; maxConcurrent?: number; maxReadBytes?: number; maxReadOutputBytes?: number; maxAttachmentDownloadBytes?: number; attachmentDownloadTimeoutMs?: number; oneDriveTransferTimeoutMs?: number };
+type OneDriveApprovalRoot = Pick<AllowedRoot, "label" | "drive_id" | "item_id">;
 type Logger = { info: (message: string) => void };
 let activeRequests = 0;
 const continuationStore = new ContinuationStore();
@@ -65,107 +65,40 @@ let resolvePluginStateDir: (() => string) | undefined;
 
 function stateDirForVault(): string | undefined { return resolvePluginStateDir?.(); }
 
-type ChatConfirmationBinding = {
-  sessionId: string;
+export type WarningApprovalScope = {
   agentId: string;
   toolName: string;
-  criteria: string;
+  action: string;
 };
 
-type ChatConfirmationRecord = ChatConfirmationBinding & { expiresAt: number; armed: boolean };
+/** Process-local allow-always trust. Plugin reload or process restart revokes every scope. */
+export class WarningApprovalTrustStore {
+  readonly #scopes = new Set<string>();
 
-/** One-time, session-bound receipts that bind an owner confirmation to exact write parameters. */
-export class ChatConfirmationStore {
-  readonly #records = new Map<string, ChatConfirmationRecord>();
-  readonly #key = randomBytes(32);
-
-  constructor(
-    private readonly ttlMs = CHAT_CONFIRMATION_TTL_MS,
-    private readonly maximum = MAX_CHAT_CONFIRMATIONS,
-    private readonly now: () => number = Date.now,
-  ) {
-    if (!Number.isSafeInteger(ttlMs) || ttlMs < 1 || !Number.isSafeInteger(maximum) || maximum < 1) throw new Error("invalid_confirmation_store");
+  constructor(private readonly maximum = MAX_WARNING_APPROVAL_TRUST_SCOPES) {
+    if (!Number.isSafeInteger(maximum) || maximum < 1) throw new Error("invalid_warning_approval_store");
   }
 
-  prune(): void {
-    const now = this.now();
-    for (const [token, record] of this.#records) if (record.expiresAt <= now) this.#records.delete(token);
+  #key(scope: WarningApprovalScope): string {
+    if (!scope.agentId || !scope.toolName || !scope.action) throw new Error("invalid_warning_approval_scope");
+    return normalizedCriteria([scope.agentId, scope.toolName, scope.action]);
   }
 
-  issue(binding: ChatConfirmationBinding): string {
-    this.prune();
-    while (this.#records.size >= this.maximum) {
-      const oldest = this.#records.keys().next().value;
-      if (oldest === undefined) throw new Error("invalid_confirmation_store");
-      this.#records.delete(oldest);
-    }
-    let token: string;
-    do {
-      const nonce = randomBytes(16).toString("base64url");
-      token = `mgw1_${createHmac("sha256", this.#key).update(normalizedCriteria({ ...binding, nonce })).digest("base64url")}`;
-    } while (this.#records.has(token));
-    this.#records.set(token, { ...binding, expiresAt: this.now() + this.ttlMs, armed: false });
-    return token;
+  has(scope: WarningApprovalScope): boolean { return this.#scopes.has(this.#key(scope)); }
+  grant(scope: WarningApprovalScope): void {
+    const key = this.#key(scope);
+    if (!this.#scopes.has(key) && this.#scopes.size >= this.maximum) throw new Error("warning_approval_trust_capacity_exceeded");
+    this.#scopes.add(key);
   }
-
-  #matches(record: ChatConfirmationRecord, binding: ChatConfirmationBinding): boolean {
-    return record.expiresAt > this.now()
-      && record.sessionId === binding.sessionId
-      && record.agentId === binding.agentId
-      && record.toolName === binding.toolName
-      && record.criteria === binding.criteria;
-  }
-
-  /** Validate a receipt without consuming it so execution can verify its private artifact first. */
-  arm(token: unknown, binding: ChatConfirmationBinding): boolean {
-    this.prune();
-    if (typeof token !== "string" || !/^mgw1_[A-Za-z0-9_-]{43}$/.test(token)) return false;
-    const record = this.#records.get(token);
-    if (!record || !this.#matches(record, binding)) return false;
-    record.armed = true;
-    return true;
-  }
-
-  /** Check an armed receipt without consuming it before opening a private artifact. */
-  validateArmed(token: unknown, binding: ChatConfirmationBinding): boolean {
-    this.prune();
-    if (typeof token !== "string" || !/^mgw1_[A-Za-z0-9_-]{43}$/.test(token)) return false;
-    const record = this.#records.get(token);
-    return !!record && record.armed && this.#matches(record, binding);
-  }
-
-  /** Atomically consume one previously armed receipt immediately before credential access. */
-  claim(token: unknown, binding: ChatConfirmationBinding): boolean {
-    this.prune();
-    if (typeof token !== "string" || !/^mgw1_[A-Za-z0-9_-]{43}$/.test(token)) return false;
-    const record = this.#records.get(token);
-    if (!record || !record.armed || !this.#matches(record, binding)) return false;
-    this.#records.delete(token);
-    return true;
-  }
-
-  consume(token: unknown, binding: ChatConfirmationBinding): boolean {
-    this.prune();
-    if (typeof token !== "string" || !/^mgw1_[A-Za-z0-9_-]{43}$/.test(token)) return false;
-    const record = this.#records.get(token);
-    if (!record) return false;
-    this.#records.delete(token);
-    return this.#matches(record, binding);
-  }
-
-  clearSession(sessionId: string): void {
-    for (const [token, record] of this.#records) if (record.sessionId === sessionId) this.#records.delete(token);
-  }
+  clear(): void { this.#scopes.clear(); }
 }
-
-const chatConfirmationStore = new ChatConfirmationStore();
 
 function result(value: unknown) { return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value }; }
 function errorCode(error: unknown): string {
   if (error instanceof DOMException && error.name === "AbortError") return "request_aborted";
   if (error instanceof DOMException && error.name === "TimeoutError") return "request_timeout";
   const code = error instanceof Error ? error.message : "internal_error";
-  return /^(access_denied|chat_confirmation_|connector_disabled|trusted_(?:agent_identity|workspace|session_identity)_required|instruction_|onedrive_agents_instructions_required|invalid_|unsupported_|credential_|authentication_|provider_|item_|file_|binary_|request_)/.test(code) ? code : "internal_error";
+  return /^(access_denied|approval_context_|connector_disabled|trusted_(?:agent_identity|workspace|session_identity)_required|instruction_|onedrive_agents_instructions_required|invalid_|unsupported_|credential_|authentication_|provider_|item_|file_|binary_|request_)/.test(code) ? code : "internal_error";
 }
 export async function withConcurrency<T>(limit: number, action: () => Promise<T>): Promise<T> {
   if (activeRequests >= limit) throw new Error("request_concurrency_exceeded");
@@ -233,7 +166,7 @@ type OneDriveAgentsDependencies = {
   tokenExchange?: typeof exchangeRefreshToken;
   candidateReader?: typeof driveReadInstructionsCandidate;
   cache?: OneDriveAgentsSessionCache;
-  expectedRoot?: OneDriveConfirmationRoot;
+  expectedRoot?: OneDriveApprovalRoot;
 };
 
 /** Execute the read-only AGENTS.md preflight with authorization ahead of credentials and Graph. */
@@ -261,7 +194,7 @@ async function oneDriveAgentsInstructionsForDirectories(config: RuntimeConfig, c
   const policy = policyValidator(config.policy);
   const root = authorizeRoot(policy, context.agentId, params.rootLabel, "read");
   if (dependencies.expectedRoot && (root.label !== dependencies.expectedRoot.label || root.drive_id !== dependencies.expectedRoot.drive_id || root.item_id !== dependencies.expectedRoot.item_id)) {
-    throw new Error("chat_confirmation_invalid_or_changed");
+    throw new Error("approval_context_invalid_or_changed");
   }
   if (root.agents_instructions !== "trusted") {
     return {
@@ -514,8 +447,8 @@ const categoryList = Type.Optional(Type.Array(Type.String({ minLength: 1, maxLen
 const importance = Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("normal"), Type.Literal("high")]));
 const sensitivity = Type.Optional(Type.Union([Type.Literal("normal"), Type.Literal("personal"), Type.Literal("private"), Type.Literal("confidential")]));
 const showAs = Type.Optional(Type.Union([Type.Literal("free"), Type.Literal("tentative"), Type.Literal("busy"), Type.Literal("oof"), Type.Literal("workingElsewhere"), Type.Literal("unknown")]));
-const chatConfirmed = Type.Optional(Type.Boolean({ description: "Set true only after the user explicitly confirms one concise summary of the exact intended warning-level action batch in the originating chat. One confirmation may cover all unchanged actions in that described batch." }));
-const chatConfirmationToken = Type.Optional(Type.String({ minLength: 48, maxLength: 48, pattern: "^mgw1_[A-Za-z0-9_-]{43}$", description: "Opaque one-time token returned by the blocked preflight for these exact write parameters. Never invent, alter, or reuse it." }));
+const chatConfirmed = Type.Optional(Type.Boolean({ description: "Deprecated compatibility field. It is ignored and can never authorize execution; OpenClaw-native approval is authoritative." }));
+const chatConfirmationToken = Type.Optional(Type.String({ minLength: 48, maxLength: 48, pattern: "^mgw1_[A-Za-z0-9_-]{43}$", description: "Deprecated compatibility field. It is ignored and can never authorize execution; OpenClaw-native approval is authoritative." }));
 const sourceSha256 = Type.Optional(Type.String({ minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$", description: "SHA-256 returned by the private attachment download that produced sourceMediaUri. Supply together with sourceByteSize to allow a refreshed URI for identical bytes." }));
 const sourceByteSize = Type.Optional(Type.Integer({ minimum: 0, maximum: ONEDRIVE_WRITE_MAX_BYTES, description: "Exact byte size returned by the private attachment download that produced sourceMediaUri. Supply together with sourceSha256." }));
 
@@ -1049,7 +982,7 @@ function canonicalCalendarEventConfirmationBody(value: Record<string, unknown>):
  * the provider-ready semantic event intent. Equivalent IANA/Windows timezone
  * aliases therefore do not force a second human confirmation.
  */
-export function calendarChatConfirmationCriteria(params: Record<string, unknown>): Record<string, unknown> {
+export function calendarApprovalCriteria(params: Record<string, unknown>): Record<string, unknown> {
   const plan = planCalendarWrite(params);
   if (params.action === "multiwrite") {
     return {
@@ -1098,7 +1031,7 @@ function sourceFingerprint(params: Record<string, unknown>): SourceFingerprint |
 }
 
 /** Canonical semantic effect for content-identity-bound OneDrive writes. */
-export function oneDriveWriteChatConfirmationCriteria(toolName: string, params: Record<string, unknown>, root?: OneDriveConfirmationRoot): Record<string, unknown> | undefined {
+export function oneDriveWriteApprovalCriteria(toolName: string, params: Record<string, unknown>, root?: OneDriveApprovalRoot): Record<string, unknown> | undefined {
   if (toolName !== "onedrive_upload" && toolName !== "onedrive_update") return undefined;
   const fingerprint = sourceFingerprint(params);
   if (!fingerprint) return undefined;
@@ -1119,33 +1052,38 @@ export function oneDriveWriteChatConfirmationCriteria(toolName: string, params: 
   };
 }
 
-function isContentIdentityWrite(toolName: string, params: Record<string, unknown>): boolean {
-  return (toolName === "onedrive_upload" || toolName === "onedrive_update") && sourceFingerprint(params) !== undefined;
+const ONEDRIVE_APPROVAL_ACTIONS: Readonly<Record<string, string>> = {
+  onedrive_upload: "upload",
+  onedrive_update: "update",
+  onedrive_metadata_update: "metadata_update",
+  onedrive_create_folder: "create_folder",
+  onedrive_delete: "delete",
+};
+
+export function normalizedWarningApprovalAction(toolName: string, rawParams: unknown): string {
+  const action = callParams(rawParams).action;
+  if (typeof action === "string" && /^[a-z][a-z0-9_]{0,39}$/.test(action)) return action;
+  return ONEDRIVE_APPROVAL_ACTIONS[toolName] ?? "unknown";
 }
 
-function chatConfirmationBinding(toolName: string, params: Record<string, unknown>, agentId: unknown, sessionId: unknown, root?: OneDriveConfirmationRoot): ChatConfirmationBinding {
+function warningApprovalScope(agentId: unknown, toolName: string, params: unknown): WarningApprovalScope {
   if (typeof agentId !== "string" || !agentId) throw new Error("trusted_agent_identity_required");
-  if (typeof sessionId !== "string" || !sessionId) throw new Error("trusted_session_identity_required");
-  const exactParams = Object.fromEntries(Object.entries(params).filter(([field, value]) => value !== undefined && field !== "chatConfirmed" && field !== "chatConfirmationToken"));
-  const criteria = oneDriveWriteChatConfirmationCriteria(toolName, exactParams, root)
-    ?? (toolName === "outlook_calendar_write" ? calendarChatConfirmationCriteria(exactParams) : exactParams);
-  return { sessionId, agentId, toolName, criteria: normalizedCriteria(criteria) };
+  return { agentId, toolName, action: normalizedWarningApprovalAction(toolName, params) };
 }
 
-async function contentIdentityConfirmationBinding(config: RuntimeConfig, toolName: string, params: Record<string, unknown>, agentId: unknown, sessionId: unknown): Promise<{ binding: ChatConfirmationBinding; root: OneDriveConfirmationRoot } | undefined> {
-  if (!isContentIdentityWrite(toolName, params)) return undefined;
+function warningApprovalPreflight(config: RuntimeConfig, toolName: string, params: Record<string, unknown>, agentId: string | undefined): OneDriveApprovalRoot | undefined {
+  if (toolName === "outlook_calendar_write") calendarApprovalCriteria(params);
+  else if (toolName === "outlook_mail_write") assertWriteActionFields(params, WRITE_ACTION_FIELDS.mail);
+  else if (toolName === "microsoft_todo_write") assertWriteActionFields(params, WRITE_ACTION_FIELDS.todo);
+  if (toolName !== "onedrive_upload" && toolName !== "onedrive_update") return undefined;
   if (typeof params.rootLabel !== "string") throw new Error("invalid_root_label");
-  const policy = validatePolicy(config.policy);
-  const root = authorizeRoot(policy, typeof agentId === "string" ? agentId : undefined, params.rootLabel, "write");
-  return { binding: chatConfirmationBinding(toolName, params, agentId, sessionId, root), root };
-}
-
-function chatConfirmationBlock(token?: string, changed = false) {
-  const reason = changed ? "chat_confirmation_invalid_or_changed" : "chat_confirmation_required";
-  return {
-    block: true,
-    blockReason: `${reason}: summarize the exact intended warning-level Microsoft Graph action batch in the originating chat, wait for the user's explicit confirmation, then retry every unchanged action once with chatConfirmed=true and chatConfirmationToken="${token ?? "unavailable"}".`,
-  };
+  if (typeof params.relativePath !== "string" || !normalizeRelativePath(params.relativePath)) throw new Error("invalid_relative_path");
+  validateProtectedMediaUri(params.sourceMediaUri);
+  const contentType = params.contentType === undefined ? "application/octet-stream" : params.contentType;
+  if (typeof contentType !== "string" || !contentTypeAllowed(contentType)) throw new Error("invalid_write_input");
+  const root = authorizeRoot(validatePolicy(config.policy), agentId, params.rootLabel, "write");
+  oneDriveWriteApprovalCriteria(toolName, params, root);
+  return root;
 }
 
 export function classifyApproval(toolName: string, rawParams: unknown): ApprovalLevel {
@@ -1209,8 +1147,8 @@ export async function approvalInventory(policyInput: unknown) {
     rules: { default: policy.rules.default },
     confirmationModes: {
       none: "none",
-      warning: "originating-chat-batch",
-      critical: "formal-plugin-approval",
+      warning: "native-plugin-approval",
+      critical: "native-plugin-approval",
     },
     roots,
     services,
@@ -1295,48 +1233,34 @@ const plugin = defineToolPlugin({
         ...await downloadOneDriveFile({ root, relativePath: normalizeRelativePath(relativePath), token, signal: bounded }),
       }), undefined, config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS)) }),
       tool({ name: "onedrive_upload", label: "OneDrive Upload", optional: true, description: "Create one file without overwrite from protected inbound media, using a Graph upload session above 250 MB.", parameters: uploadSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_upload", uploadSchema, toolContext.agentId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
+        void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
         validateProtectedMediaUri(sourceMediaUri);
         const fingerprint = sourceFingerprint({ sourceSha256, sourceByteSize });
-        const confirmationParams = { rootLabel, relativePath: path, sourceMediaUri, sourceSha256, sourceByteSize, contentType, chatConfirmed, chatConfirmationToken, agentsInstructionAck };
         let source: ProtectedMediaUploadSource | undefined;
         try {
           return await withDrive(config, toolContext.agentId, rootLabel, "write", signal,
             (root, token, bounded) => driveWriteSource(root, path, token, source!, contentType, false, bounded, fetch, config.requestTimeoutMs ?? 5000),
-            async (root) => {
-              if (fingerprint) {
-                const binding = chatConfirmationBinding("onedrive_upload", confirmationParams, toolContext.agentId, toolContext.sessionId, root);
-                if (chatConfirmed !== true || !chatConfirmationStore.validateArmed(chatConfirmationToken, binding)) throw new Error("chat_confirmation_invalid_or_changed");
-                source = await openProtectedMediaUploadSource(sourceMediaUri, toolContext.workspaceDir);
-                if (source.sha256 !== fingerprint.sourceSha256 || source.size !== fingerprint.sourceByteSize) throw new Error("invalid_source_fingerprint");
-                if (!chatConfirmationStore.claim(chatConfirmationToken, binding)) throw new Error("chat_confirmation_invalid_or_changed");
-              } else {
-                source = await openProtectedMediaUploadSource(sourceMediaUri, toolContext.workspaceDir);
-              }
+            async () => {
+              source = await openProtectedMediaUploadSource(sourceMediaUri, toolContext.workspaceDir);
+              if (fingerprint && (source.sha256 !== fingerprint.sourceSha256 || source.size !== fingerprint.sourceByteSize)) throw new Error("invalid_source_fingerprint");
             },
             config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS,
           );
         } finally { await source?.close(); }
       }) }),
       tool({ name: "onedrive_update", label: "OneDrive Update", optional: true, description: "Replace one file from protected inbound media with ETag protection, using a Graph upload session above 250 MB.", parameters: writeSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_update", writeSchema, toolContext.agentId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
+        void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
         validateProtectedMediaUri(sourceMediaUri);
         const fingerprint = sourceFingerprint({ sourceSha256, sourceByteSize });
-        const confirmationParams = { rootLabel, relativePath: path, sourceMediaUri, sourceSha256, sourceByteSize, contentType, chatConfirmed, chatConfirmationToken, agentsInstructionAck };
         let source: ProtectedMediaUploadSource | undefined;
         try {
           return await withDrive(config, toolContext.agentId, rootLabel, "write", signal,
             (root, token, bounded) => driveWriteSource(root, path, token, source!, contentType, true, bounded, fetch, config.requestTimeoutMs ?? 5000),
-            async (root) => {
-              if (fingerprint) {
-                const binding = chatConfirmationBinding("onedrive_update", confirmationParams, toolContext.agentId, toolContext.sessionId, root);
-                if (chatConfirmed !== true || !chatConfirmationStore.validateArmed(chatConfirmationToken, binding)) throw new Error("chat_confirmation_invalid_or_changed");
-                source = await openProtectedMediaUploadSource(sourceMediaUri, toolContext.workspaceDir);
-                if (source.sha256 !== fingerprint.sourceSha256 || source.size !== fingerprint.sourceByteSize) throw new Error("invalid_source_fingerprint");
-                if (!chatConfirmationStore.claim(chatConfirmationToken, binding)) throw new Error("chat_confirmation_invalid_or_changed");
-              } else {
-                source = await openProtectedMediaUploadSource(sourceMediaUri, toolContext.workspaceDir);
-              }
+            async () => {
+              source = await openProtectedMediaUploadSource(sourceMediaUri, toolContext.workspaceDir);
+              if (fingerprint && (source.sha256 !== fingerprint.sourceSha256 || source.size !== fingerprint.sourceByteSize)) throw new Error("invalid_source_fingerprint");
             },
             config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS,
           );
@@ -1361,11 +1285,11 @@ const plugin = defineToolPlugin({
         return withDrive(config, toolContext.agentId, rootLabel, "delete", signal, (root, token, bounded) => driveDelete(root, path, token, bounded));
       }) }),
       tool({ name: "outlook_calendar_read", label: "Outlook Calendar Read", optional: true, description: "Bounded default or explicitly authorized calendar reads, selected stable event fields, event search, free/busy, attachment metadata, and direct file downloads.", parameters: calendarReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_read", calendarReadSchema, toolContext.agentId, api.logger, (params, signal) => calendarRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "outlook_calendar_write", label: "Outlook Calendar Write", optional: true, description: "Create, update, or non-atomically multiwrite stable Microsoft Graph v1.0 event settings, respond, attach private media up to 150 MB, or delete. Multiwrite is capped at 100 operations, ordered, and chunked into Graph batches of 20. Warning-level actions require one owner-confirmed batch summary in the originating chat; critical actions keep formal allow-once approval.", parameters: calendarWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_write", calendarWriteSchema, toolContext.agentId, api.logger, (params, signal) => calendarWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal)) }),
+      tool({ name: "outlook_calendar_write", label: "Outlook Calendar Write", optional: true, description: "Create, update, or non-atomically multiwrite stable Microsoft Graph v1.0 event settings, respond, attach private media up to 150 MB, or delete. Multiwrite is capped at 100 operations, ordered, and chunked into Graph batches of 20. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: calendarWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_write", calendarWriteSchema, toolContext.agentId, api.logger, (params, signal) => calendarWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal)) }),
       tool({ name: "outlook_mail_read", label: "Outlook Mail Read", optional: true, description: "Bounded own-mailbox message reads, KQL/filter search, selected stable message fields, attachment metadata, and direct file downloads.", parameters: mailReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_read", mailReadSchema, toolContext.agentId, api.logger, (params, signal) => mailRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "outlook_mail_write", label: "Outlook Mail Write", optional: true, description: "Own-mailbox draft fields, reply/reply-all/forward drafts, copy/move, private-media attachments up to 150 MB, send, and delete. Warning-level actions require one owner-confirmed batch summary in the originating chat; critical actions keep formal allow-once approval.", parameters: mailWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_write", mailWriteSchema, toolContext.agentId, api.logger, (params, signal) => mailWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal)) }),
+      tool({ name: "outlook_mail_write", label: "Outlook Mail Write", optional: true, description: "Own-mailbox draft fields, reply/reply-all/forward drafts, copy/move, private-media attachments up to 150 MB, send, and delete. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: mailWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_write", mailWriteSchema, toolContext.agentId, api.logger, (params, signal) => mailWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal)) }),
       tool({ name: "microsoft_todo_read", label: "Microsoft To Do Read", optional: true, description: "Bounded own-account list/task reads and client-side search, including checklist, linked-resource, and attachment collections.", parameters: todoReadSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_read", todoReadSchema, toolContext.agentId, api.logger, (params, signal) => todoRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "microsoft_todo_write", label: "Microsoft To Do Write", optional: true, description: "Owned non-shared list/task settings, checklist, linked-resource, and private-media attachment mutations up to 25 MB. Warning-level actions require one owner-confirmed batch summary in the originating chat; critical actions keep formal allow-once approval.", parameters: todoWriteSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_write", todoWriteSchema, toolContext.agentId, api.logger, (params, signal) => todoWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal)) }),
+      tool({ name: "microsoft_todo_write", label: "Microsoft To Do Write", optional: true, description: "Owned non-shared list/task settings, checklist, linked-resource, and private-media attachment mutations up to 25 MB. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: todoWriteSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_write", todoWriteSchema, toolContext.agentId, api.logger, (params, signal) => todoWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal)) }),
       tool({ name: "onedrive_agents_instructions", label: "OneDrive AGENTS.md Instructions", optional: true, description: "Batch-discover the bounded root-to-directory AGENTS.md chain for a centrally trusted OneDrive root. Ordinary OneDrive tools invoke this preflight automatically and require a session-bound acknowledgement before proceeding.", parameters: agentsInstructionsSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_agents_instructions", agentsInstructionsSchema, toolContext.agentId, api.logger, ({ rootLabel, relativeDirectory = "", acknowledgement }, signal) => oneDriveAgentsInstructions(config, { agentId: toolContext.agentId, sessionId: toolContext.sessionId }, { rootLabel, relativeDirectory, acknowledgement }, signal)) }),
     ];
   },
@@ -1534,8 +1458,8 @@ export function calendarWindowDateTime(value: string, zone: string): string {
 function validateEventTimes(p: any): void {
   const hasStart = p.startDateTime !== undefined;
   const hasEnd = p.endDateTime !== undefined;
-  const startZone = p.startTimeZone ?? p.timeZone ?? "Europe/Berlin";
-  const endZone = p.endTimeZone ?? p.timeZone ?? "Europe/Berlin";
+  const startZone = p.startTimeZone ?? p.timeZone ?? "UTC";
+  const endZone = p.endTimeZone ?? p.timeZone ?? "UTC";
   if (p.isAllDay === true) {
     if (!hasStart || !hasEnd || startZone !== endZone) throw new Error("invalid_all_day_event");
     if (!isMidnight(dateTimeTimeZone(p.startDateTime, startZone).dateTime) || !isMidnight(dateTimeTimeZone(p.endDateTime, endZone).dateTime)) throw new Error("invalid_all_day_event");
@@ -1656,7 +1580,7 @@ export function mailMessagePayload(p: any, allowDraftFields: boolean, creating =
     if (p[field] !== undefined) value[field] = p[field];
   if (p.flagStatus !== undefined || p.flagStartDateTime !== undefined || p.flagDueDateTime !== undefined || p.flagCompletedDateTime !== undefined) {
     if (p.flagDueDateTime !== undefined && p.flagStartDateTime === undefined) throw new Error("invalid_followup_flag");
-    const zone = p.flagTimeZone ?? "Europe/Berlin";
+    const zone = p.flagTimeZone ?? "UTC";
     value.flag = {
       flagStatus: p.flagStatus ?? "flagged",
       ...(p.flagStartDateTime !== undefined ? { startDateTime: dt(p.flagStartDateTime, zone) } : {}),
@@ -1906,8 +1830,8 @@ export function calendarEventPayload(p: any): Record<string, unknown> {
   validateEventTimes(p);
   const body: Record<string, unknown> = {};
   if (p.subject !== undefined) body.subject = p.subject;
-  if (p.startDateTime !== undefined) body.start = dt(p.startDateTime, p.startTimeZone ?? p.timeZone ?? "Europe/Berlin");
-  if (p.endDateTime !== undefined) body.end = dt(p.endDateTime, p.endTimeZone ?? p.timeZone ?? "Europe/Berlin");
+  if (p.startDateTime !== undefined) body.start = dt(p.startDateTime, p.startTimeZone ?? p.timeZone ?? "UTC");
+  if (p.endDateTime !== undefined) body.end = dt(p.endDateTime, p.endTimeZone ?? p.timeZone ?? "UTC");
   const eventBody = configuredBody(p);
   if (eventBody !== undefined) body.body = eventBody;
   if (p.location !== undefined && p.locations !== undefined) throw new Error("invalid_location");
@@ -1952,7 +1876,7 @@ async function calendarRead(config: RuntimeConfig, agentId: string | undefined, 
   if (p.action === "download_attachment" && !p.attachmentId) throw new Error("invalid_resource_id");
   if (new Set(["list_events", "search_events"]).has(p.action) && (!p.startDateTime || !p.endDateTime)) throw new Error("invalid_calendar_window");
   if (p.action === "search_events" && !hasEventSearch(p)) throw new Error("invalid_search");
-  const zone = p.timeZone ?? "Europe/Berlin";
+  const zone = p.timeZone ?? "UTC";
   if (p.timeZone !== undefined) formatterForZone(zone);
   const eventWindowQuery = new Set(["list_events", "search_events"]).has(p.action)
     ? calendarViewQuery(p.startDateTime, p.endDateTime, zone, Math.min(MAX_RESULTS, max))
@@ -1967,7 +1891,7 @@ async function calendarRead(config: RuntimeConfig, agentId: string | undefined, 
       : p.action === "list_attachments"
         ? `${calendarEventPath(p.calendarId, p.eventId)}/attachments`
         : undefined;
-  const calendarCriteria = calendarPrefix ? criteriaFor(p, { limit: max, ...(p.action === "list_events" ? { timeZone: p.timeZone ?? "Europe/Berlin", includeBody: p.includeBody === true, bodyContentType: p.bodyContentType ?? "html" } : {}) }) : undefined;
+  const calendarCriteria = calendarPrefix ? criteriaFor(p, { limit: max, ...(p.action === "list_events" ? { timeZone: p.timeZone ?? "UTC", includeBody: p.includeBody === true, bodyContentType: p.bodyContentType ?? "html" } : {}) }) : undefined;
   const calendarBinding = calendarPrefix && calendarCriteria ? continuationBinding(agentId, "calendar", p.action, resource, calendarCriteria) : undefined;
   const continuedPath = p.continuation && calendarPrefix && calendarBinding ? continuationStore.resolve(p.continuation, calendarBinding, calendarPrefix) : undefined;
   return withService(config, agentId, "calendar", "read", "calendar_read", signal, async (token, bounded) => {
@@ -1995,7 +1919,7 @@ async function calendarRead(config: RuntimeConfig, agentId: string | undefined, 
     if (p.action === "get_event") {
       if (!p.eventId) throw new Error("invalid_resource_id");
       const fields = eventGetFields(p.includeBody === true);
-      const item = await graphRequest(token, `${calendarEventPath(p.calendarId, p.eventId)}?$select=${fields.join(",")}`, { signal: bounded, headers: { Prefer: `outlook.timezone=\"${p.timeZone ?? "Europe/Berlin"}\", outlook.body-content-type=\"${p.bodyContentType ?? "html"}\"` } });
+      const item = await graphRequest(token, `${calendarEventPath(p.calendarId, p.eventId)}?$select=${fields.join(",")}`, { signal: bounded, headers: { Prefer: `outlook.timezone=\"${p.timeZone ?? "UTC"}\", outlook.body-content-type=\"${p.bodyContentType ?? "html"}\"` } });
       return { ok: true, action: p.action, item };
     }
     if (p.action === "get_schedule") {
@@ -2473,7 +2397,7 @@ export function taskPayload(p: any) {
   if (p.categories !== undefined) body.categories = p.categories;
   if (p.status !== undefined) body.status = p.status;
   if (p.importance !== undefined) body.importance = p.importance;
-  const zone = p.timeZone ?? "Europe/Berlin";
+  const zone = p.timeZone ?? "UTC";
   if (p.timeZone !== undefined && ![p.startDateTime, p.dueDateTime, p.reminderDateTime, p.completedDateTime].some((value) => value !== undefined && value !== null)) throw new Error("invalid_datetime_timezone");
   if (p.startDateTime !== undefined) body.startDateTime = dt(p.startDateTime, zone);
   if (p.dueDateTime !== undefined) body.dueDateTime = dt(p.dueDateTime, zone);
@@ -2650,32 +2574,22 @@ export async function beforeMicrosoftGraphToolCall(
   event: { toolName: string; params: unknown },
   ctx: { agentId?: string; sessionId?: string; requester?: { senderIsOwner?: boolean; channel?: string }; abortSignal?: AbortSignal },
   instructionDependencies: OneDriveAgentsDependencies = {},
+  warningApprovalTrustStore = new WarningApprovalTrustStore(),
 ) {
   const severity = classifyApproval(event.toolName, event.params);
   const params = callParams(event.params);
-  const ownerOriginatingChat = ctx.requester?.senderIsOwner === true
-    && typeof ctx.requester.channel === "string"
-    && ctx.requester.channel.length > 0;
   try { authorizeOneDriveMutationPreflight(runtimeConfig, ctx.agentId, event.toolName, params); }
   catch (error) { return { block: true, blockReason: errorCode(error) }; }
 
-  let contentIdentityConfirmation: { binding: ChatConfirmationBinding; root: OneDriveConfirmationRoot } | undefined;
-  let warningBinding: ChatConfirmationBinding | undefined;
+  let expectedRoot: OneDriveApprovalRoot | undefined;
   if (severity === "warning") {
-    if (!ownerOriginatingChat) return chatConfirmationBlock();
-    try {
-      contentIdentityConfirmation = await contentIdentityConfirmationBinding(runtimeConfig, event.toolName, params, ctx.agentId, ctx.sessionId);
-      warningBinding = contentIdentityConfirmation?.binding
-        ?? chatConfirmationBinding(event.toolName, params, ctx.agentId, ctx.sessionId);
-    } catch (error) { return { block: true, blockReason: errorCode(error) }; }
-    if (params.chatConfirmed !== true) return chatConfirmationBlock(chatConfirmationStore.issue(warningBinding));
-    if (!chatConfirmationStore.arm(params.chatConfirmationToken, warningBinding)) return chatConfirmationBlock(undefined, true);
+    try { expectedRoot = warningApprovalPreflight(runtimeConfig, event.toolName, params, ctx.agentId); }
+    catch (error) { return { block: true, blockReason: errorCode(error) }; }
   }
 
   if (severity === "critical") {
-    const action = typeof params.action === "string" ? params.action : event.toolName.replace(/^.*_/, "") || "unknown";
-    const target = typeof params.subject === "string" ? params.subject.slice(0, 120) : typeof params.title === "string" ? params.title.slice(0, 120) : typeof params.relativePath === "string" ? params.relativePath.slice(0, 160) : "selected Microsoft resource";
-    return { requireApproval: { title: `${event.toolName}: ${action}`, description: `${action} on ${target}.`, severity, allowedDecisions: ["allow-once", "deny"] as Array<"allow-once" | "deny">, timeoutMs: 120_000 } };
+    const action = normalizedWarningApprovalAction(event.toolName, params);
+    return { requireApproval: { title: `${event.toolName}: ${action}`, description: `Allow this ${action} operation via ${event.toolName}.`, severity, allowedDecisions: ["allow-once", "deny"] as Array<"allow-once" | "deny">, timeoutMs: 120_000 } };
   }
 
   try {
@@ -2685,15 +2599,30 @@ export async function beforeMicrosoftGraphToolCall(
       event.toolName,
       params,
       ctx.abortSignal,
-      { ...instructionDependencies, expectedRoot: contentIdentityConfirmation?.root ?? instructionDependencies.expectedRoot },
+      { ...instructionDependencies, expectedRoot: expectedRoot ?? instructionDependencies.expectedRoot },
     );
     if (instructionGate) return instructionGate;
   } catch (error) {
     return { block: true, blockReason: errorCode(error) };
   }
   if (severity === "none") return;
-  if (contentIdentityConfirmation) return;
-  if (!warningBinding || !chatConfirmationStore.claim(params.chatConfirmationToken, warningBinding)) return chatConfirmationBlock(undefined, true);
+  if (runtimeConfig.warningApprovalsRequired === false) return;
+  let scope: WarningApprovalScope;
+  try { scope = warningApprovalScope(ctx.agentId, event.toolName, params); }
+  catch (error) { return { block: true, blockReason: errorCode(error) }; }
+  if (warningApprovalTrustStore.has(scope)) return;
+  return {
+    requireApproval: {
+      title: `${event.toolName}: ${scope.action}`,
+      description: `Allow this ${scope.action} operation. Allow-always trusts only this agent, tool, and action until plugin reload or process restart.`,
+      severity,
+      allowedDecisions: ["allow-once", "allow-always", "deny"] as Array<"allow-once" | "allow-always" | "deny">,
+      timeoutMs: 120_000,
+      onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
+        if (decision === "allow-always") warningApprovalTrustStore.grant(scope);
+      },
+    },
+  };
 }
 
 plugin.register = (api) => {
@@ -2720,10 +2649,10 @@ plugin.register = (api) => {
       () => stateResolver(process.env),
     );
   }
-  api.on("before_tool_call", (event, ctx) => beforeMicrosoftGraphToolCall(runtimeConfig, event, ctx));
+  const warningApprovalTrustStore = new WarningApprovalTrustStore();
+  api.on("before_tool_call", (event, ctx) => beforeMicrosoftGraphToolCall(runtimeConfig, event, ctx, {}, warningApprovalTrustStore));
   api.on("session_end", (_event, ctx) => {
     oneDriveAgentsSessionCache.clearSession(ctx.sessionId);
-    chatConfirmationStore.clearSession(ctx.sessionId);
   });
 };
 

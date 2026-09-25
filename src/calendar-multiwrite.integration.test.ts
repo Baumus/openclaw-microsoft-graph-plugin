@@ -33,7 +33,7 @@ function createOperation(index: number) {
     subject: `Synthetic ${index}`,
     startDateTime: `2026-10-${String((index % 20) + 1).padStart(2, "0")}T09:00:00`,
     endDateTime: `2026-10-${String((index % 20) + 1).padStart(2, "0")}T10:00:00`,
-    timeZone: "Europe/Berlin",
+    timeZone: "UTC",
   };
 }
 
@@ -230,7 +230,7 @@ describe("calendar multiwrite", () => {
     });
     try {
       const operations = [
-        { ...createOperation(4), attendees: ["first@example.com", "second@example.com"] },
+        { ...createOperation(4), attendees: ["first@example.invalid", "second@example.invalid"] },
         { operationId: "update-html-mismatch", kind: "update", eventId: "event-existing", bodyHtml: "<p>This is <em>important</em></p>" },
       ];
       const response = (await calendarTool().execute("batch-html-mismatch", { action: "multiwrite", operations })).details;

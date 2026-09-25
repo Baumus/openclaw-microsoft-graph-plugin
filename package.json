@@ -1,6 +1,6 @@
 {
   "name": "@baumus/openclaw-microsoft-graph",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Bounded OpenClaw tools for Microsoft Graph OneDrive, Outlook Calendar, Outlook Mail, and Microsoft To Do.",
   "type": "module",
   "main": "./dist/index.js",
@@ -91,7 +91,7 @@
     },
     "install": {
       "clawhubSpec": "clawhub:@baumus/openclaw-microsoft-graph",
-      "npmSpec": "@baumus/openclaw-microsoft-graph@3.0.0",
+      "npmSpec": "@baumus/openclaw-microsoft-graph@3.1.0",
       "defaultChoice": "npm",
       "minHostVersion": ">=2026.9.5"
     }

@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.1.0 - 2026-09-25
+
+- Capped each calendar multiwrite at 100 operations in schema and runtime.
+- Replaced bespoke chat-confirmation authority with configurable OpenClaw-native warning approval. Warning approval defaults on, supports process-lifetime agent/tool/action `allow-always` trust, and leaves critical mutations at `allow-once` or `deny`; legacy chat fields are inert compatibility inputs.
+
 ## 3.0.0 - 2026-09-25
 
 - Initial public release.

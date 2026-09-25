@@ -10,10 +10,10 @@ The plugin does not own user intent, business policy, data-retention decisions, 
 
 1. OpenClaw selects an optional plugin tool.
 2. The `before_tool_call` hook classifies the action as read-only, warning-level, or critical.
-3. Warning-level actions require exact session-bound confirmation from the same originating OpenClaw session. Critical actions require OpenClaw's call-bound approval.
-4. The runtime validates action-specific parameters and trusted `toolContext` identity.
-5. The plugin validates the default-deny policy supplied in resolved plugin config and authorizes the exact agent, service, operation, and resource.
-6. A OneDrive mutation is authorized for its exact requested root/action before optional `AGENTS.md` discovery. Discovery is a separate read and therefore also requires read authority.
+3. The hook applies available fail-closed preflight checks. For OneDrive warning mutations, this includes exact root authorization, protected-media validation, and optional `AGENTS.md` discovery; discovery is a separate read and requires read authority.
+4. Warning-level mutations require OpenClaw-native approval unless `warningApprovalsRequired` is explicitly `false`. Critical actions always require native approval.
+5. The runtime validates action-specific parameters and trusted `toolContext` identity.
+6. Execution validates the default-deny policy supplied in resolved plugin config and authorizes the exact agent, service, operation, and resource.
 7. After authorization, the plugin validates the one resolved vault key, acquires the shared credential lock, and securely reads and decrypts the one vault record.
 8. Under the credential lock, the plugin durably publishes and verifies an authenticated `in_flight` refresh marker before dispatching one operation-specific OAuth exchange. A provider-issued replacement refresh token is durably published and verified before the marker is cleared or the access token is cached or returned.
 9. A fixed Graph v1.0 path is built from validated resource identifiers. Arbitrary Graph URLs are not accepted.
@@ -47,7 +47,7 @@ This optional plugin feature applies OpenClaw's standard `AGENTS.md` instruction
 
 ## State and data handling
 
-- OAuth access-token, continuation, confirmation, and OneDrive instruction caches are process-local and bounded. The token cache is a 128-entry expiry-aware LRU keyed to durable vault identity, capped at one hour of residency with a 60-second expiry skew.
+- OAuth access-token, continuation, warning approval trust, and OneDrive instruction caches are process-local and bounded. Warning `allow-always` trust is capped at 1,024 scopes, keyed by authenticated agent ID, exact tool name, and normalized action; it is never persisted and resets on plugin reload or process restart. The token cache is a 128-entry expiry-aware LRU keyed to durable vault identity, capped at one hour of residency with a 60-second expiry skew.
 - The plugin persists encrypted OAuth credential envelopes and an authenticated secret-free write-ahead refresh marker (`in_flight`, then `quarantined` after uncertainty). It does not persist Graph content, access tokens, or continuation URLs.
 - Private-media downloads use opaque `media://inbound/...` artifacts managed by OpenClaw.
 - Uploads accept only canonical private-media URIs and revalidate containment, file identity, size, and links.

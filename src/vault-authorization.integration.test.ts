@@ -70,7 +70,7 @@ describe("vault authorization ordering", () => {
   ])("denies %s before instruction credential access or Graph", async (toolName, params) => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const { hooks } = registeredRuntime("unauthorized-agent");
-    await expect(hooks.before_tool_call({ toolName, params }, { agentId: "unauthorized-agent", sessionId: "denied-session", requester: { senderIsOwner: true, channel: "telegram" } }))
+    await expect(hooks.before_tool_call({ toolName, params }, { agentId: "unauthorized-agent", sessionId: "denied-session", requester: { senderIsOwner: true, channel: "synthetic-channel" } }))
       .resolves.toEqual({ block: true, blockReason: "access_denied" });
     expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -83,13 +83,8 @@ describe("vault authorization ordering", () => {
       toolName: "onedrive_upload",
       params: { rootLabel: "synthetic_documents", relativePath: "new.txt", sourceMediaUri: "media://inbound/new.txt" },
     };
-    const context = { agentId: "main", sessionId: "denied-session", requester: { senderIsOwner: true, channel: "telegram" } };
-    const confirmation = await hooks.before_tool_call(event, context);
-    expect(confirmation).toMatchObject({ block: true, blockReason: expect.stringContaining("chat_confirmation_required") });
-    expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
-    const chatConfirmationToken = confirmation.blockReason.match(/chatConfirmationToken="(mgw1_[A-Za-z0-9_-]{43})"/)?.[1];
-    await expect(hooks.before_tool_call({ ...event, params: { ...event.params, chatConfirmed: true, chatConfirmationToken } }, context))
-      .resolves.toEqual({ block: true, blockReason: "access_denied" });
+    const context = { agentId: "main", sessionId: "denied-session", requester: { senderIsOwner: true, channel: "synthetic-channel" } };
+    await expect(hooks.before_tool_call(event, context)).resolves.toEqual({ block: true, blockReason: "access_denied" });
     expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
   });
 });

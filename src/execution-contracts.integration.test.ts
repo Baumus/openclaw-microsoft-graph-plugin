@@ -35,7 +35,7 @@ function registeredTools() {
   }));
 }
 
-describe("release-blocker execution contracts", () => {
+describe("execution contracts", () => {
   it("encodes opaque To Do resource IDs exactly once across mutation paths", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       if (init?.method === "PATCH") return Response.json({ id: "BBTask=" }, { status: 200 });
@@ -88,7 +88,7 @@ describe("release-blocker execution contracts", () => {
   it.each([
     ["reply_draft", "createReply", { action: "reply_draft", messageId: "original", bodyText: "Reply" }],
     ["reply_all_draft", "createReplyAll", { action: "reply_all_draft", messageId: "original", bodyHtml: "<p>Reply all</p>" }],
-    ["forward_draft", "createForward", { action: "forward_draft", messageId: "original", bodyText: "Forward", to: ["person@example.com"] }],
+    ["forward_draft", "createForward", { action: "forward_draft", messageId: "original", bodyText: "Forward", to: ["person@example.invalid"] }],
   ])("%s creates a complete draft in one Graph mutation", async (action, endpoint, params) => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       expect(init?.method).toBe("POST");

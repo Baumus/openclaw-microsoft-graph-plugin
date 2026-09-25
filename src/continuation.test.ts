@@ -4,7 +4,7 @@ import { ContinuationStore, MAX_CONTINUATION_STATE_BYTES, normalizedCriteria, ty
 const cases: Array<{ binding: ContinuationBinding; path: string }> = [
   { binding: { agentId: "main", service: "calendar", action: "list_events", resource: "me", criteria: normalizedCriteria({ action: "list_events", startDateTime: "2026-09-01T00:00:00Z", endDateTime: "2026-10-01T00:00:00Z", limit: 25 }) }, path: "/me/calendarView" },
   { binding: { agentId: "main", service: "mail", action: "list_messages", resource: "me", criteria: normalizedCriteria({ action: "list_messages", folder: "inbox", limit: 25 }) }, path: "/me/mailFolders/inbox/messages" },
-  { binding: { agentId: "fixture-reader", service: "onedrive", action: "list", resource: "synthetic_documents", criteria: normalizedCriteria({ rootLabel: "synthetic_documents", relativePath: "Reports", limit: 25 }) }, path: "/drives/synthetic-drive/items/synthetic-root:/Reports:/children" },
+  { binding: { agentId: "fixture-reader", service: "onedrive", action: "list", resource: "synthetic_documents", criteria: normalizedCriteria({ rootLabel: "synthetic_documents", relativePath: "SYNTHETIC_FOLDER", limit: 25 }) }, path: "/drives/synthetic-drive/items/synthetic-root:/SYNTHETIC_FOLDER:/children" },
   { binding: { agentId: "main", service: "todo", action: "list_tasks", resource: "me", criteria: normalizedCriteria({ action: "list_tasks", listId: "list", limit: 25 }) }, path: "/me/todo/lists/list/tasks" },
 ];
 

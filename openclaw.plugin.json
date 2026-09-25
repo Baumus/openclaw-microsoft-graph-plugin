@@ -2,7 +2,7 @@
   "id": "microsoft-graph",
   "name": "Microsoft Graph",
   "description": "Gateway-owned bounded Microsoft Graph v1.0 core-resource tools for OneDrive, Outlook Calendar, Outlook Mail, and Microsoft To Do.",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "categories": [
     "productivity"
   ],
@@ -19,6 +19,11 @@
       "enabled": {
         "type": "boolean",
         "default": false
+      },
+      "warningApprovalsRequired": {
+        "type": "boolean",
+        "default": true,
+        "description": "Require OpenClaw-native approval for warning-level Microsoft Graph mutations. Missing defaults to true; set false only when policy-authorized warning mutations may proceed without an approval prompt."
       },
       "credentialVaultKey": {
         "type": "object",

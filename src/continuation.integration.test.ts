@@ -30,7 +30,7 @@ describe("opaque continuation tool integration", () => {
     });
     try {
       const cases = [
-        { tool: factories[1]({ agentId: "fixture-reader" }), params: { rootLabel: "synthetic_documents", relativePath: "Reports", limit: 1 } },
+        { tool: factories[1]({ agentId: "fixture-reader" }), params: { rootLabel: "synthetic_documents", relativePath: "SYNTHETIC_FOLDER", limit: 1 } },
         { tool: factories[9]({ agentId: "main" }), params: { action: "list_events", startDateTime: "2026-09-01T00:00:00Z", endDateTime: "2026-09-02T00:00:00Z", limit: 1 } },
         { tool: factories[11]({ agentId: "main" }), params: { action: "list_messages", folder: "inbox", limit: 1 } },
         { tool: factories[13]({ agentId: "main" }), params: { action: "list_lists", limit: 1 } },
@@ -43,6 +43,9 @@ describe("opaque continuation tool integration", () => {
         expect(second.details).toMatchObject({ ok: true, truncated: false });
         expect(second.details).not.toHaveProperty("continuation");
       }
+      const calendarCalls = fetchSpy.mock.calls.filter(([input]) => new URL(String(input)).pathname.endsWith("/me/calendarView"));
+      expect(calendarCalls).toHaveLength(2);
+      for (const [, init] of calendarCalls) expect(new Headers(init?.headers).get("Prefer")).toContain('outlook.timezone="UTC"');
       expect(logger.info.mock.calls.flat().join(" ")).not.toMatch(/mgc1_|graph\.microsoft\.com|\$skiptoken/);
     } finally {
       fetchSpy.mockRestore();
@@ -60,13 +63,13 @@ describe("opaque continuation tool integration", () => {
       const url = new URL(String(input));
       if (url.pathname.includes("/search(")) return new Response(JSON.stringify({ value: [] }), { status: 200 });
       if (url.pathname.endsWith("/items/synthetic-root/children")) return url.searchParams.has("$skiptoken")
-        ? new Response(JSON.stringify({ value: [{ id: "nested-folder", name: "Kreisvorstand", folder: {}, parentReference: { id: "synthetic-root", driveId: "synthetic-drive" } }] }), { status: 200 })
-        : new Response(JSON.stringify({ value: [{ id: "root-file", name: "Minutes.pdf", file: { mimeType: "application/pdf" }, parentReference: { id: "synthetic-root", driveId: "synthetic-drive" } }], "@odata.nextLink": `${url.origin}${url.pathname}?$skiptoken=opaque%2Bpage` }), { status: 200 });
-      return new Response(JSON.stringify({ value: [{ id: "nested-file", name: "minutes.PDF", file: { mimeType: "application/pdf" }, parentReference: { id: "nested-folder", driveId: "synthetic-drive" } }] }), { status: 200 });
+        ? new Response(JSON.stringify({ value: [{ id: "nested-folder", name: "SYNTHETIC_NESTED_FOLDER", folder: {}, parentReference: { id: "synthetic-root", driveId: "synthetic-drive" } }] }), { status: 200 })
+        : new Response(JSON.stringify({ value: [{ id: "root-file", name: "SYNTHETIC_RECORD.pdf", file: { mimeType: "application/pdf" }, parentReference: { id: "synthetic-root", driveId: "synthetic-drive" } }], "@odata.nextLink": `${url.origin}${url.pathname}?$skiptoken=opaque%2Bpage` }), { status: 200 });
+      return new Response(JSON.stringify({ value: [{ id: "nested-file", name: "synthetic_record.PDF", file: { mimeType: "application/pdf" }, parentReference: { id: "nested-folder", driveId: "synthetic-drive" } }] }), { status: 200 });
     });
     try {
       const tool = factories[0]({ agentId: "fixture-reader" });
-      const params = { rootLabel: "synthetic_documents", query: "Minutes.pdf", mode: "filename_exact", exhaustive: true, limit: 1 };
+      const params = { rootLabel: "synthetic_documents", query: "SYNTHETIC_RECORD.pdf", mode: "filename_exact", exhaustive: true, limit: 1 };
       const first = await tool.execute("first", params);
       expect(first.details).toMatchObject({ ok: true, items: [expect.objectContaining({ id: "root-file" })], truncated: true, scan_complete: false, match_satisfied: true });
       expect(first.details).not.toHaveProperty("fallback");
