@@ -1,0 +1,508 @@
+{
+  "id": "microsoft-graph",
+  "name": "Microsoft Graph",
+  "description": "Gateway-owned bounded Microsoft Graph v1.0 core-resource tools for OneDrive, Outlook Calendar, Outlook Mail, and Microsoft To Do.",
+  "version": "3.0.0",
+  "categories": [
+    "productivity"
+  ],
+  "cliCommands": [
+    {
+      "name": "microsoft-graph",
+      "description": "Microsoft Graph operator commands",
+      "hasSubcommands": true
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "credentialVaultKey": {
+        "type": "object",
+        "required": [
+          "source",
+          "provider",
+          "id"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "env",
+              "file",
+              "exec",
+              "store"
+            ]
+          },
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "policy": {
+        "type": "object",
+        "required": [
+          "version",
+          "rules",
+          "services"
+        ],
+        "properties": {
+          "version": {
+            "type": "number",
+            "const": 2
+          },
+          "rules": {
+            "type": "object",
+            "required": [
+              "default"
+            ],
+            "properties": {
+              "default": {
+                "type": "string",
+                "const": "deny"
+              }
+            },
+            "additionalProperties": false
+          },
+          "services": {
+            "type": "object",
+            "required": [
+              "onedrive",
+              "calendar",
+              "mail",
+              "todo"
+            ],
+            "properties": {
+              "onedrive": {
+                "type": "object",
+                "required": [
+                  "allowed_roots"
+                ],
+                "properties": {
+                  "allowed_roots": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "label",
+                        "path",
+                        "drive_id",
+                        "item_id",
+                        "include_descendants",
+                        "permissions",
+                        "agents"
+                      ],
+                      "properties": {
+                        "label": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9][a-z0-9_-]{0,159}$"
+                        },
+                        "path": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "drive_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "item_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "include_descendants": {
+                          "type": "boolean",
+                          "const": true
+                        },
+                        "agents_instructions": {
+                          "type": "string",
+                          "const": "trusted"
+                        },
+                        "permissions": {
+                          "type": "object",
+                          "required": [
+                            "read",
+                            "write",
+                            "delete"
+                          ],
+                          "properties": {
+                            "read": {
+                              "type": "boolean"
+                            },
+                            "write": {
+                              "type": "boolean"
+                            },
+                            "delete": {
+                              "type": "boolean"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "agents": {
+                          "type": "object",
+                          "patternProperties": {
+                            "^.*$": {
+                              "type": "object",
+                              "required": [
+                                "permissions"
+                              ],
+                              "properties": {
+                                "permissions": {
+                                  "type": "object",
+                                  "properties": {
+                                    "read": {
+                                      "type": "boolean"
+                                    },
+                                    "write": {
+                                      "type": "boolean"
+                                    },
+                                    "delete": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          }
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "calendar": {
+                "type": "object",
+                "required": [
+                  "agents"
+                ],
+                "properties": {
+                  "agents": {
+                    "type": "object",
+                    "patternProperties": {
+                      "^.*$": {
+                        "type": "object",
+                        "required": [
+                          "operations"
+                        ],
+                        "properties": {
+                          "operations": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "read",
+                                "create",
+                                "update",
+                                "respond",
+                                "attach",
+                                "delete"
+                              ]
+                            },
+                            "minItems": 1
+                          },
+                          "resources": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "minItems": 1
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "mail": {
+                "type": "object",
+                "required": [
+                  "agents"
+                ],
+                "properties": {
+                  "agents": {
+                    "type": "object",
+                    "patternProperties": {
+                      "^.*$": {
+                        "type": "object",
+                        "required": [
+                          "operations"
+                        ],
+                        "properties": {
+                          "operations": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "read",
+                                "draft",
+                                "update",
+                                "move",
+                                "mark",
+                                "send",
+                                "delete"
+                              ]
+                            },
+                            "minItems": 1
+                          },
+                          "resources": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "minItems": 1
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "todo": {
+                "type": "object",
+                "required": [
+                  "agents"
+                ],
+                "properties": {
+                  "agents": {
+                    "type": "object",
+                    "patternProperties": {
+                      "^.*$": {
+                        "type": "object",
+                        "required": [
+                          "operations"
+                        ],
+                        "properties": {
+                          "operations": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "read",
+                                "create",
+                                "update",
+                                "delete"
+                              ]
+                            },
+                            "minItems": 1
+                          },
+                          "resources": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "minItems": 1
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "requestTimeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 30000,
+        "default": 5000
+      },
+      "readOperationTimeoutMs": {
+        "type": "integer",
+        "minimum": 5000,
+        "maximum": 300000,
+        "default": 30000,
+        "description": "Whole-operation deadline for multi-request reads; each Graph request remains bounded by requestTimeoutMs."
+      },
+      "calendarMultiwriteTimeoutMs": {
+        "type": "integer",
+        "minimum": 30000,
+        "maximum": 1800000,
+        "default": 300000,
+        "description": "Whole-operation deadline for calendar multiwrite, including authorization, credential exchange, and every 20-request Graph batch."
+      },
+      "maxConcurrent": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 8,
+        "default": 4
+      },
+      "maxReadBytes": {
+        "type": "integer",
+        "minimum": 1024,
+        "maximum": 268435456000,
+        "default": 268435456000,
+        "description": "Maximum OneDrive bytes streamed for digest mode; aligned with the 250 GB OneDrive individual-file limit."
+      },
+      "maxReadOutputBytes": {
+        "type": "integer",
+        "minimum": 1024,
+        "maximum": 1048576,
+        "default": 262144,
+        "description": "Separate bound for model-facing text reads and To Do attachment retrieval; OneDrive private-media downloads stream to the managed media store under the provider file limit."
+      },
+      "maxAttachmentDownloadBytes": {
+        "type": "integer",
+        "minimum": 1024,
+        "maximum": 157286400,
+        "default": 157286400,
+        "description": "Maximum Outlook file-attachment bytes streamed into OpenClaw's private media store."
+      },
+      "attachmentDownloadTimeoutMs": {
+        "type": "integer",
+        "minimum": 30000,
+        "maximum": 1800000,
+        "default": 600000,
+        "description": "Whole-operation timeout for Outlook attachment metadata validation and binary download."
+      },
+      "oneDriveTransferTimeoutMs": {
+        "type": "integer",
+        "minimum": 30000,
+        "maximum": 604800000,
+        "default": 86400000,
+        "description": "Whole-operation deadline for OneDrive private-media downloads and uploads; each Graph request remains bounded by requestTimeoutMs."
+      }
+    },
+    "additionalProperties": false
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "configContracts": {
+    "secretInputs": {
+      "paths": [
+        {
+          "path": "credentialVaultKey",
+          "expected": "string",
+          "ownerKind": "capability"
+        }
+      ]
+    }
+  },
+  "contracts": {
+    "tools": [
+      "onedrive_search",
+      "onedrive_list",
+      "onedrive_read",
+      "onedrive_download",
+      "onedrive_upload",
+      "onedrive_update",
+      "onedrive_metadata_update",
+      "onedrive_create_folder",
+      "onedrive_delete",
+      "outlook_calendar_read",
+      "outlook_calendar_write",
+      "outlook_mail_read",
+      "outlook_mail_write",
+      "microsoft_todo_read",
+      "microsoft_todo_write",
+      "onedrive_agents_instructions"
+    ]
+  },
+  "toolMetadata": {
+    "onedrive_search": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "onedrive_list": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "onedrive_read": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "onedrive_download": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "onedrive_upload": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
+    },
+    "onedrive_update": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
+    },
+    "onedrive_metadata_update": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
+    },
+    "onedrive_create_folder": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
+    },
+    "onedrive_delete": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
+    },
+    "outlook_calendar_read": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "outlook_calendar_write": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
+    },
+    "outlook_mail_read": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "outlook_mail_write": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
+    },
+    "microsoft_todo_read": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "microsoft_todo_write": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
+    },
+    "onedrive_agents_instructions": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    }
+  }
+}

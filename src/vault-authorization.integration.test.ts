@@ -1,0 +1,95 @@
+import { randomBytes } from "node:crypto";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({ tokenForAuthorizedOperation: vi.fn() }));
+vi.mock("./credential.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./credential.js")>(),
+  tokenForAuthorizedOperation: mocks.tokenForAuthorizedOperation,
+}));
+
+import entry from "./index.js";
+import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
+
+function key(): string { return randomBytes(32).toString("base64url"); }
+function vaultPolicy() {
+  const current = graphPolicyFixture();
+  return { version: 2 as const, rules: current.rules, services: current.services };
+}
+function registeredTools(agentId: string) {
+  const factories: Array<(context: any) => any> = [];
+  entry.register({
+    pluginConfig: { enabled: true, credentialVaultKey: key(), policy: vaultPolicy() },
+    runtime: { state: { resolveStateDir: () => "/synthetic-state-never-read-when-denied" } },
+    registerTool: (factory: any) => factories.push(factory), on: vi.fn(),
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  } as any);
+  return Object.fromEntries(factories.map((factory) => {
+    const tool = factory({ agentId });
+    return [tool.name, tool];
+  }));
+}
+
+function registeredRuntime(agentId: string) {
+  const factories: Array<(context: any) => any> = [];
+  const hooks: Record<string, (...args: any[]) => Promise<any>> = {};
+  entry.register({
+    pluginConfig: { enabled: true, credentialVaultKey: key(), policy: vaultPolicy() },
+    runtime: { state: { resolveStateDir: () => "/synthetic-state-never-read-when-denied" } },
+    registerTool: (factory: any) => factories.push(factory), on: (name: string, handler: any) => { hooks[name] = handler; },
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  } as any);
+  return { hooks, tools: Object.fromEntries(factories.map((factory) => { const tool = factory({ agentId, sessionId: "denied-session" }); return [tool.name, tool]; })) };
+}
+
+beforeEach(() => mocks.tokenForAuthorizedOperation.mockReset());
+
+describe("vault authorization ordering", () => {
+  it("denies before plugin-side key selection, vault access, decryption, or network", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = await registeredTools("unauthorized-agent").outlook_calendar_read.execute("denied", { action: "list_calendars" });
+    expect(response.details).toEqual({ ok: false, error: "access_denied" });
+    expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("reaches vault credential access only after the exact operation is authorized", async () => {
+    mocks.tokenForAuthorizedOperation.mockRejectedValueOnce(new Error("credential_vault_unavailable"));
+    const response = await registeredTools("main").outlook_calendar_read.execute("authorized", { action: "list_calendars" });
+    expect(response.details).toEqual({ ok: false, error: "credential_vault_unavailable" });
+    expect(mocks.tokenForAuthorizedOperation).toHaveBeenCalledOnce();
+    expect(mocks.tokenForAuthorizedOperation.mock.calls[0][0]).toMatchObject({ policy: { version: 2 } });
+  });
+
+  it.each([
+    ["onedrive_upload", { rootLabel: "synthetic_documents", relativePath: "new.txt", sourceMediaUri: "media://inbound/new.txt" }],
+    ["onedrive_update", { rootLabel: "synthetic_documents", relativePath: "existing.txt", sourceMediaUri: "media://inbound/existing.txt" }],
+    ["onedrive_metadata_update", { rootLabel: "synthetic_documents", relativePath: "existing.txt", name: "renamed.txt" }],
+    ["onedrive_create_folder", { rootLabel: "synthetic_documents", parentRelativePath: "", name: "new-folder" }],
+    ["onedrive_delete", { rootLabel: "synthetic_documents", relativePath: "existing.txt" }],
+  ])("denies %s before instruction credential access or Graph", async (toolName, params) => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const { hooks } = registeredRuntime("unauthorized-agent");
+    await expect(hooks.before_tool_call({ toolName, params }, { agentId: "unauthorized-agent", sessionId: "denied-session", requester: { senderIsOwner: true, channel: "telegram" } }))
+      .resolves.toEqual({ block: true, blockReason: "access_denied" });
+    expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("requires separate read authority for instruction discovery after mutation authorization", async () => {
+    const { hooks } = registeredRuntime("main");
+    const event = {
+      toolName: "onedrive_upload",
+      params: { rootLabel: "synthetic_documents", relativePath: "new.txt", sourceMediaUri: "media://inbound/new.txt" },
+    };
+    const context = { agentId: "main", sessionId: "denied-session", requester: { senderIsOwner: true, channel: "telegram" } };
+    const confirmation = await hooks.before_tool_call(event, context);
+    expect(confirmation).toMatchObject({ block: true, blockReason: expect.stringContaining("chat_confirmation_required") });
+    expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
+    const chatConfirmationToken = confirmation.blockReason.match(/chatConfirmationToken="(mgw1_[A-Za-z0-9_-]{43})"/)?.[1];
+    await expect(hooks.before_tool_call({ ...event, params: { ...event.params, chatConfirmed: true, chatConfirmationToken } }, context))
+      .resolves.toEqual({ block: true, blockReason: "access_denied" });
+    expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
+  });
+});
