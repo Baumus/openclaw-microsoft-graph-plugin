@@ -201,6 +201,7 @@ describe.each([
 
     const approval = await hooks.before_tool_call({ toolName, toolCallId: "replaced", params }, context);
     expect(approval.requireApproval.description).toContain(digest(approvedBytes));
+    approval.requireApproval.onResolution("allow-once");
     await rename(sourcePath, `${sourcePath}.approved`);
     await writeFile(sourcePath, replacementBytes);
 

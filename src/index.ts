@@ -2796,7 +2796,6 @@ export async function beforeMicrosoftGraphToolCall(
   };
 
   if (severity === "critical") {
-    bindExecutionSnapshot();
     const approval = mutationApprovalText(event.toolName, params);
     return { params, requireApproval: {
       ...approval,
@@ -2804,7 +2803,8 @@ export async function beforeMicrosoftGraphToolCall(
       allowedDecisions: ["allow-once", "deny"] as Array<"allow-once" | "deny">,
       timeoutMs: 120_000,
       onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
-        if (decision !== "allow-once") approvalSnapshots.discard(event.toolCallId);
+        if (decision === "allow-once") bindExecutionSnapshot();
+        else approvalSnapshots.discard(event.toolCallId);
       },
     } };
   }
@@ -2827,8 +2827,10 @@ export async function beforeMicrosoftGraphToolCall(
   try { scope = warningApprovalScope(ctx.agentId, event.toolName, params); }
   catch (error) { return { block: true, blockReason: errorCode(error) }; }
   const warningApprovalBypassed = runtimeConfig.warningApprovalsRequired === false || warningApprovalTrustStore.has(scope);
-  bindExecutionSnapshot();
-  if (warningApprovalBypassed) return { params };
+  if (warningApprovalBypassed) {
+    bindExecutionSnapshot();
+    return { params };
+  }
   const approval = mutationApprovalText(event.toolName, params);
   return {
     params,
@@ -2839,8 +2841,10 @@ export async function beforeMicrosoftGraphToolCall(
       allowedDecisions: ["allow-once", "allow-always", "deny"] as Array<"allow-once" | "allow-always" | "deny">,
       timeoutMs: 120_000,
       onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
-        if (decision === "allow-always") warningApprovalTrustStore.grant(scope);
-        if (decision !== "allow-once" && decision !== "allow-always") approvalSnapshots.discard(event.toolCallId);
+        if (decision === "allow-once" || decision === "allow-always") {
+          bindExecutionSnapshot();
+          if (decision === "allow-always") warningApprovalTrustStore.grant(scope);
+        } else approvalSnapshots.discard(event.toolCallId);
       },
     },
   };

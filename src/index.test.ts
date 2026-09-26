@@ -719,6 +719,28 @@ describe("microsoft-graph plugin contract", () => {
   });
 
   it.each([
+    ["wrong call ID", "wrong-call", "main", "session-1", "outlook_mail_write", { action: "mark_read", messageId: "message-1", isRead: true }, undefined],
+    ["missing call ID", "", "main", "session-1", "outlook_mail_write", { action: "mark_read", messageId: "message-1", isRead: true }, undefined],
+    ["cross-agent", "bound-call", "other", "session-1", "outlook_mail_write", { action: "mark_read", messageId: "message-1", isRead: true }, false],
+    ["cross-session", "bound-call", "main", "session-2", "outlook_mail_write", { action: "mark_read", messageId: "message-1", isRead: true }, false],
+    ["cross-tool", "bound-call", "main", "session-1", "microsoft_todo_write", { action: "mark_read", messageId: "message-1", isRead: true }, false],
+    ["cross-action", "bound-call", "main", "session-1", "outlook_mail_write", { action: "send_draft", messageId: "message-1" }, false],
+    ["cross-params", "bound-call", "main", "session-1", "outlook_mail_write", { action: "mark_read", messageId: "message-2", isRead: true }, false],
+  ] as const)("rejects an approval snapshot on %s", (_case, callId, agentId, sessionId, toolName, params, expected) => {
+    const snapshots = new NativeApprovalSnapshotStore();
+    snapshots.record("bound-call", {
+      agentId: "main",
+      sessionId: "session-1",
+      toolName: "outlook_mail_write",
+      params: JSON.stringify({ action: "mark_read", isRead: true, messageId: "message-1" }),
+    });
+    expect(snapshots.consume(callId, agentId, sessionId, toolName, params)).toBe(expected);
+    if (callId === "bound-call") {
+      expect(snapshots.consume("bound-call", "main", "session-1", "outlook_mail_write", { action: "mark_read", messageId: "message-1", isRead: true })).toBeUndefined();
+    }
+  });
+
+  it.each([
     { action: "mark_read", messageId: "message-1", isRead: true },
     { action: "send_draft", messageId: "draft-1" },
   ])("blocks $action approval when the host omits toolCallId", async (params) => {
@@ -746,10 +768,32 @@ describe("microsoft-graph plugin contract", () => {
     const params = { action: "mark_read", messageId: "message-1", isRead: true };
     const approval = await hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: "single-use-call", params }, context);
     expect(approval.requireApproval).toMatchObject({ severity: "warning" });
+    expect((await tools.outlook_mail_write.execute("single-use-call", params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
     approval.requireApproval.onResolution("allow-once");
 
+    expect((await tools.outlook_mail_write.execute("", params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+    expect((await tools.outlook_mail_write.execute("wrong-call", params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
     expect((await tools.outlook_mail_write.execute("single-use-call", params)).details).toEqual({ ok: false, error: "connector_disabled" });
     expect((await tools.outlook_mail_write.execute("single-use-call", params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+  });
+
+  it.each(["deny", "timeout", "cancelled"] as const)("does not bind execution after native approval resolution %s", async (decision) => {
+    const hooks: Record<string, (...args: any[]) => Promise<any> | any> = {};
+    const factories: Array<(context: any) => any> = [];
+    entry.register({
+      pluginConfig: {},
+      registerTool: (factory: any) => factories.push(factory),
+      on: (name: string, handler: any) => { hooks[name] = handler; },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    } as any);
+    const context = { agentId: "main", sessionId: `approval-${decision}` };
+    const tool = factories.map((factory) => factory(context)).find((candidate) => candidate.name === "outlook_mail_write");
+    const params = { action: "send_draft", messageId: "draft-1" };
+    const toolCallId = `approval-${decision}`;
+    const approval = await hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId, params }, context);
+    approval.requireApproval.onResolution(decision);
+
+    expect((await tool.execute(toolCallId, params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
   });
 
   it.each(["drive_id", "item_id"] as const)("binds approved OneDrive mutations to the canonical %s", async (identityField) => {
