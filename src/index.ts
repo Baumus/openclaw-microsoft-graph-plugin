@@ -29,6 +29,7 @@ const SOURCE_MEDIA_URI_MAX_LENGTH = 4096;
 const MEDIA_INBOUND_URI_PREFIX = "media://inbound/";
 const MAX_WARNING_APPROVAL_TRUST_SCOPES = 1024;
 const APPROVAL_DISPLAY_VALUE_MAX_CHARS = 72;
+const MAX_ONEDRIVE_STAGING_WORKSPACE_CONTEXTS = 64;
 
 const SecretRefOnly = Type.Unsafe<string>({
   type: "object",
@@ -63,6 +64,39 @@ type Logger = { info: (message: string) => void };
 let activeRequests = 0;
 const continuationStore = new ContinuationStore();
 let resolvePluginStateDir: (() => string) | undefined;
+type OneDriveStagingWorkspaceContext = { agentId?: string; sessionId?: string; workspaceDir?: string };
+const oneDriveStagingWorkspaceContexts = new Map<string, { agentId: string; sessionId: string; workspaceDir: string }>();
+
+function stagingWorkspaceKey(agentId: string, sessionId: string): string {
+  return JSON.stringify([agentId, sessionId]);
+}
+
+function bindOneDriveStagingWorkspace<T>(context: OneDriveStagingWorkspaceContext, tool: T): T {
+  if (typeof context.agentId !== "string" || !context.agentId || typeof context.sessionId !== "string" || !context.sessionId || typeof context.workspaceDir !== "string" || !context.workspaceDir) return tool;
+  const key = stagingWorkspaceKey(context.agentId, context.sessionId);
+  oneDriveStagingWorkspaceContexts.delete(key);
+  oneDriveStagingWorkspaceContexts.set(key, { agentId: context.agentId, sessionId: context.sessionId, workspaceDir: context.workspaceDir });
+  while (oneDriveStagingWorkspaceContexts.size > MAX_ONEDRIVE_STAGING_WORKSPACE_CONTEXTS) {
+    const oldest = oneDriveStagingWorkspaceContexts.keys().next().value;
+    if (oldest === undefined) break;
+    oneDriveStagingWorkspaceContexts.delete(oldest);
+  }
+  return tool;
+}
+
+function stagingWorkspaceFor(context: OneDriveStagingWorkspaceContext): string | undefined {
+  if (typeof context.agentId !== "string" || !context.agentId || typeof context.sessionId !== "string" || !context.sessionId) return undefined;
+  const key = stagingWorkspaceKey(context.agentId, context.sessionId);
+  const entry = oneDriveStagingWorkspaceContexts.get(key);
+  if (!entry) return typeof context.workspaceDir === "string" && context.workspaceDir ? context.workspaceDir : undefined;
+  oneDriveStagingWorkspaceContexts.delete(key);
+  oneDriveStagingWorkspaceContexts.set(key, entry);
+  return entry.workspaceDir;
+}
+
+function clearStagingWorkspaceSession(sessionId: string): void {
+  for (const [key, entry] of oneDriveStagingWorkspaceContexts) if (entry.sessionId === sessionId) oneDriveStagingWorkspaceContexts.delete(key);
+}
 
 function stateDirForVault(): string | undefined { return resolvePluginStateDir?.(); }
 
@@ -1037,6 +1071,23 @@ function requiredSourceFingerprint(params: Record<string, unknown>): SourceFinge
   return fingerprint;
 }
 
+async function openVerifiedProtectedMediaUploadSource(sourceMediaUri: string, workspaceDir: string | undefined, fingerprint: SourceFingerprint): Promise<ProtectedMediaUploadSource> {
+  const source = await openProtectedMediaUploadSource(sourceMediaUri, workspaceDir);
+  if (source.sha256 === fingerprint.sourceSha256 && source.size === fingerprint.sourceByteSize) return source;
+  await source.close();
+  throw new Error("invalid_source_fingerprint");
+}
+
+async function verifyOneDriveWriteApprovalArtifact(toolName: string, params: Record<string, unknown>, context: OneDriveStagingWorkspaceContext): Promise<void> {
+  if (toolName !== "onedrive_upload" && toolName !== "onedrive_update") return;
+  const source = await openVerifiedProtectedMediaUploadSource(
+    String(params.sourceMediaUri ?? ""),
+    stagingWorkspaceFor(context),
+    requiredSourceFingerprint(params),
+  );
+  await source.close();
+}
+
 /** Canonical semantic effect for content-identity-bound OneDrive writes. */
 export function oneDriveWriteApprovalCriteria(toolName: string, params: Record<string, unknown>, root?: OneDriveApprovalRoot): Record<string, unknown> | undefined {
   if (toolName !== "onedrive_upload" && toolName !== "onedrive_update") return undefined;
@@ -1321,7 +1372,7 @@ const plugin = defineToolPlugin({
         operation: "download",
         ...await downloadOneDriveFile({ root, relativePath: normalizeRelativePath(relativePath), token, signal: bounded }),
       }), undefined, config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS)) }),
-      tool({ name: "onedrive_upload", label: "OneDrive Upload", optional: true, description: "Create one file without overwrite from protected inbound media, using a Graph upload session above 250 MB.", parameters: uploadSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_upload", uploadSchema, toolContext.agentId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
+      tool({ name: "onedrive_upload", label: "OneDrive Upload", optional: true, description: "Create one file without overwrite from protected inbound media, using a Graph upload session above 250 MB.", parameters: uploadSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_upload", uploadSchema, toolContext.agentId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
         void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
         validateProtectedMediaUri(sourceMediaUri);
@@ -1333,14 +1384,13 @@ const plugin = defineToolPlugin({
             (root, token, bounded) => driveWriteSource(root, path, token, source!, contentType, false, bounded, fetch, config.requestTimeoutMs ?? 5000),
             async () => {
               if (!fingerprint) throw new Error("invalid_source_fingerprint");
-              source = await openProtectedMediaUploadSource(sourceMediaUri, toolContext.workspaceDir);
-              if (source.sha256 !== fingerprint.sourceSha256 || source.size !== fingerprint.sourceByteSize) throw new Error("invalid_source_fingerprint");
+              source = await openVerifiedProtectedMediaUploadSource(sourceMediaUri, toolContext.workspaceDir, fingerprint);
             },
             config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS,
           );
         } finally { await source?.close(); }
-      }) }),
-      tool({ name: "onedrive_update", label: "OneDrive Update", optional: true, description: "Replace one file from protected inbound media with ETag protection, using a Graph upload session above 250 MB.", parameters: writeSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_update", writeSchema, toolContext.agentId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
+      })) }),
+      tool({ name: "onedrive_update", label: "OneDrive Update", optional: true, description: "Replace one file from protected inbound media with ETag protection, using a Graph upload session above 250 MB.", parameters: writeSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_update", writeSchema, toolContext.agentId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
         void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
         validateProtectedMediaUri(sourceMediaUri);
@@ -1352,13 +1402,12 @@ const plugin = defineToolPlugin({
             (root, token, bounded) => driveWriteSource(root, path, token, source!, contentType, true, bounded, fetch, config.requestTimeoutMs ?? 5000),
             async () => {
               if (!fingerprint) throw new Error("invalid_source_fingerprint");
-              source = await openProtectedMediaUploadSource(sourceMediaUri, toolContext.workspaceDir);
-              if (source.sha256 !== fingerprint.sourceSha256 || source.size !== fingerprint.sourceByteSize) throw new Error("invalid_source_fingerprint");
+              source = await openVerifiedProtectedMediaUploadSource(sourceMediaUri, toolContext.workspaceDir, fingerprint);
             },
             config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS,
           );
         } finally { await source?.close(); }
-      }) }),
+      })) }),
       tool({ name: "onedrive_metadata_update", label: "OneDrive Metadata Update", optional: true, description: "Rename, move within one allowlisted root, or update stable driveItem metadata; description is OneDrive Personal only.", parameters: metadataSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_metadata_update", metadataSchema, toolContext.agentId, api.logger, async ({ rootLabel, relativePath, destinationRelativePath, chatConfirmed: confirmed, chatConfirmationToken: confirmationToken, ...rawChanges }, signal) => {
         void confirmed; void confirmationToken;
         const path = normalizeRelativePath(relativePath);
@@ -2680,6 +2729,9 @@ export async function beforeMicrosoftGraphToolCall(
     catch (error) { return { block: true, blockReason: errorCode(error) }; }
   }
 
+  try { await verifyOneDriveWriteApprovalArtifact(event.toolName, params, ctx); }
+  catch (error) { return { block: true, blockReason: errorCode(error) }; }
+
   if (severity === "critical") {
     const approval = mutationApprovalText(event.toolName, params);
     return { requireApproval: { ...approval, severity, allowedDecisions: ["allow-once", "deny"] as Array<"allow-once" | "deny">, timeoutMs: 120_000 } };
@@ -2747,6 +2799,7 @@ plugin.register = (api) => {
   api.on("before_tool_call", (event, ctx) => beforeMicrosoftGraphToolCall(runtimeConfig, event, ctx, {}, warningApprovalTrustStore));
   api.on("session_end", (_event, ctx) => {
     oneDriveAgentsSessionCache.clearSession(ctx.sessionId);
+    clearStagingWorkspaceSession(ctx.sessionId);
   });
 };
 

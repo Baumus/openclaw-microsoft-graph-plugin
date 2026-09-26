@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,8 +17,9 @@ vi.mock("./credential.js", async () => {
 });
 
 import { exchangeRefreshToken, readCredential } from "./credential.js";
-import entry from "./index.js";
+import entry, { beforeMicrosoftGraphToolCall } from "./index.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
+import { OneDriveAgentsSessionCache } from "./onedrive-agents-instructions.js";
 
 let workspaceDir = "";
 
@@ -32,9 +33,9 @@ async function consumeBody(body: unknown): Promise<void> {
   }
 }
 
-function runtime(warningApprovalsRequired: boolean) {
+function runtime(warningApprovalsRequired: boolean, managedRoot = false) {
   const policy = graphPolicyFixture();
-  delete policy.services.onedrive.allowed_roots[0].agents_instructions;
+  if (!managedRoot) delete policy.services.onedrive.allowed_roots[0].agents_instructions;
   policy.services.onedrive.allowed_roots[0].agents.main.permissions.read = true;
   const hooks: Record<string, (...args: any[]) => Promise<any> | any> = {};
   const factories: Array<(context: any) => any> = [];
@@ -76,6 +77,88 @@ describe.each([
   ["onedrive_upload", false],
   ["onedrive_update", true],
 ] as const)("content identity preconditions for %s", (toolName, update) => {
+  it.each([
+    {
+      name: "missing",
+      prepare: async (_sourcePath: string, _bytes: Buffer) => undefined,
+      expected: "invalid_source_media_uri",
+    },
+    {
+      name: "replaced",
+      prepare: async (sourcePath: string, bytes: Buffer) => {
+        await writeFile(sourcePath, bytes);
+        await rename(sourcePath, `${sourcePath}.approved`);
+        await writeFile(sourcePath, Buffer.alloc(bytes.byteLength, 0x72));
+      },
+      expected: "invalid_source_fingerprint",
+    },
+    {
+      name: "symlinked",
+      prepare: async (sourcePath: string, bytes: Buffer) => {
+        const targetPath = `${sourcePath}.target`;
+        await writeFile(targetPath, bytes);
+        await symlink(targetPath, sourcePath);
+      },
+      expected: "invalid_source_media_uri",
+    },
+    {
+      name: "hardlinked",
+      prepare: async (sourcePath: string, bytes: Buffer) => {
+        const targetPath = `${sourcePath}.target`;
+        await writeFile(targetPath, bytes);
+        await link(targetPath, sourcePath);
+      },
+      expected: "invalid_source_media_uri",
+    },
+    {
+      name: "SHA-256-mismatched",
+      prepare: async (sourcePath: string, bytes: Buffer) => writeFile(sourcePath, bytes),
+      expected: "invalid_source_fingerprint",
+      claimedSha256: "0".repeat(64),
+    },
+    {
+      name: "byte-size-mismatched",
+      prepare: async (sourcePath: string, bytes: Buffer) => writeFile(sourcePath, bytes),
+      expected: "invalid_source_fingerprint",
+      claimedByteSizeDelta: 1,
+    },
+    {
+      name: "uppercase-SHA-256",
+      prepare: async (sourcePath: string, bytes: Buffer) => writeFile(sourcePath, bytes),
+      expected: "invalid_source_fingerprint",
+      uppercaseSha256: true,
+    },
+  ])("rejects a cold managed-root $name artifact before instruction or provider boundaries", async ({ prepare, expected, claimedSha256, claimedByteSizeDelta = 0, uppercaseSha256 = false }) => {
+    const bytes = Buffer.from(`cold-managed-${toolName}`);
+    const sourcePath = join(workspaceDir, "media", "inbound", "cold.pdf");
+    await prepare(sourcePath, bytes);
+    const { context } = runtime(true, true);
+    const credentialReader = vi.fn(async () => ({ clientId: "synthetic", refreshToken: "synthetic", tenant: "common", scopes: ["Files.Read"] }));
+    const tokenExchange = vi.fn(async () => "synthetic-token");
+    const candidateReader = vi.fn(async () => null);
+    const graph = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("graph_must_not_be_called"));
+    const sourceSha256 = claimedSha256 ?? (uppercaseSha256 ? digest(bytes).toUpperCase() : digest(bytes));
+    const params = {
+      rootLabel: "synthetic_documents",
+      relativePath: "SYNTHETIC_FOLDER/COLD.pdf",
+      sourceMediaUri: "media://inbound/cold.pdf",
+      sourceSha256,
+      sourceByteSize: bytes.byteLength + claimedByteSizeDelta,
+      contentType: "application/pdf",
+    };
+
+    expect(await beforeMicrosoftGraphToolCall(
+      { enabled: true, warningApprovalsRequired: true, policy: graphPolicyFixture() },
+      { toolName, params },
+      context,
+      { credentialReader, tokenExchange, candidateReader, cache: new OneDriveAgentsSessionCache() },
+    )).toEqual({ block: true, blockReason: expected });
+    expect(credentialReader).not.toHaveBeenCalled();
+    expect(tokenExchange).not.toHaveBeenCalled();
+    expect(candidateReader).not.toHaveBeenCalled();
+    expect(graph).not.toHaveBeenCalled();
+  });
+
   it("validates protected media and fingerprints before credentials when approvals are disabled", async () => {
     const bytes = Buffer.from(`synthetic-record-${toolName}`);
     await writeFile(join(workspaceDir, "media", "inbound", "wrong.pdf"), Buffer.alloc(bytes.byteLength, 0x7a));
@@ -91,7 +174,7 @@ describe.each([
       chatConfirmationToken: `mgw1_${"A".repeat(43)}`,
     };
 
-    expect(await hooks.before_tool_call({ toolName, params }, context)).toBeUndefined();
+    expect(await hooks.before_tool_call({ toolName, params }, context)).toEqual({ block: true, blockReason: "invalid_source_fingerprint" });
     expect((await tools[toolName].execute("wrong", params)).details).toEqual({ ok: false, error: "invalid_source_fingerprint" });
     expect(readCredential).not.toHaveBeenCalled();
     expect(exchangeRefreshToken).not.toHaveBeenCalled();
@@ -148,13 +231,15 @@ describe.each([
   });
 
   it("never lets legacy chat fields bypass required native approval", async () => {
+    const bytes = Buffer.from("n");
+    await writeFile(join(workspaceDir, "media", "inbound", "native.pdf"), bytes);
     const { hooks, context } = runtime(true);
     const params = {
       rootLabel: "synthetic_documents",
       relativePath: "SYNTHETIC_FOLDER/SYNTHETIC_NATIVE.pdf",
       sourceMediaUri: "media://inbound/native.pdf",
-      sourceSha256: "a".repeat(64),
-      sourceByteSize: 1,
+      sourceSha256: digest(bytes),
+      sourceByteSize: bytes.byteLength,
       chatConfirmed: true,
       chatConfirmationToken: `mgw1_${"A".repeat(43)}`,
     };

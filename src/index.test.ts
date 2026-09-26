@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -716,14 +716,19 @@ describe("microsoft-graph plugin contract", () => {
     root.permissions = { read: true, write: true, delete: true };
     root.agents.main.permissions = { read: true, write: true, delete: true };
     const config = { enabled: true, warningApprovalsRequired: true, policy };
-    const context = { agentId: "main", sessionId: "approval-copy" };
+    const workspaceDir = await mkdtemp(join(tmpdir(), "microsoft-graph-approval-copy-"));
+    await mkdir(join(workspaceDir, "media", "inbound"), { recursive: true });
+    const uploadBytes = Buffer.alloc(17, 0x63);
+    const uploadSha256 = createHash("sha256").update(uploadBytes).digest("hex");
+    await writeFile(join(workspaceDir, "media", "inbound", "file.txt"), uploadBytes);
+    const context = { agentId: "main", sessionId: "approval-copy", workspaceDir };
 
     const upload: any = await beforeMicrosoftGraphToolCall(config, {
       toolName: "onedrive_upload",
-      params: { rootLabel: root.label, relativePath: `${"long-folder/".repeat(80)}file.txt`, sourceMediaUri: "media://inbound/file.txt", sourceSha256: "c".repeat(64), sourceByteSize: 17 },
+      params: { rootLabel: root.label, relativePath: `${"long-folder/".repeat(80)}file.txt`, sourceMediaUri: "media://inbound/file.txt", sourceSha256: uploadSha256, sourceByteSize: uploadBytes.byteLength },
     }, context);
     expect(upload.requireApproval.description).toContain(`OneDrive root "${root.label}", path "long-folder/`);
-    expect(upload.requireApproval.description).toContain(`content SHA-256 ${"c".repeat(64)}, 17 bytes`);
+    expect(upload.requireApproval.description).toContain(`content SHA-256 ${uploadSha256}, 17 bytes`);
     expect(upload.requireApproval.description.length).toBeLessThanOrEqual(512);
 
     const calendar: any = await beforeMicrosoftGraphToolCall(config, {
@@ -764,6 +769,7 @@ describe("microsoft-graph plugin contract", () => {
     }, context);
     expect(todo.requireApproval.description).toContain('To Do list "list-1", task "new task"');
     expect(todo.requireApproval.description).not.toContain("PRIVATE TODO TITLE");
+    await rm(workspaceDir, { recursive: true, force: true });
   });
 
   it("offers the required native decisions for every declared mutation action", async () => {
@@ -772,6 +778,12 @@ describe("microsoft-graph plugin contract", () => {
     delete root.agents_instructions;
     root.permissions = { read: true, write: true, delete: true };
     root.agents.main.permissions = { read: true, write: true, delete: true };
+    const workspaceDir = await mkdtemp(join(tmpdir(), "microsoft-graph-all-approvals-"));
+    await mkdir(join(workspaceDir, "media", "inbound"), { recursive: true });
+    const newBytes = Buffer.alloc(7, 0x61);
+    const existingBytes = Buffer.alloc(8, 0x62);
+    await writeFile(join(workspaceDir, "media", "inbound", "new.txt"), newBytes);
+    await writeFile(join(workspaceDir, "media", "inbound", "existing.txt"), existingBytes);
     const hooks: Record<string, (...args: any[]) => Promise<any>> = {};
     entry.register({
       pluginConfig: { enabled: true, warningApprovalsRequired: true, policy },
@@ -779,11 +791,11 @@ describe("microsoft-graph plugin contract", () => {
       on: (name: string, handler: any) => { hooks[name] = handler; },
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     } as any);
-    const context = { agentId: "main", sessionId: "all-mutation-approvals" };
+    const context = { agentId: "main", sessionId: "all-mutation-approvals", workspaceDir };
     const metadata = getToolPluginMetadata(entry)!;
     const oneDriveParams: Record<string, Record<string, unknown>> = {
-      onedrive_upload: { rootLabel: root.label, relativePath: "new.txt", sourceMediaUri: "media://inbound/new.txt", sourceSha256: "a".repeat(64), sourceByteSize: 7 },
-      onedrive_update: { rootLabel: root.label, relativePath: "existing.txt", sourceMediaUri: "media://inbound/existing.txt", sourceSha256: "b".repeat(64), sourceByteSize: 8 },
+      onedrive_upload: { rootLabel: root.label, relativePath: "new.txt", sourceMediaUri: "media://inbound/new.txt", sourceSha256: createHash("sha256").update(newBytes).digest("hex"), sourceByteSize: newBytes.byteLength },
+      onedrive_update: { rootLabel: root.label, relativePath: "existing.txt", sourceMediaUri: "media://inbound/existing.txt", sourceSha256: createHash("sha256").update(existingBytes).digest("hex"), sourceByteSize: existingBytes.byteLength },
       onedrive_metadata_update: { rootLabel: root.label, relativePath: "existing.txt", name: "renamed.txt" },
       onedrive_create_folder: { rootLabel: root.label, parentRelativePath: "", name: "folder" },
       onedrive_delete: { rootLabel: root.label, relativePath: "existing.txt" },
@@ -810,6 +822,7 @@ describe("microsoft-graph plugin contract", () => {
         expect(result.requireApproval.description.length, `${tool.name}:${action ?? "call"}`).toBeLessThanOrEqual(512);
       }
     }
+    await rm(workspaceDir, { recursive: true, force: true });
   });
 
   it("runs managed-root checks before warning execution and keeps critical approval call-bound", async () => {
