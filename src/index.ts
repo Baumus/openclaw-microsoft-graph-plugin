@@ -28,6 +28,7 @@ const MAX_BODY = 64 * 1024;
 const SOURCE_MEDIA_URI_MAX_LENGTH = 4096;
 const MEDIA_INBOUND_URI_PREFIX = "media://inbound/";
 const MAX_WARNING_APPROVAL_TRUST_SCOPES = 1024;
+const APPROVAL_DISPLAY_VALUE_MAX_CHARS = 72;
 
 const SecretRefOnly = Type.Unsafe<string>({
   type: "object",
@@ -449,8 +450,8 @@ const sensitivity = Type.Optional(Type.Union([Type.Literal("normal"), Type.Liter
 const showAs = Type.Optional(Type.Union([Type.Literal("free"), Type.Literal("tentative"), Type.Literal("busy"), Type.Literal("oof"), Type.Literal("workingElsewhere"), Type.Literal("unknown")]));
 const chatConfirmed = Type.Optional(Type.Boolean({ description: "Deprecated compatibility field. It is ignored and can never authorize execution; OpenClaw-native approval is authoritative." }));
 const chatConfirmationToken = Type.Optional(Type.String({ minLength: 48, maxLength: 48, pattern: "^mgw1_[A-Za-z0-9_-]{43}$", description: "Deprecated compatibility field. It is ignored and can never authorize execution; OpenClaw-native approval is authoritative." }));
-const sourceSha256 = Type.Optional(Type.String({ minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$", description: "SHA-256 returned by the private attachment download that produced sourceMediaUri. Supply together with sourceByteSize to allow a refreshed URI for identical bytes." }));
-const sourceByteSize = Type.Optional(Type.Integer({ minimum: 0, maximum: ONEDRIVE_WRITE_MAX_BYTES, description: "Exact byte size returned by the private attachment download that produced sourceMediaUri. Supply together with sourceSha256." }));
+const sourceSha256 = Type.String({ minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$", description: "Required SHA-256 of the exact protected-media bytes approved for upload. Execution fails closed if the artifact no longer matches." });
+const sourceByteSize = Type.Integer({ minimum: 0, maximum: ONEDRIVE_WRITE_MAX_BYTES, description: "Required byte size of the exact protected-media bytes approved for upload. Execution fails closed if the artifact no longer matches." });
 
 const attendeeInput = Type.Object({
   address: email,
@@ -1030,11 +1031,16 @@ function sourceFingerprint(params: Record<string, unknown>): SourceFingerprint |
   return { sourceSha256: params.sourceSha256, sourceByteSize: params.sourceByteSize as number };
 }
 
+function requiredSourceFingerprint(params: Record<string, unknown>): SourceFingerprint {
+  const fingerprint = sourceFingerprint(params);
+  if (!fingerprint) throw new Error("invalid_source_fingerprint");
+  return fingerprint;
+}
+
 /** Canonical semantic effect for content-identity-bound OneDrive writes. */
 export function oneDriveWriteApprovalCriteria(toolName: string, params: Record<string, unknown>, root?: OneDriveApprovalRoot): Record<string, unknown> | undefined {
   if (toolName !== "onedrive_upload" && toolName !== "onedrive_update") return undefined;
-  const fingerprint = sourceFingerprint(params);
-  if (!fingerprint) return undefined;
+  const fingerprint = requiredSourceFingerprint(params);
   validateProtectedMediaUri(params.sourceMediaUri);
   if (typeof params.rootLabel !== "string" || !/^[a-z0-9][a-z0-9_-]*$/.test(params.rootLabel)) throw new Error("invalid_root_label");
   if (typeof params.relativePath !== "string") throw new Error("invalid_relative_path");
@@ -1064,6 +1070,89 @@ export function normalizedWarningApprovalAction(toolName: string, rawParams: unk
   const action = callParams(rawParams).action;
   if (typeof action === "string" && /^[a-z][a-z0-9_]{0,39}$/.test(action)) return action;
   return ONEDRIVE_APPROVAL_ACTIONS[toolName] ?? "unknown";
+}
+
+function approvalDisplayValue(value: unknown, fallback: string): string {
+  if (typeof value !== "string" || !value) return fallback;
+  const sanitized = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  if (!sanitized) return fallback;
+  return sanitized.length <= APPROVAL_DISPLAY_VALUE_MAX_CHARS
+    ? sanitized
+    : `${sanitized.slice(0, APPROVAL_DISPLAY_VALUE_MAX_CHARS - 3)}...`;
+}
+
+function recipientCount(params: Record<string, unknown>): number {
+  return ["to", "cc", "bcc"].reduce((count, field) => count + (Array.isArray(params[field]) ? params[field].length : 0), 0);
+}
+
+/** Privacy-minimized, action-specific native approval copy. */
+export function mutationApprovalText(toolName: string, rawParams: unknown): { title: string; description: string } {
+  const params = callParams(rawParams);
+  const action = normalizedWarningApprovalAction(toolName, params);
+  const actionLabel = action.replaceAll("_", " ");
+  let target = "the selected Microsoft Graph resource";
+  let risk = "Changes remote Microsoft 365 data.";
+
+  if (toolName.startsWith("onedrive_")) {
+    const root = approvalDisplayValue(params.rootLabel, "unknown root");
+    const rawPath = toolName === "onedrive_create_folder"
+      ? [params.parentRelativePath, params.name].filter((value) => typeof value === "string" && value).join("/")
+      : params.relativePath;
+    let path = approvalDisplayValue(rawPath, "root");
+    try { path = approvalDisplayValue(normalizeRelativePath(String(rawPath ?? "")), "root"); } catch { /* preflight reports malformed paths */ }
+    const fingerprint = sourceFingerprint(params);
+    target = `OneDrive root "${root}", path "${path}"${fingerprint ? `, content SHA-256 ${fingerprint.sourceSha256}, ${fingerprint.sourceByteSize} bytes` : ""}`;
+    risk = action === "delete"
+      ? "Deletes remote OneDrive data; recovery is provider-dependent."
+      : action === "upload" ? "Creates remote file content at this path."
+        : action === "update" ? "Replaces existing remote file content at this path."
+          : action === "metadata_update" ? "Renames, moves, or changes metadata for this remote item."
+            : "Creates a remote folder at this path.";
+  } else if (toolName === "outlook_calendar_write") {
+    const calendar = approvalDisplayValue(params.calendarId, "default calendar");
+    const event = approvalDisplayValue(params.eventId, action === "create" ? "new event" : "unspecified event");
+    if (action === "multiwrite") {
+      const operations = Array.isArray(params.operations) ? params.operations as Array<Record<string, unknown>> : [];
+      const calendars = [...new Set(operations.map((operation) => approvalDisplayValue(operation.calendarId, "default calendar")))];
+      target = `${operations.length} calendar operations across ${calendars.length || 1} calendar(s): ${calendars.slice(0, 3).join(", ") || "default calendar"}${calendars.length > 3 ? ", ..." : ""}`;
+      risk = "Creates or updates multiple remote events independently; partial completion is possible.";
+    } else {
+      target = `calendar "${calendar}", event "${event}"`;
+      risk = action === "delete" ? "Deletes this remote event; recovery is provider-dependent."
+        : action === "respond" ? "Changes attendance status and may notify the organizer."
+          : action === "attach" ? "Adds file content to this remote event."
+            : action === "create" ? "Creates a new remote calendar event."
+              : "Changes this remote calendar event.";
+    }
+  } else if (toolName === "outlook_mail_write") {
+    if (action === "create_draft" || action === "forward_draft") {
+      target = `${action === "create_draft" ? "new draft" : "forward draft"}; recipient count ${recipientCount(params)}`;
+    } else if (action === "send_draft") {
+      target = "stored draft message; recipients come from the draft; recipient count is unavailable in this call";
+    } else {
+      target = action === "move" || action === "copy"
+        ? `mail message to folder "${approvalDisplayValue(params.destinationFolderId ?? params.destination, "unspecified folder")}"`
+        : "the selected mailbox message";
+    }
+    risk = action === "send_draft" ? "Sends the stored draft to its saved recipients; delivery cannot be recalled reliably."
+      : action === "delete" ? "Deletes a mailbox message; recovery is provider-dependent."
+        : action.includes("draft") ? "Creates or changes a draft that may contain recipient-visible content."
+          : action === "move" || action === "copy" ? "Changes mailbox organization by moving or copying a message."
+            : action === "add_attachment" ? "Adds file content to a remote draft."
+              : "Changes remote mailbox state or message properties.";
+  } else if (toolName === "microsoft_todo_write") {
+    const list = approvalDisplayValue(params.listId, action === "create_list" ? "new list" : "unspecified list");
+    const task = approvalDisplayValue(params.taskId, action === "create_task" ? "new task" : "unspecified task");
+    target = `To Do list "${list}"${action.includes("task") || params.taskId !== undefined ? `, task "${task}"` : ""}`;
+    risk = action.startsWith("delete") ? "Deletes remote To Do data; recovery is provider-dependent."
+      : action.startsWith("create") || action.startsWith("add_") ? "Creates remote To Do data."
+        : "Changes remote To Do data.";
+  }
+
+  return {
+    title: `Microsoft Graph: ${actionLabel}`,
+    description: `Action: ${actionLabel}. Target: ${target}. Risk: ${risk}`,
+  };
 }
 
 function warningApprovalScope(agentId: unknown, toolName: string, params: unknown): WarningApprovalScope {
@@ -1236,14 +1325,16 @@ const plugin = defineToolPlugin({
         void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
         validateProtectedMediaUri(sourceMediaUri);
+        if (!contentTypeAllowed(contentType)) throw new Error("invalid_write_input");
         const fingerprint = sourceFingerprint({ sourceSha256, sourceByteSize });
         let source: ProtectedMediaUploadSource | undefined;
         try {
           return await withDrive(config, toolContext.agentId, rootLabel, "write", signal,
             (root, token, bounded) => driveWriteSource(root, path, token, source!, contentType, false, bounded, fetch, config.requestTimeoutMs ?? 5000),
             async () => {
+              if (!fingerprint) throw new Error("invalid_source_fingerprint");
               source = await openProtectedMediaUploadSource(sourceMediaUri, toolContext.workspaceDir);
-              if (fingerprint && (source.sha256 !== fingerprint.sourceSha256 || source.size !== fingerprint.sourceByteSize)) throw new Error("invalid_source_fingerprint");
+              if (source.sha256 !== fingerprint.sourceSha256 || source.size !== fingerprint.sourceByteSize) throw new Error("invalid_source_fingerprint");
             },
             config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS,
           );
@@ -1253,14 +1344,16 @@ const plugin = defineToolPlugin({
         void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
         validateProtectedMediaUri(sourceMediaUri);
+        if (!contentTypeAllowed(contentType)) throw new Error("invalid_write_input");
         const fingerprint = sourceFingerprint({ sourceSha256, sourceByteSize });
         let source: ProtectedMediaUploadSource | undefined;
         try {
           return await withDrive(config, toolContext.agentId, rootLabel, "write", signal,
             (root, token, bounded) => driveWriteSource(root, path, token, source!, contentType, true, bounded, fetch, config.requestTimeoutMs ?? 5000),
             async () => {
+              if (!fingerprint) throw new Error("invalid_source_fingerprint");
               source = await openProtectedMediaUploadSource(sourceMediaUri, toolContext.workspaceDir);
-              if (fingerprint && (source.sha256 !== fingerprint.sourceSha256 || source.size !== fingerprint.sourceByteSize)) throw new Error("invalid_source_fingerprint");
+              if (source.sha256 !== fingerprint.sourceSha256 || source.size !== fingerprint.sourceByteSize) throw new Error("invalid_source_fingerprint");
             },
             config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS,
           );
@@ -2588,8 +2681,8 @@ export async function beforeMicrosoftGraphToolCall(
   }
 
   if (severity === "critical") {
-    const action = normalizedWarningApprovalAction(event.toolName, params);
-    return { requireApproval: { title: `${event.toolName}: ${action}`, description: `Allow this ${action} operation via ${event.toolName}.`, severity, allowedDecisions: ["allow-once", "deny"] as Array<"allow-once" | "deny">, timeoutMs: 120_000 } };
+    const approval = mutationApprovalText(event.toolName, params);
+    return { requireApproval: { ...approval, severity, allowedDecisions: ["allow-once", "deny"] as Array<"allow-once" | "deny">, timeoutMs: 120_000 } };
   }
 
   try {
@@ -2611,10 +2704,11 @@ export async function beforeMicrosoftGraphToolCall(
   try { scope = warningApprovalScope(ctx.agentId, event.toolName, params); }
   catch (error) { return { block: true, blockReason: errorCode(error) }; }
   if (warningApprovalTrustStore.has(scope)) return;
+  const approval = mutationApprovalText(event.toolName, params);
   return {
     requireApproval: {
-      title: `${event.toolName}: ${scope.action}`,
-      description: `Allow this ${scope.action} operation. Allow-always trusts only this agent, tool, and action until plugin reload or process restart.`,
+      title: approval.title,
+      description: `${approval.description} Allow-always trusts only this agent, tool, and action until plugin reload or process restart.`,
       severity,
       allowedDecisions: ["allow-once", "allow-always", "deny"] as Array<"allow-once" | "allow-always" | "deny">,
       timeoutMs: 120_000,

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -101,6 +101,31 @@ describe.each([
     expect(readCredential).not.toHaveBeenCalled();
   });
 
+  it("fails closed when the approved pathname is replaced before execution", async () => {
+    const approvedBytes = Buffer.from(`approved-race-${toolName}`);
+    const replacementBytes = Buffer.alloc(approvedBytes.byteLength, 0x72);
+    const sourcePath = join(workspaceDir, "media", "inbound", "race.pdf");
+    await writeFile(sourcePath, approvedBytes);
+    const { hooks, tools, context } = runtime(true);
+    const params = {
+      rootLabel: "synthetic_documents",
+      relativePath: "SYNTHETIC_FOLDER/SYNTHETIC_RACE.pdf",
+      sourceMediaUri: "media://inbound/race.pdf",
+      sourceSha256: digest(approvedBytes),
+      sourceByteSize: approvedBytes.byteLength,
+      contentType: "application/pdf",
+    };
+
+    const approval = await hooks.before_tool_call({ toolName, params }, context);
+    expect(approval.requireApproval.description).toContain(digest(approvedBytes));
+    await rename(sourcePath, `${sourcePath}.approved`);
+    await writeFile(sourcePath, replacementBytes);
+
+    expect((await tools[toolName].execute("replaced", params)).details).toEqual({ ok: false, error: "invalid_source_fingerprint" });
+    expect(readCredential).not.toHaveBeenCalled();
+    expect(exchangeRefreshToken).not.toHaveBeenCalled();
+  });
+
   it("treats legacy chat fields as inert while preserving authorized execution", async () => {
     const bytes = Buffer.from(`approved-${toolName}`);
     await writeFile(join(workspaceDir, "media", "inbound", "approved.pdf"), bytes);
@@ -128,6 +153,8 @@ describe.each([
       rootLabel: "synthetic_documents",
       relativePath: "SYNTHETIC_FOLDER/SYNTHETIC_NATIVE.pdf",
       sourceMediaUri: "media://inbound/native.pdf",
+      sourceSha256: "a".repeat(64),
+      sourceByteSize: 1,
       chatConfirmed: true,
       chatConfirmationToken: `mgw1_${"A".repeat(43)}`,
     };

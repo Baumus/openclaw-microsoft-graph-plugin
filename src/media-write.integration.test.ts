@@ -24,6 +24,7 @@ let workspaceDir = "";
 const fixtureBytes = Buffer.from([0, 255, 1, 254]);
 const mp4Bytes = Buffer.from([0, 0, 0, 24, 102, 116, 121, 112, 109, 112, 52, 50]);
 const largeMp4Bytes = Buffer.alloc(1024 * 1024 + 17, 0x5a);
+const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 async function requestBodyBytes(body: unknown): Promise<Buffer> {
   if (body && typeof (body as any)[Symbol.asyncIterator] === "function") {
@@ -94,6 +95,8 @@ describe("protected media write inputs", () => {
       rootLabel: "synthetic_documents",
       relativePath: "unsafe.bin",
       sourceMediaUri: uri,
+      sourceSha256: digest(fixtureBytes),
+      sourceByteSize: fixtureBytes.byteLength,
     });
     expect(response.details).toEqual({ ok: false, error: "invalid_source_media_uri" });
     expect(readCredential).not.toHaveBeenCalled();
@@ -146,7 +149,7 @@ describe("protected media write inputs", () => {
       expect(await requestBodyBytes(init?.body)).toEqual(fixtureBytes);
       return Response.json({ id: "item-1", name: "fixture.bin", webUrl: "https://onedrive.live.com/example", size: fixtureBytes.byteLength, file: { mimeType: "application/octet-stream" } }, { status: 201 });
     });
-    const response = await registeredTools().onedrive_upload.execute("upload", { rootLabel: "synthetic_documents", relativePath: "fixture.bin", sourceMediaUri: "media://inbound/fixture.bin" });
+    const response = await registeredTools().onedrive_upload.execute("upload", { rootLabel: "synthetic_documents", relativePath: "fixture.bin", sourceMediaUri: "media://inbound/fixture.bin", sourceSha256: digest(fixtureBytes), sourceByteSize: fixtureBytes.byteLength });
     expect(response.details).toMatchObject({ ok: true, source_byte_size: fixtureBytes.byteLength, source_sha256: "5d8d910591d272938aef5f966e0816e374beaf7b5adf02cca5f8f770596c2ce3", graph_reported_size: fixtureBytes.byteLength, size_match: true, item: { id: "item-1", web_url: "https://onedrive.live.com/example" } });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
@@ -165,6 +168,8 @@ describe("protected media write inputs", () => {
       rootLabel: "synthetic_documents",
       relativePath: "clip.mp4",
       sourceMediaUri: "media://inbound/clip.mp4",
+      sourceSha256: digest(mp4Bytes),
+      sourceByteSize: mp4Bytes.byteLength,
       contentType: "video/mp4",
     });
     expect(response.details).toMatchObject({
@@ -212,6 +217,8 @@ describe("protected media write inputs", () => {
       rootLabel: "synthetic_documents",
       relativePath: "large.mp4",
       sourceMediaUri: "media://inbound/large.mp4",
+      sourceSha256: digest(largeMp4Bytes),
+      sourceByteSize: largeMp4Bytes.byteLength,
       contentType: "video/mp4",
     });
     expect(response.details).toMatchObject({
@@ -236,6 +243,8 @@ describe("protected media write inputs", () => {
       rootLabel: "synthetic_documents",
       relativePath: "clip.webm",
       sourceMediaUri: "media://inbound/clip.mp4",
+      sourceSha256: digest(mp4Bytes),
+      sourceByteSize: mp4Bytes.byteLength,
       contentType: "video/webm",
     });
     expect(response.details).toEqual({ ok: false, error: "invalid_write_input" });

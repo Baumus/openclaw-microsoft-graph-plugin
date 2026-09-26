@@ -139,8 +139,8 @@ describe("microsoft-graph plugin contract", () => {
     expect(uploadSchema.properties.sourceMediaUri).toMatchObject({ type: "string", maxLength: 4096, pattern: expect.stringContaining("media://inbound/") });
     expect(uploadSchema.properties.sourceSha256).toMatchObject({ type: "string", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" });
     expect(uploadSchema.properties.sourceByteSize).toMatchObject({ type: "integer", minimum: 0, maximum: 250 * 1024 * 1024 * 1024 });
-    expect(uploadSchema.required).toContain("sourceMediaUri");
-    expect(updateSchema.required).toContain("sourceMediaUri");
+    expect(uploadSchema.required).toEqual(expect.arrayContaining(["sourceMediaUri", "sourceSha256", "sourceByteSize"]));
+    expect(updateSchema.required).toEqual(expect.arrayContaining(["sourceMediaUri", "sourceSha256", "sourceByteSize"]));
     for (const toolName of ["outlook_calendar_write", "outlook_mail_write"]) {
       const schema = metadata.tools.find((tool) => tool.name === toolName)?.parameters as any;
       expect(schema.properties.attachmentMediaUri).toMatchObject({ type: "string", maxLength: 4096 });
@@ -157,7 +157,7 @@ describe("microsoft-graph plugin contract", () => {
     expect(configSchema.properties).not.toHaveProperty("maxWriteBytes");
   });
 
-  it("binds optional OneDrive fingerprints to the semantic write effect", () => {
+  it("requires OneDrive fingerprints in the semantic write effect", () => {
     const fingerprint = "a".repeat(64);
     const root = { label: "synthetic_documents", drive_id: "synthetic-drive", item_id: "synthetic-root" };
     expect(oneDriveWriteApprovalCriteria("onedrive_upload", {
@@ -174,11 +174,11 @@ describe("microsoft-graph plugin contract", () => {
       sourceSha256: fingerprint,
       sourceByteSize: 42,
     });
-    expect(oneDriveWriteApprovalCriteria("onedrive_upload", {
+    expect(() => oneDriveWriteApprovalCriteria("onedrive_upload", {
       rootLabel: "synthetic_documents",
       relativePath: "a.pdf",
       sourceMediaUri: "media://inbound/a.pdf",
-    }, root)).toBeUndefined();
+    }, root)).toThrow("invalid_source_fingerprint");
     expect(() => oneDriveWriteApprovalCriteria("onedrive_upload", {
       rootLabel: "synthetic_documents",
       relativePath: "a.pdf",
@@ -709,6 +709,63 @@ describe("microsoft-graph plugin contract", () => {
     expect(critical.requireApproval).not.toHaveProperty("onResolution");
   });
 
+  it("renders privacy-minimized action, target, and risk details in native approvals", async () => {
+    const policy = graphPolicyFixture();
+    const root = policy.services.onedrive.allowed_roots[0];
+    delete root.agents_instructions;
+    root.permissions = { read: true, write: true, delete: true };
+    root.agents.main.permissions = { read: true, write: true, delete: true };
+    const config = { enabled: true, warningApprovalsRequired: true, policy };
+    const context = { agentId: "main", sessionId: "approval-copy" };
+
+    const upload: any = await beforeMicrosoftGraphToolCall(config, {
+      toolName: "onedrive_upload",
+      params: { rootLabel: root.label, relativePath: `${"long-folder/".repeat(80)}file.txt`, sourceMediaUri: "media://inbound/file.txt", sourceSha256: "c".repeat(64), sourceByteSize: 17 },
+    }, context);
+    expect(upload.requireApproval.description).toContain(`OneDrive root "${root.label}", path "long-folder/`);
+    expect(upload.requireApproval.description).toContain(`content SHA-256 ${"c".repeat(64)}, 17 bytes`);
+    expect(upload.requireApproval.description.length).toBeLessThanOrEqual(512);
+
+    const calendar: any = await beforeMicrosoftGraphToolCall(config, {
+      toolName: "outlook_calendar_write",
+      params: { action: "update", calendarId: "calendar-1", eventId: "event-1", subject: "Updated" },
+    }, context);
+    expect(calendar.requireApproval.description).toContain('calendar "calendar-1", event "event-1"');
+
+    const multiwrite: any = await beforeMicrosoftGraphToolCall(config, {
+      toolName: "outlook_calendar_write",
+      params: { action: "multiwrite", operations: [
+        { operationId: "create-1", kind: "create", calendarId: `calendar-${"a".repeat(200)}`, subject: "One", startDateTime: "2099-01-15T08:00:00", endDateTime: "2099-01-15T09:00:00" },
+        { operationId: "update-1", kind: "update", calendarId: `calendar-${"b".repeat(200)}`, eventId: "event-1", subject: "Two" },
+        { operationId: "update-2", kind: "update", calendarId: `calendar-${"c".repeat(200)}`, eventId: "event-2", subject: "Three" },
+      ] },
+    }, context);
+    expect(multiwrite.requireApproval.description).toContain("Target: 3 calendar operations across 3 calendar(s)");
+    expect(multiwrite.requireApproval.description.length).toBeLessThanOrEqual(512);
+
+    const draft: any = await beforeMicrosoftGraphToolCall(config, {
+      toolName: "outlook_mail_write",
+      params: { action: "create_draft", subject: "Private", bodyText: "Private", to: ["one@example.invalid"], cc: ["two@example.invalid"] },
+    }, context);
+    expect(draft.requireApproval.description).toContain("recipient count 2");
+    expect(draft.requireApproval.description).not.toContain("one@example.invalid");
+    expect(draft.requireApproval.description).not.toContain("two@example.invalid");
+
+    const send: any = await beforeMicrosoftGraphToolCall(config, {
+      toolName: "outlook_mail_write",
+      params: { action: "send_draft", messageId: "private-message-id" },
+    }, context);
+    expect(send.requireApproval.description).toContain("recipients come from the draft; recipient count is unavailable in this call");
+    expect(send.requireApproval.description).not.toContain("private-message-id");
+
+    const todo: any = await beforeMicrosoftGraphToolCall(config, {
+      toolName: "microsoft_todo_write",
+      params: { action: "create_task", listId: "list-1", title: "PRIVATE TODO TITLE" },
+    }, context);
+    expect(todo.requireApproval.description).toContain('To Do list "list-1", task "new task"');
+    expect(todo.requireApproval.description).not.toContain("PRIVATE TODO TITLE");
+  });
+
   it("offers the required native decisions for every declared mutation action", async () => {
     const policy = graphPolicyFixture();
     const root = policy.services.onedrive.allowed_roots[0];
@@ -725,8 +782,8 @@ describe("microsoft-graph plugin contract", () => {
     const context = { agentId: "main", sessionId: "all-mutation-approvals" };
     const metadata = getToolPluginMetadata(entry)!;
     const oneDriveParams: Record<string, Record<string, unknown>> = {
-      onedrive_upload: { rootLabel: root.label, relativePath: "new.txt", sourceMediaUri: "media://inbound/new.txt" },
-      onedrive_update: { rootLabel: root.label, relativePath: "existing.txt", sourceMediaUri: "media://inbound/existing.txt" },
+      onedrive_upload: { rootLabel: root.label, relativePath: "new.txt", sourceMediaUri: "media://inbound/new.txt", sourceSha256: "a".repeat(64), sourceByteSize: 7 },
+      onedrive_update: { rootLabel: root.label, relativePath: "existing.txt", sourceMediaUri: "media://inbound/existing.txt", sourceSha256: "b".repeat(64), sourceByteSize: 8 },
       onedrive_metadata_update: { rootLabel: root.label, relativePath: "existing.txt", name: "renamed.txt" },
       onedrive_create_folder: { rootLabel: root.label, parentRelativePath: "", name: "folder" },
       onedrive_delete: { rootLabel: root.label, relativePath: "existing.txt" },
@@ -749,6 +806,8 @@ describe("microsoft-graph plugin contract", () => {
         expect(result.requireApproval, `${tool.name}:${action ?? "call"}`).toMatchObject(level === "critical"
           ? { severity: "critical", allowedDecisions: ["allow-once", "deny"] }
           : { severity: "warning", allowedDecisions: ["allow-once", "allow-always", "deny"] });
+        expect(result.requireApproval.description, `${tool.name}:${action ?? "call"}`).toMatch(/Action: .+\. Target: .+\. Risk: .+\./);
+        expect(result.requireApproval.description.length, `${tool.name}:${action ?? "call"}`).toBeLessThanOrEqual(512);
       }
     }
   });

@@ -81,7 +81,7 @@ describe("vault authorization ordering", () => {
     const { hooks } = registeredRuntime("main");
     const event = {
       toolName: "onedrive_upload",
-      params: { rootLabel: "synthetic_documents", relativePath: "new.txt", sourceMediaUri: "media://inbound/new.txt" },
+      params: { rootLabel: "synthetic_documents", relativePath: "new.txt", sourceMediaUri: "media://inbound/new.txt", sourceSha256: "a".repeat(64), sourceByteSize: 1 },
     };
     const context = { agentId: "main", sessionId: "denied-session", requester: { senderIsOwner: true, channel: "synthetic-channel" } };
     await expect(hooks.before_tool_call(event, context)).resolves.toEqual({ block: true, blockReason: "access_denied" });

@@ -208,6 +208,8 @@ For warning requests, `allow-always` trusts only the authenticated agent ID, exa
 
 The deprecated `chatConfirmed` and `chatConfirmationToken` tool fields remain accepted for compatibility but are ignored and can never authorize execution. OpenClaw freezes the approved call parameters while a native approval is pending. If no approval route is available, or approval is denied, cancelled, malformed, or times out, the host blocks the call.
 
+Native approval text identifies the mutation action, a minimized target, and the relevant risk without including message bodies, event bodies, subjects, recipient addresses, or To Do titles. OneDrive upload/update approvals include the allowlisted root, relative path, required SHA-256, and byte size; execution opens the protected artifact once and fails before credentials or Graph access if that exact content identity does not match. Calendar approvals include calendar/event identity, and multiwrite approvals include the operation count. Mail send approval identifies that recipients come from the stored draft and explicitly notes that the recipient count is unavailable from the send call itself.
+
 OneDrive mutation authorization and applicable managed-root instruction discovery occur before a warning approval request or approval-free warning continuation. Discovery requires its own read authority before credential or Graph access. Execution revalidates policy authorization and all media/write preconditions before selecting the key, reading the vault, exchanging OAuth, or calling Graph.
 
 ### 10. Status, recovery, and rollback

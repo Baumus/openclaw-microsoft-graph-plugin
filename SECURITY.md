@@ -22,8 +22,9 @@ Security fixes are expected on the latest released version only. Until a public 
 - There is no provider-side read/write credential isolation. Credential or plugin compromise has the union of granted Microsoft scopes; default-deny policy and write approvals constrain normal plugin behavior.
 - The policy is default-deny and evaluated before credential or provider access.
 - Credential migration, status, quarantine recovery, and restore are local operator CLI commands, not model-facing tools or chat commands. Migration requires one explicit all-scope source; restore targets one explicit destination and reports unverifiable outcomes as unknown.
-- Warning-level changes require an exact, session-bound originating-chat confirmation receipt.
-- Destructive, send, and respond operations require OpenClaw call-bound approval.
+- Warning-level mutations require OpenClaw-native call approval by default. An operator may explicitly disable warning approvals, while policy authorization and all preconditions remain mandatory. Process-local `allow-always` trust is scoped to the authenticated agent, exact tool, and normalized action.
+- Destructive, send, and respond operations always require OpenClaw call-bound approval and offer only allow-once or deny.
+- OneDrive content writes require an exact lowercase SHA-256 and byte-size claim. Execution opens one protected artifact and verifies its identity and content before credential access, OAuth exchange, or Graph calls.
 - Provider continuation and upload URLs are origin/path constrained and are not returned to the model.
 - Private media is represented by `media://inbound/...` references; host-local paths and inline file bytes are rejected.
 - No security certification, compliance attestation, or enterprise-readiness claim is made.
