@@ -37,15 +37,25 @@ async function requestBodyBytes(body: unknown): Promise<Buffer> {
 
 function registeredTools(agentId = "main", runtimeWorkspaceDir: string | null = workspaceDir) {
   const factories: Array<(context: any) => any> = [];
+  const hooks: Record<string, (...args: any[]) => Promise<any> | any> = {};
+  const policy = graphPolicyFixture();
+  delete policy.services.onedrive.allowed_roots[0].agents_instructions;
+  policy.services.onedrive.allowed_roots[0].agents.main.permissions.read = true;
   entry.register({
-    pluginConfig: { enabled: true, policy: graphPolicyFixture() },
+    pluginConfig: { enabled: true, policy },
     registerTool: (factory: any) => factories.push(factory),
-    on: vi.fn(),
+    on: (name: string, handler: any) => { hooks[name] = handler; },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   } as any);
+  const context = { agentId, sessionId: `media-write-${agentId}`, workspaceDir: runtimeWorkspaceDir ?? undefined };
   return Object.fromEntries(factories.map((factory) => {
-    const tool = factory({ agentId, workspaceDir: runtimeWorkspaceDir ?? undefined });
-    return [tool.name, tool];
+    const tool = factory(context);
+    return [tool.name, { ...tool, async execute(toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal) {
+      const gate = await hooks.before_tool_call({ toolName: tool.name, toolCallId, params }, context);
+      if (gate?.block) return { details: { ok: false, error: gate.blockReason } };
+      gate?.requireApproval?.onResolution("allow-once");
+      return tool.execute(toolCallId, gate?.params ?? params, signal);
+    } }];
   }));
 }
 

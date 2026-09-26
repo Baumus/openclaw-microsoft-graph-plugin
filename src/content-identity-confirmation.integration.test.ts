@@ -175,7 +175,7 @@ describe.each([
     };
 
     expect(await hooks.before_tool_call({ toolName, params }, context)).toEqual({ block: true, blockReason: "invalid_source_fingerprint" });
-    expect((await tools[toolName].execute("wrong", params)).details).toEqual({ ok: false, error: "invalid_source_fingerprint" });
+    expect((await tools[toolName].execute("wrong", params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
     expect(readCredential).not.toHaveBeenCalled();
     expect(exchangeRefreshToken).not.toHaveBeenCalled();
 
@@ -199,7 +199,7 @@ describe.each([
       contentType: "application/pdf",
     };
 
-    const approval = await hooks.before_tool_call({ toolName, params }, context);
+    const approval = await hooks.before_tool_call({ toolName, toolCallId: "replaced", params }, context);
     expect(approval.requireApproval.description).toContain(digest(approvedBytes));
     await rename(sourcePath, `${sourcePath}.approved`);
     await writeFile(sourcePath, replacementBytes);
@@ -243,7 +243,7 @@ describe.each([
       chatConfirmed: true,
       chatConfirmationToken: `mgw1_${"A".repeat(43)}`,
     };
-    const result = await hooks.before_tool_call({ toolName, params }, context);
+    const result = await hooks.before_tool_call({ toolName, toolCallId: `legacy-native-approval-${toolName}`, params }, context);
     expect(result.requireApproval).toMatchObject({ severity: "warning", allowedDecisions: ["allow-once", "allow-always", "deny"] });
     expect(readCredential).not.toHaveBeenCalled();
   });

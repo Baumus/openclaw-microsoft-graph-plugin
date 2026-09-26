@@ -88,6 +88,7 @@ describe("vault authorization ordering", () => {
     const { hooks } = registeredRuntime("main", workspaceDir);
     const event = {
       toolName: "onedrive_upload",
+      toolCallId: "instruction-read-authority",
       params: { rootLabel: "synthetic_documents", relativePath: "new.txt", sourceMediaUri: "media://inbound/new.txt", sourceSha256: createHash("sha256").update(bytes).digest("hex"), sourceByteSize: bytes.byteLength },
     };
     const context = { agentId: "main", sessionId: "denied-session", requester: { senderIsOwner: true, channel: "synthetic-channel" } };
