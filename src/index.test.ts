@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { getToolPluginMetadata } from "openclaw/plugin-sdk/tool-plugin";
-import entry, { approvalInventory, assertOwnedTodoList, assertWriteActionFields, attachmentWritePlan, boundedCollectionPage, calendarApprovalCriteria, calendarCollectionPath, calendarEventPath, calendarEventPayload, calendarPageIsTruncated, calendarViewPath, calendarViewQuery, calendarWindowDateTime, classifyApproval, collectFilteredCollection, dateTimeTimeZone, deadlineSignal, enforceOneDriveInstructionPreflight, eventGetFields, eventMatchesSearch, eventReadFields, fileAttachmentPayload, listMailFolders, mailFolderCollectionPath, mailListQuery, mailMessageActionPath, mailMessageCollectionPath, mailMessagePayload, mailReplyForwardPlan, nextGraphPath, normalizedWarningApprovalAction, oneDriveAgentsInstructions, oneDriveInstructionDirectories, oneDriveWriteApprovalCriteria, readProtectedMediaSource, readOperationTimeout, schedulePage, taskPayload, todoTaskChildPath, todoTaskMatches, todoTaskPath, validateAttachmentContent, validateProtectedMediaUri, WarningApprovalTrustStore, WRITE_ACTION_FIELDS } from "./index.js";
+import entry, { approvalInventory, assertOwnedTodoList, assertWriteActionFields, attachmentWritePlan, boundedCollectionPage, calendarApprovalCriteria, calendarCollectionPath, calendarEventPath, calendarEventPayload, calendarPageIsTruncated, calendarViewPath, calendarViewQuery, calendarWindowDateTime, classifyApproval, collectFilteredCollection, dateTimeTimeZone, deadlineSignal, enforceOneDriveInstructionPreflight, eventGetFields, eventMatchesSearch, eventReadFields, fileAttachmentPayload, listMailFolders, mailFolderCollectionPath, mailListQuery, mailMessageActionPath, mailMessageCollectionPath, mailMessagePayload, mailReplyForwardPlan, NativeApprovalSnapshotStore, nextGraphPath, normalizedWarningApprovalAction, oneDriveAgentsInstructions, oneDriveInstructionDirectories, oneDriveWriteApprovalCriteria, readProtectedMediaSource, readOperationTimeout, schedulePage, taskPayload, todoTaskChildPath, todoTaskMatches, todoTaskPath, validateAttachmentContent, validateProtectedMediaUri, WarningApprovalTrustStore, WRITE_ACTION_FIELDS } from "./index.js";
 import { beforeMicrosoftGraphToolCall, enforceOneDriveInstructionExecution } from "./index.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 import { ONEDRIVE_AGENTS_MAX_DEPTH, OneDriveAgentsSessionCache, oneDriveAgentsSessionCache } from "./onedrive-agents-instructions.js";
@@ -674,7 +674,7 @@ describe("microsoft-graph plugin contract", () => {
       return hooks;
     };
     const context = { agentId: "main", sessionId: "native-approval" };
-    const warningEvent = { toolName: "outlook_mail_write", params: { action: "mark_read", messageId: "message-1", isRead: true } };
+    const warningEvent = { toolName: "outlook_mail_write", toolCallId: "warning-call", params: { action: "mark_read", messageId: "message-1", isRead: true } };
 
     for (const pluginConfig of [{}, { warningApprovalsRequired: true }]) {
       const request = await register(pluginConfig).before_tool_call(warningEvent, context);
@@ -686,27 +686,36 @@ describe("microsoft-graph plugin contract", () => {
     }
 
     const disabled = await register({ warningApprovalsRequired: false }).before_tool_call(warningEvent, context);
-    expect(disabled).toBeUndefined();
+    expect(disabled).toEqual({ params: warningEvent.params });
 
     const hooks = register({ warningApprovalsRequired: true });
     const first = await hooks.before_tool_call(warningEvent, context);
     first.requireApproval.onResolution("allow-once");
     expect((await hooks.before_tool_call(warningEvent, context)).requireApproval).toBeTruthy();
     first.requireApproval.onResolution("allow-always");
-    expect(await hooks.before_tool_call(warningEvent, context)).toBeUndefined();
-    expect((await hooks.before_tool_call(warningEvent, { ...context, agentId: "other" })).requireApproval).toBeTruthy();
-    expect((await hooks.before_tool_call({ ...warningEvent, params: { action: "move", messageId: "message-1", destination: "archive" } }, context)).requireApproval).toBeTruthy();
-    expect((await hooks.before_tool_call({ toolName: "microsoft_todo_write", params: { action: "create_list", title: "List" } }, context)).requireApproval).toBeTruthy();
+    expect(await hooks.before_tool_call(warningEvent, context)).toEqual({ params: warningEvent.params });
+    expect((await hooks.before_tool_call({ ...warningEvent, toolCallId: "other-agent-call" }, { ...context, agentId: "other" })).requireApproval).toBeTruthy();
+    expect((await hooks.before_tool_call({ ...warningEvent, toolCallId: "move-call", params: { action: "move", messageId: "message-1", destination: "archive" } }, context)).requireApproval).toBeTruthy();
+    expect((await hooks.before_tool_call({ toolName: "microsoft_todo_write", toolCallId: "todo-call", params: { action: "create_list", title: "List" } }, context)).requireApproval).toBeTruthy();
 
     const legacy = await register({ warningApprovalsRequired: true }).before_tool_call({
       ...warningEvent,
+      toolCallId: "legacy-call",
       params: { ...warningEvent.params, chatConfirmed: true, chatConfirmationToken: `mgw1_${"A".repeat(43)}` },
     }, context);
     expect(legacy.requireApproval).toMatchObject({ severity: "warning", allowedDecisions: ["allow-once", "allow-always", "deny"] });
 
     const critical = await hooks.before_tool_call({ toolName: "outlook_mail_write", params: { action: "send_draft", messageId: "message-1", chatConfirmed: true, chatConfirmationToken: `mgw1_${"A".repeat(43)}` } }, context);
     expect(critical.requireApproval).toMatchObject({ severity: "critical", allowedDecisions: ["allow-once", "deny"] });
-    expect(critical.requireApproval).not.toHaveProperty("onResolution");
+    expect(critical.requireApproval.onResolution).toEqual(expect.any(Function));
+  });
+
+  it("consumes exact execution snapshots once and fails closed without evicting live bindings", () => {
+    const snapshots = new NativeApprovalSnapshotStore(1);
+    snapshots.record("call-1", { agentId: "main", sessionId: "session-1", toolName: "outlook_mail_write", params: JSON.stringify({ action: "mark_read" }) });
+    expect(() => snapshots.record("call-2", { agentId: "main", sessionId: "session-1", toolName: "outlook_mail_write", params: JSON.stringify({ action: "send_draft" }) })).toThrow("approval_context_capacity_exceeded");
+    expect(snapshots.consume("call-1", "main", "session-1", "outlook_mail_write", { action: "send_draft" })).toBe(false);
+    expect(snapshots.consume("call-1", "main", "session-1", "outlook_mail_write", { action: "mark_read" })).toBeUndefined();
   });
 
   it("renders privacy-minimized action, target, and risk details in native approvals", async () => {
@@ -847,8 +856,9 @@ describe("microsoft-graph plugin contract", () => {
     credentialReader.mockClear(); tokenExchange.mockClear(); candidateReader.mockClear();
     await expect(beforeMicrosoftGraphToolCall({ ...config, warningApprovalsRequired: false }, {
       toolName: "onedrive_metadata_update",
+      toolCallId: "warning-disabled-call",
       params: { ...warningParams, chatConfirmed: true, chatConfirmationToken: `mgw1_${"A".repeat(43)}` },
-    }, context, { ...dependencies, cache: new OneDriveAgentsSessionCache() })).resolves.toBeUndefined();
+    }, context, { ...dependencies, cache: new OneDriveAgentsSessionCache() })).resolves.toMatchObject({ params: warningParams });
     expect(credentialReader).toHaveBeenCalledTimes(1);
     expect(tokenExchange).toHaveBeenCalledTimes(1);
     expect(candidateReader).toHaveBeenCalled();
@@ -898,9 +908,10 @@ describe("microsoft-graph plugin contract", () => {
     challenge.requireApproval.onResolution("allow-always");
     const equivalentAlias = await hooks.before_tool_call({
       toolName: "outlook_calendar_write",
+      toolCallId: "timezone-alias-call",
       params: { ...intended, timeZone: "W. Europe Standard Time" },
     }, approvalContext);
-    expect(equivalentAlias).toBeUndefined();
+    expect(equivalentAlias).toMatchObject({ params: { ...intended, timeZone: "W. Europe Standard Time" } });
   });
 
   it("fails closed before secret access without runtime identity", async () => {

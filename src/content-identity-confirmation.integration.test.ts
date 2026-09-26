@@ -223,7 +223,7 @@ describe.each([
       chatConfirmed: false,
       chatConfirmationToken: `mgw1_${"A".repeat(43)}`,
     };
-    expect(await hooks.before_tool_call({ toolName, params }, context)).toBeUndefined();
+    expect(await hooks.before_tool_call({ toolName, toolCallId: "write", params }, context)).toEqual({ params });
     const fetchSpy = graphSuccess(bytes, update);
     expect((await tools[toolName].execute("write", params)).details).toMatchObject({ ok: true, source_sha256: digest(bytes), source_byte_size: bytes.byteLength });
     expect(readCredential).toHaveBeenCalledTimes(1);

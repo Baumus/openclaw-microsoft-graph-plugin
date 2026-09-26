@@ -11,7 +11,7 @@ The plugin does not own user intent, business policy, data-retention decisions, 
 1. OpenClaw selects an optional plugin tool.
 2. The `before_tool_call` hook classifies the action as read-only, warning-level, or critical.
 3. The hook applies available fail-closed preflight checks. For OneDrive upload/update, it securely opens the protected artifact and verifies opened-file identity, exact lowercase SHA-256, and byte size before optional `AGENTS.md` discovery. Other OneDrive warning mutations retain exact root authorization and applicable discovery; discovery is a separate read and requires read authority.
-4. Warning-level mutations require OpenClaw-native approval unless `warningApprovalsRequired` is explicitly `false`. Critical actions always require native approval.
+4. Warning-level mutations require OpenClaw-native approval unless `warningApprovalsRequired` is explicitly `false`. Critical actions always require native approval. The hook returns the exact inspected parameters with an approval and binds host tool-call identity to an execution-time snapshot; composed parameter drift fails closed before the tool implementation proceeds.
 5. The runtime validates action-specific parameters and trusted `toolContext` identity.
 6. Execution validates the default-deny policy supplied in resolved plugin config and authorizes the exact agent, service, operation, and resource.
 7. After authorization, the plugin validates the one resolved vault key, acquires the shared credential lock, and securely reads and decrypts the one vault record.
