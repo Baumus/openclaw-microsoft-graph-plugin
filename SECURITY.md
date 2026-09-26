@@ -4,7 +4,7 @@
 
 Do not include credentials, refresh tokens, access tokens, private policy files, mailbox content, file content, or personal data in a public issue.
 
-Report vulnerabilities privately through [GitHub Security Advisories](https://github.com/Baumus/openclaw-microsoft-graph/security/advisories/new). Do not open a public issue for a suspected vulnerability.
+Report vulnerabilities privately through [GitHub Security Advisories](https://github.com/Baumus/openclaw-microsoft-graph-plugin/security/advisories/new). Do not open a public issue for a suspected vulnerability.
 
 If GitHub does not show the private reporting form, contact the repository owner through GitHub first and ask for a private reporting route without disclosing vulnerability details or sensitive data publicly.
 

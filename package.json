@@ -46,13 +46,13 @@
   ],
   "author": "Baumus",
   "license": "Apache-2.0",
-  "homepage": "https://github.com/Baumus/openclaw-microsoft-graph#readme",
+  "homepage": "https://github.com/Baumus/openclaw-microsoft-graph-plugin#readme",
   "bugs": {
-    "url": "https://github.com/Baumus/openclaw-microsoft-graph/issues"
+    "url": "https://github.com/Baumus/openclaw-microsoft-graph-plugin/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Baumus/openclaw-microsoft-graph.git"
+    "url": "git+https://github.com/Baumus/openclaw-microsoft-graph-plugin.git"
   },
   "publishConfig": {
     "access": "public"
