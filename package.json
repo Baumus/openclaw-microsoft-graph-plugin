@@ -64,7 +64,7 @@
     "openclaw": ">=2026.9.5"
   },
   "dependencies": {
-    "@openclaw/fs-safe": "0.13.1",
+    "@openclaw/fs-safe": "0.18.2",
     "typebox": "^1.1.38"
   },
   "devDependencies": {
