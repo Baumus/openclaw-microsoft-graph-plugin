@@ -16,15 +16,27 @@ import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 
 function registeredTools() {
   const factories: Array<(context: any) => any> = [];
+  const hooks: Record<string, (...args: any[]) => Promise<any> | any> = {};
+  const policy = graphPolicyFixture();
+  const root = policy.services.onedrive.allowed_roots[0];
+  delete root.agents_instructions;
+  root.permissions.delete = true;
+  root.agents.main.permissions = { read: true, write: true, delete: true };
   entry.register({
-    pluginConfig: { enabled: true, policy: graphPolicyFixture() },
+    pluginConfig: { enabled: true, policy },
     registerTool: (factory: any) => factories.push(factory),
-    on: vi.fn(),
+    on: (name: string, handler: any) => { hooks[name] = handler; },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   } as any);
+  const context = { agentId: "main", sessionId: "mutation-validation" };
   return Object.fromEntries(factories.map((factory) => {
-    const tool = factory({ agentId: "main" });
-    return [tool.name, tool];
+    const tool = factory(context);
+    return [tool.name, { ...tool, async execute(toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal) {
+      const gate = await hooks.before_tool_call({ toolName: tool.name, toolCallId, params }, context);
+      if (gate?.block) return { details: { ok: false, error: gate.blockReason } };
+      gate?.requireApproval?.onResolution("allow-once");
+      return tool.execute(toolCallId, gate?.params ?? params, signal);
+    } }];
   }));
 }
 

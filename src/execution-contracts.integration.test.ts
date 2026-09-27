@@ -20,22 +20,29 @@ import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 
 function registeredTools() {
   const factories: Array<(context: any) => any> = [];
+  const hooks: Record<string, (...args: any[]) => Promise<any> | any> = {};
   entry.register({
     pluginConfig: {
       enabled: true,
       policy: graphPolicyFixture(),
     },
     registerTool: (factory: any) => factories.push(factory),
-    on: vi.fn(),
+    on: (name: string, handler: any) => { hooks[name] = handler; },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   } as any);
+  const context = { agentId: "main", sessionId: "execution-contracts" };
   return Object.fromEntries(factories.map((factory) => {
-    const tool = factory({ agentId: "main" });
-    return [tool.name, tool];
+    const tool = factory(context);
+    return [tool.name, { ...tool, async execute(toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal) {
+      const gate = await hooks.before_tool_call({ toolName: tool.name, toolCallId, params }, context);
+      if (gate?.block) return { details: { ok: false, error: gate.blockReason } };
+      gate?.requireApproval?.onResolution("allow-once");
+      return tool.execute(toolCallId, gate?.params ?? params, signal);
+    } }];
   }));
 }
 
-describe("release-blocker execution contracts", () => {
+describe("execution contracts", () => {
   it("encodes opaque To Do resource IDs exactly once across mutation paths", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       if (init?.method === "PATCH") return Response.json({ id: "BBTask=" }, { status: 200 });
@@ -88,7 +95,7 @@ describe("release-blocker execution contracts", () => {
   it.each([
     ["reply_draft", "createReply", { action: "reply_draft", messageId: "original", bodyText: "Reply" }],
     ["reply_all_draft", "createReplyAll", { action: "reply_all_draft", messageId: "original", bodyHtml: "<p>Reply all</p>" }],
-    ["forward_draft", "createForward", { action: "forward_draft", messageId: "original", bodyText: "Forward", to: ["person@example.com"] }],
+    ["forward_draft", "createForward", { action: "forward_draft", messageId: "original", bodyText: "Forward", to: ["person@example.invalid"] }],
   ])("%s creates a complete draft in one Graph mutation", async (action, endpoint, params) => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       expect(init?.method).toBe("POST");

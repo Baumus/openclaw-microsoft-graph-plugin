@@ -1,6 +1,6 @@
 {
   "name": "@baumus/openclaw-microsoft-graph",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Bounded OpenClaw tools for Microsoft Graph OneDrive, Outlook Calendar, Outlook Mail, and Microsoft To Do.",
   "type": "module",
   "main": "./dist/index.js",
@@ -46,13 +46,13 @@
   ],
   "author": "Baumus",
   "license": "Apache-2.0",
-  "homepage": "https://github.com/Baumus/openclaw-microsoft-graph#readme",
+  "homepage": "https://github.com/Baumus/openclaw-microsoft-graph-plugin#readme",
   "bugs": {
-    "url": "https://github.com/Baumus/openclaw-microsoft-graph/issues"
+    "url": "https://github.com/Baumus/openclaw-microsoft-graph-plugin/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Baumus/openclaw-microsoft-graph.git"
+    "url": "git+https://github.com/Baumus/openclaw-microsoft-graph-plugin.git"
   },
   "publishConfig": {
     "access": "public"
@@ -91,7 +91,7 @@
     },
     "install": {
       "clawhubSpec": "clawhub:@baumus/openclaw-microsoft-graph",
-      "npmSpec": "@baumus/openclaw-microsoft-graph@3.0.0",
+      "npmSpec": "@baumus/openclaw-microsoft-graph@3.1.0",
       "defaultChoice": "npm",
       "minHostVersion": ">=2026.9.5"
     }

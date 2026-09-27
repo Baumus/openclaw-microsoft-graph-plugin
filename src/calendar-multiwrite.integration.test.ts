@@ -16,13 +16,21 @@ import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 
 function calendarTool(config: Record<string, unknown> = {}) {
   const factories: Array<(context: any) => any> = [];
+  const hooks: Record<string, (...args: any[]) => Promise<any> | any> = {};
   entry.register({
     pluginConfig: { enabled: true, policy: graphPolicyFixture(), ...config },
     registerTool: (factory: any) => factories.push(factory),
-    on: vi.fn(),
+    on: (name: string, handler: any) => { hooks[name] = handler; },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   } as any);
-  return factories.map((factory) => factory({ agentId: "main" })).find((tool) => tool.name === "outlook_calendar_write");
+  const context = { agentId: "main", sessionId: "calendar-multiwrite" };
+  const tool = factories.map((factory) => factory(context)).find((candidate) => candidate.name === "outlook_calendar_write");
+  return { ...tool, async execute(toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal) {
+    const gate = await hooks.before_tool_call({ toolName: tool.name, toolCallId, params }, context);
+    if (gate?.block) return { details: { ok: false, error: gate.blockReason } };
+    gate?.requireApproval?.onResolution("allow-once");
+    return tool.execute(toolCallId, gate?.params ?? params, signal);
+  } };
 }
 
 function createOperation(index: number) {
@@ -33,7 +41,7 @@ function createOperation(index: number) {
     subject: `Synthetic ${index}`,
     startDateTime: `2026-10-${String((index % 20) + 1).padStart(2, "0")}T09:00:00`,
     endDateTime: `2026-10-${String((index % 20) + 1).padStart(2, "0")}T10:00:00`,
-    timeZone: "Europe/Berlin",
+    timeZone: "UTC",
   };
 }
 
@@ -230,7 +238,7 @@ describe("calendar multiwrite", () => {
     });
     try {
       const operations = [
-        { ...createOperation(4), attendees: ["first@example.com", "second@example.com"] },
+        { ...createOperation(4), attendees: ["first@example.invalid", "second@example.invalid"] },
         { operationId: "update-html-mismatch", kind: "update", eventId: "event-existing", bodyHtml: "<p>This is <em>important</em></p>" },
       ];
       const response = (await calendarTool().execute("batch-html-mismatch", { action: "multiwrite", operations })).details;

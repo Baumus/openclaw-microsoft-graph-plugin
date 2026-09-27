@@ -155,9 +155,9 @@ describe("bounded Graph read retries", () => {
 describe("pinned OneDrive addressing", () => {
   it("lists descendants from the pinned item id, never the mutable root path", async () => {
     const fetchFn = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({ value: [] }), { status: 200, headers: { "content-type": "application/json" } }));
-    await driveList(root, "Reports", "token", 5, undefined, fetchFn as typeof fetch);
+    await driveList(root, "SYNTHETIC_FOLDER", "token", 5, undefined, fetchFn as typeof fetch);
     const url = String(fetchFn.mock.calls[0][0]);
-    expect(url).toContain("/drives/drive-id/items/stable-root-id:/Reports:/children");
+    expect(url).toContain("/drives/drive-id/items/stable-root-id:/SYNTHETIC_FOLDER:/children");
     expect(url).not.toContain("Mutable");
   });
 
@@ -207,7 +207,7 @@ describe("pinned OneDrive addressing", () => {
     const content = Buffer.from([0, 255, 1, 254, 2, 253]);
     let request = 0;
     const fetchFn = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ++request === 1
-      ? new Response(JSON.stringify({ id: "xlsx", name: "invoice.xlsx", size: content.byteLength, file: { mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } }), { status: 200 })
+      ? new Response(JSON.stringify({ id: "xlsx", name: "SYNTHETIC_RECORD.xlsx", size: content.byteLength, file: { mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } }), { status: 200 })
       : new Response(new ReadableStream({
         start(controller) {
           controller.enqueue(content.subarray(0, 2));
@@ -215,7 +215,7 @@ describe("pinned OneDrive addressing", () => {
           controller.close();
         },
       }), { status: 200 }));
-    const value = await driveRead(root, "invoice.xlsx", "token", "digest", 250 * 1024 * 1024 * 1024, undefined, fetchFn as typeof fetch);
+    const value = await driveRead(root, "SYNTHETIC_RECORD.xlsx", "token", "digest", 250 * 1024 * 1024 * 1024, undefined, fetchFn as typeof fetch);
     expect(value).toMatchObject({
       ok: true,
       operation: "read",
@@ -230,34 +230,34 @@ describe("pinned OneDrive addressing", () => {
   it("stops a digest stream that exceeds the configured provider read ceiling", async () => {
     let request = 0;
     const fetchFn = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ++request === 1
-      ? new Response(JSON.stringify({ id: "xlsx", name: "invoice.xlsx", size: 2, file: { mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } }), { status: 200 })
+      ? new Response(JSON.stringify({ id: "xlsx", name: "SYNTHETIC_RECORD.xlsx", size: 2, file: { mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } }), { status: 200 })
       : new Response(Buffer.from([1, 2, 3, 4]), { status: 200 }));
-    await expect(driveRead(root, "invoice.xlsx", "token", "digest", 3, undefined, fetchFn as typeof fetch)).rejects.toThrow("provider_response_too_large");
+    await expect(driveRead(root, "SYNTHETIC_RECORD.xlsx", "token", "digest", 3, undefined, fetchFn as typeof fetch)).rejects.toThrow("provider_response_too_large");
   });
 
   it("returns and validates honest list continuation metadata", async () => {
-    const next = "https://graph.microsoft.com/v1.0/drives/drive-id/items/stable-root-id:/Reports:/children?$skiptoken=next";
+    const next = "https://graph.microsoft.com/v1.0/drives/drive-id/items/stable-root-id:/SYNTHETIC_FOLDER:/children?$skiptoken=next";
     const fetchFn = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({ value: [{ id: "one", name: "one.txt", file: { mimeType: "text/plain" } }], "@odata.nextLink": next }), { status: 200 }));
-    const page = await driveList(root, "Reports", "token", 1, undefined, fetchFn as typeof fetch);
-    expect(page).toMatchObject({ items: [expect.objectContaining({ id: "one" })], truncated: true, providerNextLink: "/drives/drive-id/items/stable-root-id:/Reports:/children?$skiptoken=next" });
-    await driveListContinuation(root, "Reports", "token", 1, page.providerNextLink!, undefined, fetchFn as typeof fetch);
+    const page = await driveList(root, "SYNTHETIC_FOLDER", "token", 1, undefined, fetchFn as typeof fetch);
+    expect(page).toMatchObject({ items: [expect.objectContaining({ id: "one" })], truncated: true, providerNextLink: "/drives/drive-id/items/stable-root-id:/SYNTHETIC_FOLDER:/children?$skiptoken=next" });
+    await driveListContinuation(root, "SYNTHETIC_FOLDER", "token", 1, page.providerNextLink!, undefined, fetchFn as typeof fetch);
     expect(String(fetchFn.mock.calls[1][0])).toContain("?$skiptoken=next");
-    await expect(driveListContinuation(root, "Reports", "token", 1, "https://evil.invalid/v1.0/drives/drive-id/items/stable-root-id:/Reports:/children?$skiptoken=x", undefined, fetchFn as typeof fetch)).rejects.toThrow("invalid_continuation");
+    await expect(driveListContinuation(root, "SYNTHETIC_FOLDER", "token", 1, "https://evil.invalid/v1.0/drives/drive-id/items/stable-root-id:/SYNTHETIC_FOLDER:/children?$skiptoken=x", undefined, fetchFn as typeof fetch)).rejects.toThrow("invalid_continuation");
   });
 
   it("binds list and search continuations to the exact root, endpoint, and query pathname", async () => {
-    const listPath = "/drives/drive-id/items/stable-root-id:/Reports:/children";
+    const listPath = "/drives/drive-id/items/stable-root-id:/SYNTHETIC_FOLDER:/children";
     expect(canonicalGraphContinuation(`${listPath}?$skiptoken=x`, listPath)).toBe(`${listPath}?$skiptoken=x`);
     expect(canonicalGraphContinuation(`https://graph.microsoft.com/v1.0${listPath}?$skiptoken=x`, `/v1.0${listPath}`)).toBe(`/v1.0${listPath}?$skiptoken=x`);
     const rejected = [
       `${listPath}Extra?$skiptoken=x`,
-      "/drives/other/items/stable-root-id:/Reports:/children?$skiptoken=x",
-      "/drives/drive-id/items/other-root:/Reports:/children?$skiptoken=x",
+      "/drives/other/items/stable-root-id:/SYNTHETIC_FOLDER:/children?$skiptoken=x",
+      "/drives/drive-id/items/other-root:/SYNTHETIC_FOLDER:/children?$skiptoken=x",
       "/drives/drive-id/items/stable-root-id:/Other:/children?$skiptoken=x",
-      "/drives/drive-id/items/stable-root-id:/Reports:/search?$skiptoken=x",
-      `/drives/drive-id/items/stable-root-id:/Reports:/children/../children?$skiptoken=x`,
-      `/drives/drive-id/items/stable-root-id:/Reports:/children/%2e%2e?$skiptoken=x`,
-      `/drives/drive-id/items/stable-root-id:/Reports:/children/%252e%252e?$skiptoken=x`,
+      "/drives/drive-id/items/stable-root-id:/SYNTHETIC_FOLDER:/search?$skiptoken=x",
+      `/drives/drive-id/items/stable-root-id:/SYNTHETIC_FOLDER:/children/../children?$skiptoken=x`,
+      `/drives/drive-id/items/stable-root-id:/SYNTHETIC_FOLDER:/children/%2e%2e?$skiptoken=x`,
+      `/drives/drive-id/items/stable-root-id:/SYNTHETIC_FOLDER:/children/%252e%252e?$skiptoken=x`,
       `https://user@graph.microsoft.com/v1.0${listPath}?$skiptoken=x`,
       `https://graph.microsoft.com:444/v1.0${listPath}?$skiptoken=x`,
       `http://graph.microsoft.com/v1.0${listPath}?$skiptoken=x`,
@@ -315,7 +315,7 @@ describe("pinned OneDrive addressing", () => {
   });
 
   it("recognizes filename-like queries without claiming field or path filtering", () => {
-    for (const value of ["README.md", "METADATA.md", "AGENTS.md", "Board Pack #1.pdf", "résumé.final.PDF"]) expect(exactFilenameQuery(value)).toBe(value);
+    for (const value of ["README.md", "METADATA.md", "AGENTS.md", "SYNTHETIC_ROOT_DOCUMENT.pdf", "résumé.final.PDF"]) expect(exactFilenameQuery(value)).toBe(value);
     for (const value of ["README", "folder/name.md", "*.pdf", ".env", "trailing."]) expect(exactFilenameQuery(value)).toBeNull();
   });
 
@@ -330,7 +330,7 @@ describe("pinned OneDrive addressing", () => {
   it.each([
     ["filename_stem", "README", "README.md"],
     ["filename_exact", ".env", ".ENV"],
-    ["filename_contains", "kreisvorstand_einladung", "2026_kreisvorstand_Einladung_final.pdf"],
+    ["filename_contains", "synthetic_record_token", "SYNTHETIC_RECORD_TOKEN_final.pdf"],
   ] as const)("supports deterministic %s matching for %s", async (mode, query, filename) => {
     const fetchFn = vi.fn(async (input: string | URL | Request) => {
       const url = new URL(String(input));
@@ -378,7 +378,7 @@ describe("pinned OneDrive addressing", () => {
       if (url.pathname.includes("/search(")) throw new Error("provider search must not be called");
       return new Response(JSON.stringify({ value: [
         { id: "readme", name: "README.md", file: { mimeType: "text/markdown" }, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
-        { id: "archive", name: "Archive", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
+        { id: "synthetic-folder", name: "SYNTHETIC_FOLDER", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
       ] }), { status: 200 });
     });
 
@@ -391,7 +391,7 @@ describe("pinned OneDrive addressing", () => {
 
   it("uses the scan budget rather than the return limit for an exact root page", async () => {
     const rootChildren = [
-      { id: "inbox", name: "00_Inbox", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
+      { id: "synthetic-folder-a", name: "SYNTHETIC_FOLDER_A", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
       ...Array.from({ length: 12 }, (_, index) => ({
         id: `root-${index}`,
         name: `root-${index}.txt`,
@@ -427,7 +427,7 @@ describe("pinned OneDrive addressing", () => {
     const rootPrefix = "/v1.0/drives/drive-id/items/stable-root-id/children";
     const rootChildren = Array.from({ length: limit + 2 }, (_, index) => ({
       id: `match-${index}`,
-      name: `board-match-${index}.pdf`,
+      name: `synthetic-match-${index}.pdf`,
       file: { mimeType: "application/pdf" },
       parentReference: { id: "stable-root-id", driveId: "drive-id" },
     }));
@@ -441,7 +441,7 @@ describe("pinned OneDrive addressing", () => {
         : { value: rootChildren }), { status: 200 });
     });
 
-    const result = await driveSearchScoped(root, "board-match", "token", limit, undefined, undefined, fetchFn as typeof fetch, {}, "filename_contains", true);
+    const result = await driveSearchScoped(root, "synthetic-match", "token", limit, undefined, undefined, fetchFn as typeof fetch, {}, "filename_contains", true);
     expect(result.items.map((item) => item.id)).toEqual(rootChildren.slice(0, limit).map((item) => item.id));
     expect(result).toMatchObject({ truncated: true, scan_complete: false, match_satisfied: true, fallback: true });
     expect(result.continuationState).toBeDefined();
@@ -561,14 +561,14 @@ describe("pinned OneDrive addressing", () => {
       if (url.pathname.endsWith("/items/stable-root-id/children")) return new Response(JSON.stringify({ value: [
         { id: "root-cycle", name: "loop", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
         { id: "stable-root-id", name: "self", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
-        { id: "kreis", name: "Kreisvorstand", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
-        { id: "root-pdf", name: "Board Pack #1.pdf", file: { mimeType: "application/pdf" }, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
+        { id: "synthetic-nested", name: "SYNTHETIC_NESTED_FOLDER", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
+        { id: "root-pdf", name: "SYNTHETIC_ROOT_DOCUMENT.pdf", file: { mimeType: "application/pdf" }, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
         { id: "collision-folder", name: filename, folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
         { id: "wrong-drive", name: filename, file: { mimeType: "text/plain" }, parentReference: { id: "stable-root-id", driveId: "other-drive" } },
         { id: "missing-parent", name: filename, file: { mimeType: "text/plain" } },
       ] }), { status: 200 });
-      if (url.pathname.endsWith("/items/kreis/children")) return new Response(JSON.stringify({ value: [
-        { id: "deep-folder", name: "Archive", folder: {}, parentReference: { id: "kreis", driveId: "drive-id" } },
+      if (url.pathname.endsWith("/items/synthetic-nested/children")) return new Response(JSON.stringify({ value: [
+        { id: "deep-folder", name: "SYNTHETIC_DEEP_FOLDER", folder: {}, parentReference: { id: "synthetic-nested", driveId: "drive-id" } },
       ] }), { status: 200 });
       if (url.pathname.endsWith("/items/deep-folder/children")) return new Response(JSON.stringify({ value: [
         { id: "nested-md", name: "README.md", file: { mimeType: "text/markdown" }, parentReference: { id: "deep-folder", driveId: "drive-id" } },
@@ -576,9 +576,9 @@ describe("pinned OneDrive addressing", () => {
       return new Response(JSON.stringify({ value: [] }), { status: 200 });
     });
 
-    const pdfFetch = responses("Board Pack #1.pdf");
-    const pdf = await driveSearchScoped(root, "Board Pack #1.pdf", "token", 10, undefined, undefined, pdfFetch as typeof fetch);
-    expect(pdf.items).toEqual([expect.objectContaining({ id: "root-pdf", name: "Board Pack #1.pdf", mime_type: "application/pdf" })]);
+    const pdfFetch = responses("SYNTHETIC_ROOT_DOCUMENT.pdf");
+    const pdf = await driveSearchScoped(root, "SYNTHETIC_ROOT_DOCUMENT.pdf", "token", 10, undefined, undefined, pdfFetch as typeof fetch);
+    expect(pdf.items).toEqual([expect.objectContaining({ id: "root-pdf", name: "SYNTHETIC_ROOT_DOCUMENT.pdf", mime_type: "application/pdf" })]);
     expect(pdf).toMatchObject({ fallback: true, truncated: false, scan_complete: false, match_satisfied: true });
     expect(pdf).not.toHaveProperty("continuationState");
     expect(pdfFetch).toHaveBeenCalledTimes(1);
@@ -601,18 +601,18 @@ describe("pinned OneDrive addressing", () => {
       calls.push(url.pathname);
       if (url.pathname.includes("/search(")) throw new Error("provider search must not be called");
       if (url.pathname.endsWith("/items/stable-root-id/children")) return new Response(JSON.stringify({ value: [
-        { id: "gremien", name: "02_Gremien-und-Termine", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
+        { id: "synthetic-level-one", name: "SYNTHETIC_LEVEL_ONE", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
       ] }), { status: 200 });
-      if (url.pathname.endsWith("/items/gremien/children")) return new Response(JSON.stringify({ value: [
-        { id: "kreisvorstand", name: "Kreisvorstand", folder: {}, parentReference: { id: "gremien", driveId: "drive-id" } },
+      if (url.pathname.endsWith("/items/synthetic-level-one/children")) return new Response(JSON.stringify({ value: [
+        { id: "synthetic-level-two", name: "SYNTHETIC_LEVEL_TWO", folder: {}, parentReference: { id: "synthetic-level-one", driveId: "drive-id" } },
       ] }), { status: 200 });
-      if (url.pathname.endsWith("/items/kreisvorstand/children")) return new Response(JSON.stringify({ value: [
-        { id: "protokoll", name: "2026-08-26_kreisvorstand_protokoll.pdf", file: { mimeType: "application/pdf" }, parentReference: { id: "kreisvorstand", driveId: "drive-id" } },
+      if (url.pathname.endsWith("/items/synthetic-level-two/children")) return new Response(JSON.stringify({ value: [
+        { id: "synthetic-document", name: "2099-01-01_SYNTHETIC_RECORD.pdf", file: { mimeType: "application/pdf" }, parentReference: { id: "synthetic-level-two", driveId: "drive-id" } },
       ] }), { status: 200 });
       throw new Error(`unexpected request: ${url.pathname}`);
     });
 
-    const query = "2026-08-26_kreisvorstand_protokoll.pdf";
+    const query = "2099-01-01_SYNTHETIC_RECORD.pdf";
     const first = await driveSearchScoped(root, query, "token", 5, undefined, undefined, fetchFn as typeof fetch, { pages: 2 });
     expect(first).toMatchObject({ items: [], truncated: true, scan_complete: false, match_satisfied: false, fallback: true });
     expect(first.continuationState).toBeDefined();
@@ -620,7 +620,7 @@ describe("pinned OneDrive addressing", () => {
 
     const second = await driveSearchScoped(root, query, "token", 5, first.continuationState, undefined, fetchFn as typeof fetch, { pages: 2 });
     expect(second).toMatchObject({
-      items: [expect.objectContaining({ id: "protokoll", name: query, mime_type: "application/pdf" })],
+      items: [expect.objectContaining({ id: "synthetic-document", name: query, mime_type: "application/pdf" })],
       truncated: false,
       scan_complete: true,
       match_satisfied: true,
@@ -629,8 +629,8 @@ describe("pinned OneDrive addressing", () => {
     expect(fetchFn).toHaveBeenCalledTimes(3);
     expect(calls).toEqual([
       "/v1.0/drives/drive-id/items/stable-root-id/children",
-      "/v1.0/drives/drive-id/items/gremien/children",
-      "/v1.0/drives/drive-id/items/kreisvorstand/children",
+      "/v1.0/drives/drive-id/items/synthetic-level-one/children",
+      "/v1.0/drives/drive-id/items/synthetic-level-two/children",
     ]);
   });
 
@@ -660,7 +660,7 @@ describe("pinned OneDrive addressing", () => {
     ["denied", () => new Response(null, { status: 403 })],
     ["malformed", () => new Response("not-json", { status: 200 })],
     ["malformed nextLink", () => new Response(JSON.stringify({
-      value: [{ id: "unproven", name: "2026-08-26_kreisvorstand_protokoll.pdf", file: { mimeType: "application/pdf" }, parentReference: { id: "unreadable", driveId: "drive-id" } }],
+      value: [{ id: "unproven", name: "2099-01-01_SYNTHETIC_RECORD.pdf", file: { mimeType: "application/pdf" }, parentReference: { id: "unreadable", driveId: "drive-id" } }],
       "@odata.nextLink": "https://evil.invalid/children?$skiptoken=x",
     }), { status: 200 })],
   ])("skips a %s descendant and preserves bounded BFS progress to a reachable deep sibling target", async (_failure, failedResponse) => {
@@ -669,20 +669,20 @@ describe("pinned OneDrive addressing", () => {
       const url = new URL(String(input));
       calls.push(url.pathname);
       if (url.pathname.endsWith("/items/stable-root-id/children")) return new Response(JSON.stringify({ value: [
-        { id: "unreadable", name: "00_Inbox", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
-        { id: "reachable", name: "02_Gremien-und-Termine", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
+        { id: "unreadable", name: "SYNTHETIC_UNREADABLE_FOLDER", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
+        { id: "reachable", name: "SYNTHETIC_REACHABLE_FOLDER", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
       ] }), { status: 200 });
       if (url.pathname.endsWith("/items/unreadable/children")) return failedResponse();
       if (url.pathname.endsWith("/items/reachable/children")) return new Response(JSON.stringify({ value: [
-        { id: "deep", name: "Kreisvorstand", folder: {}, parentReference: { id: "reachable", driveId: "drive-id" } },
+        { id: "deep", name: "SYNTHETIC_DEEP_FOLDER", folder: {}, parentReference: { id: "reachable", driveId: "drive-id" } },
       ] }), { status: 200 });
       if (url.pathname.endsWith("/items/deep/children")) return new Response(JSON.stringify({ value: [
-        { id: "target", name: "2026-08-26_kreisvorstand_protokoll.pdf", file: { mimeType: "application/pdf" }, parentReference: { id: "deep", driveId: "drive-id" } },
+        { id: "target", name: "2099-01-01_SYNTHETIC_RECORD.pdf", file: { mimeType: "application/pdf" }, parentReference: { id: "deep", driveId: "drive-id" } },
       ] }), { status: 200 });
       throw new Error(`unexpected request: ${url.pathname}`);
     });
 
-    const query = "2026-08-26_kreisvorstand_protokoll.pdf";
+    const query = "2099-01-01_SYNTHETIC_RECORD.pdf";
     const page = await driveSearchScoped(root, query, "token", 5, undefined, undefined, fetchFn as typeof fetch);
     expect(page).toMatchObject({
       items: [expect.objectContaining({ id: "target", name: query, mime_type: "application/pdf" })],
@@ -873,28 +873,28 @@ describe("pinned OneDrive addressing", () => {
       if (url.pathname.includes("/search(")) return new Response(JSON.stringify({ value: [] }), { status: 200 });
       if (url.pathname.endsWith("/items/stable-root-id/children")) return new Response(JSON.stringify({ value: [
         { id: "stable-root-id", name: "cycle", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
-        { id: "kreis", name: "Kreisvorstand", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
-        { id: "kreis", name: "duplicate", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
+        { id: "synthetic-duplicate", name: "SYNTHETIC_FOLDER", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
+        { id: "synthetic-duplicate", name: "duplicate", folder: {}, parentReference: { id: "stable-root-id", driveId: "drive-id" } },
       ] }), { status: 200 });
-      return new Response(JSON.stringify({ value: [{ id: "target", name: "Minutes.pdf", file: { mimeType: "application/pdf" }, parentReference: { id: "kreis", driveId: "drive-id" } }] }), { status: 200 });
+      return new Response(JSON.stringify({ value: [{ id: "target", name: "SYNTHETIC_RECORD.pdf", file: { mimeType: "application/pdf" }, parentReference: { id: "synthetic-duplicate", driveId: "drive-id" } }] }), { status: 200 });
     });
-    const first = await driveSearchScoped(root, "Minutes.pdf", "token", 5, undefined, undefined, fetchFn as typeof fetch, { pages: 1, items: 10 });
+    const first = await driveSearchScoped(root, "SYNTHETIC_RECORD.pdf", "token", 5, undefined, undefined, fetchFn as typeof fetch, { pages: 1, items: 10 });
     expect(first).toMatchObject({ items: [], truncated: true, fallback: true });
     expect(first.continuationState).toBeDefined();
-    const second = await driveSearchScoped(root, "Minutes.pdf", "token", 5, first.continuationState, undefined, fetchFn as typeof fetch, { pages: 1, items: 10 });
+    const second = await driveSearchScoped(root, "SYNTHETIC_RECORD.pdf", "token", 5, first.continuationState, undefined, fetchFn as typeof fetch, { pages: 1, items: 10 });
     expect(second.items).toEqual([expect.objectContaining({ id: "target" })]);
     expect(calls.filter((path) => path.endsWith("/items/stable-root-id/children"))).toHaveLength(1);
-    expect(calls.filter((path) => path.endsWith("/items/kreis/children"))).toHaveLength(1);
+    expect(calls.filter((path) => path.endsWith("/items/synthetic-duplicate/children"))).toHaveLength(1);
     expect(calls.some((path) => path.includes("/search("))).toBe(false);
   });
 
   it("stops a non-exhaustive exact search at the first hit without an unnecessary continuation", async () => {
     const prefix = "/v1.0/drives/drive-id/items/stable-root-id/children";
     const fetchFn = vi.fn(async () => new Response(JSON.stringify({
-      value: [{ id: "first", name: "Minutes.pdf", file: { mimeType: "application/pdf" }, parentReference: { id: "stable-root-id", driveId: "drive-id" } }],
+      value: [{ id: "first", name: "SYNTHETIC_RECORD.pdf", file: { mimeType: "application/pdf" }, parentReference: { id: "stable-root-id", driveId: "drive-id" } }],
       "@odata.nextLink": `https://graph.microsoft.com${prefix}?$skiptoken=more`,
     }), { status: 200 }));
-    const result = await driveSearchScoped(root, "Minutes.pdf", "token", 1, undefined, undefined, fetchFn as typeof fetch, {}, "filename_exact");
+    const result = await driveSearchScoped(root, "SYNTHETIC_RECORD.pdf", "token", 1, undefined, undefined, fetchFn as typeof fetch, {}, "filename_exact");
     expect(result).toMatchObject({
       items: [expect.objectContaining({ id: "first" })],
       truncated: false,
@@ -912,11 +912,11 @@ describe("pinned OneDrive addressing", () => {
       const url = new URL(String(input));
       const second = url.searchParams.has("$skiptoken");
       return new Response(JSON.stringify({
-        value: [{ id: second ? "duplicate-two" : "duplicate-one", name: second ? "minutes.PDF" : "Minutes.pdf", file: { mimeType: "application/pdf" }, parentReference: { id: "stable-root-id", driveId: "drive-id" } }],
+        value: [{ id: second ? "duplicate-two" : "duplicate-one", name: second ? "synthetic_record.PDF" : "SYNTHETIC_RECORD.pdf", file: { mimeType: "application/pdf" }, parentReference: { id: "stable-root-id", driveId: "drive-id" } }],
         ...(!second ? { "@odata.nextLink": next } : {}),
       }), { status: 200 });
     });
-    const first = await driveSearchScoped(root, "Minutes.pdf", "token", 1, undefined, undefined, fetchFn as typeof fetch, {}, "filename_exact", true);
+    const first = await driveSearchScoped(root, "SYNTHETIC_RECORD.pdf", "token", 1, undefined, undefined, fetchFn as typeof fetch, {}, "filename_exact", true);
     expect(first).toMatchObject({
       items: [expect.objectContaining({ id: "duplicate-one" })],
       truncated: true,
@@ -924,7 +924,7 @@ describe("pinned OneDrive addressing", () => {
       match_satisfied: true,
     });
     expect(first.continuationState).toBeDefined();
-    const second = await driveSearchScoped(root, "Minutes.pdf", "token", 1, first.continuationState, undefined, fetchFn as typeof fetch, {}, "filename_exact", true);
+    const second = await driveSearchScoped(root, "SYNTHETIC_RECORD.pdf", "token", 1, first.continuationState, undefined, fetchFn as typeof fetch, {}, "filename_exact", true);
     expect(second).toMatchObject({
       items: [expect.objectContaining({ id: "duplicate-two" })],
       truncated: false,
@@ -1049,16 +1049,16 @@ describe("pinned OneDrive addressing", () => {
       request += 1;
       if (request === 1) return new Response(JSON.stringify({ id: "folder-id", folder: {} }), { status: 200 });
       if (request === 2) return new Response(JSON.stringify({ eTag: "etag-1" }), { status: 200 });
-      return new Response(JSON.stringify({ id: "item-id", name: "renamed.txt", description: "Personal", fileSystemInfo: { lastModifiedDateTime: "2026-09-07T12:00:00Z" }, file: { mimeType: "text/plain" } }), { status: init?.method === "POST" ? 201 : 200 });
+      return new Response(JSON.stringify({ id: "item-id", name: "renamed.txt", description: "SYNTHETIC_DESCRIPTION", fileSystemInfo: { lastModifiedDateTime: "2026-09-07T12:00:00Z" }, file: { mimeType: "text/plain" } }), { status: init?.method === "POST" ? 201 : 200 });
     });
-    const updated = await driveMetadataUpdate(root, "old.txt", "token", { name: "renamed.txt", destinationRelativePath: "Archive", description: "Personal", fileSystemInfo: { lastModifiedDateTime: "2026-09-07T12:00:00Z" } }, undefined, fetchFn as typeof fetch);
-    expect(updated.item).toMatchObject({ name: "renamed.txt", description: "Personal", file_system_info: { lastModifiedDateTime: "2026-09-07T12:00:00Z" } });
-    expect(JSON.parse(String(fetchFn.mock.calls[2][1]?.body))).toMatchObject({ name: "renamed.txt", parentReference: { id: "folder-id" }, description: "Personal" });
+    const updated = await driveMetadataUpdate(root, "old.txt", "token", { name: "renamed.txt", destinationRelativePath: "SYNTHETIC_DESTINATION", description: "SYNTHETIC_DESCRIPTION", fileSystemInfo: { lastModifiedDateTime: "2026-09-07T12:00:00Z" } }, undefined, fetchFn as typeof fetch);
+    expect(updated.item).toMatchObject({ name: "renamed.txt", description: "SYNTHETIC_DESCRIPTION", file_system_info: { lastModifiedDateTime: "2026-09-07T12:00:00Z" } });
+    expect(JSON.parse(String(fetchFn.mock.calls[2][1]?.body))).toMatchObject({ name: "renamed.txt", parentReference: { id: "folder-id" }, description: "SYNTHETIC_DESCRIPTION" });
     expect((fetchFn.mock.calls[2][1]?.headers as Record<string, string>)["if-match"]).toBe("etag-1");
 
-    const folderFetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => new Response(JSON.stringify({ id: "new-folder", name: "Reports", folder: {} }), { status: 201 }));
-    await driveCreateFolder(root, "Archive", "Reports", "fail", "token", undefined, folderFetch as typeof fetch);
-    expect(JSON.parse(String(folderFetch.mock.calls[0][1]?.body))).toEqual({ name: "Reports", folder: {}, "@microsoft.graph.conflictBehavior": "fail" });
+    const folderFetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => new Response(JSON.stringify({ id: "new-folder", name: "SYNTHETIC_NEW_FOLDER", folder: {} }), { status: 201 }));
+    await driveCreateFolder(root, "SYNTHETIC_PARENT", "SYNTHETIC_NEW_FOLDER", "fail", "token", undefined, folderFetch as typeof fetch);
+    expect(JSON.parse(String(folderFetch.mock.calls[0][1]?.body))).toEqual({ name: "SYNTHETIC_NEW_FOLDER", folder: {}, "@microsoft.graph.conflictBehavior": "fail" });
   });
 });
 

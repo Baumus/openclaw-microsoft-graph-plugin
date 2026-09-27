@@ -1,4 +1,7 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ tokenForAuthorizedOperation: vi.fn() }));
@@ -29,7 +32,7 @@ function registeredTools(agentId: string) {
   }));
 }
 
-function registeredRuntime(agentId: string) {
+function registeredRuntime(agentId: string, workspaceDir?: string) {
   const factories: Array<(context: any) => any> = [];
   const hooks: Record<string, (...args: any[]) => Promise<any>> = {};
   entry.register({
@@ -38,7 +41,7 @@ function registeredRuntime(agentId: string) {
     registerTool: (factory: any) => factories.push(factory), on: (name: string, handler: any) => { hooks[name] = handler; },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   } as any);
-  return { hooks, tools: Object.fromEntries(factories.map((factory) => { const tool = factory({ agentId, sessionId: "denied-session" }); return [tool.name, tool]; })) };
+  return { hooks, tools: Object.fromEntries(factories.map((factory) => { const tool = factory({ agentId, sessionId: "denied-session", workspaceDir }); return [tool.name, tool]; })) };
 }
 
 beforeEach(() => mocks.tokenForAuthorizedOperation.mockReset());
@@ -70,7 +73,7 @@ describe("vault authorization ordering", () => {
   ])("denies %s before instruction credential access or Graph", async (toolName, params) => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const { hooks } = registeredRuntime("unauthorized-agent");
-    await expect(hooks.before_tool_call({ toolName, params }, { agentId: "unauthorized-agent", sessionId: "denied-session", requester: { senderIsOwner: true, channel: "telegram" } }))
+    await expect(hooks.before_tool_call({ toolName, params }, { agentId: "unauthorized-agent", sessionId: "denied-session", requester: { senderIsOwner: true, channel: "synthetic-channel" } }))
       .resolves.toEqual({ block: true, blockReason: "access_denied" });
     expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -78,18 +81,19 @@ describe("vault authorization ordering", () => {
   });
 
   it("requires separate read authority for instruction discovery after mutation authorization", async () => {
-    const { hooks } = registeredRuntime("main");
+    const workspaceDir = await mkdtemp(join(tmpdir(), "microsoft-graph-vault-ordering-"));
+    await mkdir(join(workspaceDir, "media", "inbound"), { recursive: true });
+    const bytes = Buffer.from("n");
+    await writeFile(join(workspaceDir, "media", "inbound", "new.txt"), bytes);
+    const { hooks } = registeredRuntime("main", workspaceDir);
     const event = {
       toolName: "onedrive_upload",
-      params: { rootLabel: "synthetic_documents", relativePath: "new.txt", sourceMediaUri: "media://inbound/new.txt" },
+      toolCallId: "instruction-read-authority",
+      params: { rootLabel: "synthetic_documents", relativePath: "new.txt", sourceMediaUri: "media://inbound/new.txt", sourceSha256: createHash("sha256").update(bytes).digest("hex"), sourceByteSize: bytes.byteLength },
     };
-    const context = { agentId: "main", sessionId: "denied-session", requester: { senderIsOwner: true, channel: "telegram" } };
-    const confirmation = await hooks.before_tool_call(event, context);
-    expect(confirmation).toMatchObject({ block: true, blockReason: expect.stringContaining("chat_confirmation_required") });
+    const context = { agentId: "main", sessionId: "denied-session", requester: { senderIsOwner: true, channel: "synthetic-channel" } };
+    await expect(hooks.before_tool_call(event, context)).resolves.toEqual({ block: true, blockReason: "access_denied" });
     expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
-    const chatConfirmationToken = confirmation.blockReason.match(/chatConfirmationToken="(mgw1_[A-Za-z0-9_-]{43})"/)?.[1];
-    await expect(hooks.before_tool_call({ ...event, params: { ...event.params, chatConfirmed: true, chatConfirmationToken } }, context))
-      .resolves.toEqual({ block: true, blockReason: "access_denied" });
-    expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
+    await rm(workspaceDir, { recursive: true, force: true });
   });
 });

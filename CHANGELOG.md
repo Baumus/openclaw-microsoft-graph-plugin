@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Bound native approval copy, severity, decisions, and execution to one exact host-composed parameter snapshot. The plugin now makes its inspected parameters authoritative in the OpenClaw hook result and rejects any later execution-time rewrite, including warning-to-critical changes after process-local `allow-always` trust.
+
+## 3.1.0 - 2026-09-25
+
+- Capped each calendar multiwrite at 100 operations in schema and runtime.
+- Replaced bespoke chat-confirmation authority with configurable OpenClaw-native warning approval. Warning approval defaults on, supports process-lifetime agent/tool/action `allow-always` trust, and leaves critical mutations at `allow-once` or `deny`; legacy chat fields are inert compatibility inputs.
+- Added privacy-minimized native approval copy that names the action, target, and action-specific risk, including OneDrive root/path, calendar/event identity, multiwrite counts, and recipient-count context.
+- Bound every OneDrive upload and replacement to required SHA-256 and byte-size claims, verified against an immutable opened artifact before credentials or Graph access.
+
 ## 3.0.0 - 2026-09-25
 
 - Initial public release.

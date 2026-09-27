@@ -4,7 +4,7 @@
 
 Do not include credentials, refresh tokens, access tokens, private policy files, mailbox content, file content, or personal data in a public issue.
 
-Report vulnerabilities privately through [GitHub Security Advisories](https://github.com/Baumus/openclaw-microsoft-graph/security/advisories/new). Do not open a public issue for a suspected vulnerability.
+Report vulnerabilities privately through [GitHub Security Advisories](https://github.com/Baumus/openclaw-microsoft-graph-plugin/security/advisories/new). Do not open a public issue for a suspected vulnerability.
 
 If GitHub does not show the private reporting form, contact the repository owner through GitHub first and ask for a private reporting route without disclosing vulnerability details or sensitive data publicly.
 
@@ -22,8 +22,9 @@ Security fixes are expected on the latest released version only. Until a public 
 - There is no provider-side read/write credential isolation. Credential or plugin compromise has the union of granted Microsoft scopes; default-deny policy and write approvals constrain normal plugin behavior.
 - The policy is default-deny and evaluated before credential or provider access.
 - Credential migration, status, quarantine recovery, and restore are local operator CLI commands, not model-facing tools or chat commands. Migration requires one explicit all-scope source; restore targets one explicit destination and reports unverifiable outcomes as unknown.
-- Warning-level changes require an exact, session-bound originating-chat confirmation receipt.
-- Destructive, send, and respond operations require OpenClaw call-bound approval.
+- Warning-level mutations require OpenClaw-native call approval by default. An operator may explicitly disable warning approvals, while policy authorization and all preconditions remain mandatory. Process-local `allow-always` trust is scoped to the authenticated agent, exact tool, and normalized action. Approval and approval-free warning paths bind the inspected parameters to the host tool-call identity and fail closed if hook composition changes the parameters before execution.
+- Destructive, send, and respond operations always require OpenClaw call-bound approval and offer only allow-once or deny.
+- OneDrive content writes require an exact lowercase SHA-256 and byte-size claim. Approval preflight opens and verifies the protected artifact before managed-root instruction discovery or any credential, OAuth, or Graph boundary; execution independently reopens and verifies it before those provider boundaries.
 - Provider continuation and upload URLs are origin/path constrained and are not returned to the model.
 - Private media is represented by `media://inbound/...` references; host-local paths and inline file bytes are rejected.
 - No security certification, compliance attestation, or enterprise-readiness claim is made.

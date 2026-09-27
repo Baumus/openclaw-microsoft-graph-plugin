@@ -6,9 +6,9 @@ Version 3 uses one Microsoft delegated OAuth credential for every operation, one
 
 Normal call order is strict:
 
-1. Validate the tool action and trusted caller context.
-2. Complete required chat confirmation or OpenClaw approval.
-3. Validate policy and authorize the exact agent, operation, and resource.
+1. Validate the tool action and trusted caller context, including available fail-closed preflight authorization and media checks.
+2. Complete any required OpenClaw-native approval. Warning approval is configurable and defaults on; critical approval is mandatory.
+3. Revalidate policy and authorize the exact agent, operation, and resource during execution.
 4. Only then select the materialized key, acquire the lock, read/decrypt the vault, exchange OAuth, and call Graph.
 
 Denied operations perform no plugin-side key selection, vault I/O, OAuth, or Graph request. OpenClaw may materialize declared SecretInputs while loading host configuration; this design does not claim to suppress host-level resolution.

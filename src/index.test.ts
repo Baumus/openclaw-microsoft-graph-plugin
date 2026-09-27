@@ -1,11 +1,11 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { getToolPluginMetadata } from "openclaw/plugin-sdk/tool-plugin";
-import entry, { approvalInventory, assertOwnedTodoList, assertWriteActionFields, attachmentWritePlan, boundedCollectionPage, calendarChatConfirmationCriteria, calendarCollectionPath, calendarEventPath, calendarEventPayload, calendarPageIsTruncated, calendarViewPath, calendarViewQuery, calendarWindowDateTime, ChatConfirmationStore, classifyApproval, collectFilteredCollection, dateTimeTimeZone, deadlineSignal, enforceOneDriveInstructionPreflight, eventGetFields, eventMatchesSearch, eventReadFields, fileAttachmentPayload, listMailFolders, mailFolderCollectionPath, mailListQuery, mailMessageActionPath, mailMessageCollectionPath, mailMessagePayload, mailReplyForwardPlan, nextGraphPath, oneDriveAgentsInstructions, oneDriveInstructionDirectories, oneDriveWriteChatConfirmationCriteria, readProtectedMediaSource, readOperationTimeout, schedulePage, taskPayload, todoTaskChildPath, todoTaskMatches, todoTaskPath, validateAttachmentContent, validateProtectedMediaUri, WRITE_ACTION_FIELDS } from "./index.js";
+import entry, { approvalInventory, assertOwnedTodoList, assertWriteActionFields, attachmentWritePlan, boundedCollectionPage, calendarApprovalCriteria, calendarCollectionPath, calendarEventPath, calendarEventPayload, calendarPageIsTruncated, calendarViewPath, calendarViewQuery, calendarWindowDateTime, classifyApproval, collectFilteredCollection, dateTimeTimeZone, deadlineSignal, enforceOneDriveInstructionPreflight, eventGetFields, eventMatchesSearch, eventReadFields, fileAttachmentPayload, listMailFolders, mailFolderCollectionPath, mailListQuery, mailMessageActionPath, mailMessageCollectionPath, mailMessagePayload, mailReplyForwardPlan, NativeApprovalSnapshotStore, nextGraphPath, normalizedWarningApprovalAction, oneDriveAgentsInstructions, oneDriveInstructionDirectories, oneDriveWriteApprovalCriteria, readProtectedMediaSource, readOperationTimeout, schedulePage, taskPayload, todoTaskChildPath, todoTaskMatches, todoTaskPath, validateAttachmentContent, validateProtectedMediaUri, WarningApprovalTrustStore, WRITE_ACTION_FIELDS } from "./index.js";
 import { beforeMicrosoftGraphToolCall, enforceOneDriveInstructionExecution } from "./index.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 import { ONEDRIVE_AGENTS_MAX_DEPTH, OneDriveAgentsSessionCache, oneDriveAgentsSessionCache } from "./onedrive-agents-instructions.js";
@@ -105,6 +105,7 @@ describe("microsoft-graph plugin contract", () => {
     expect(properties).not.toHaveProperty("credentialVaultKeys");
     expect(properties.credentialVaultKey).toMatchObject({ type: "object", additionalProperties: false, required: ["source", "provider", "id"] });
     expect(properties.credentialVaultKey).not.toHaveProperty("anyOf");
+    expect(properties.warningApprovalsRequired).toMatchObject({ type: "boolean", default: true });
     expect(properties.policy).toMatchObject({ type: "object", additionalProperties: false });
     expect(properties.policy.properties.version).toEqual({ const: 2, type: "number" });
     expect(properties.policy.properties.rules.properties.default).toEqual({ const: "deny", type: "string" });
@@ -138,8 +139,8 @@ describe("microsoft-graph plugin contract", () => {
     expect(uploadSchema.properties.sourceMediaUri).toMatchObject({ type: "string", maxLength: 4096, pattern: expect.stringContaining("media://inbound/") });
     expect(uploadSchema.properties.sourceSha256).toMatchObject({ type: "string", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" });
     expect(uploadSchema.properties.sourceByteSize).toMatchObject({ type: "integer", minimum: 0, maximum: 250 * 1024 * 1024 * 1024 });
-    expect(uploadSchema.required).toContain("sourceMediaUri");
-    expect(updateSchema.required).toContain("sourceMediaUri");
+    expect(uploadSchema.required).toEqual(expect.arrayContaining(["sourceMediaUri", "sourceSha256", "sourceByteSize"]));
+    expect(updateSchema.required).toEqual(expect.arrayContaining(["sourceMediaUri", "sourceSha256", "sourceByteSize"]));
     for (const toolName of ["outlook_calendar_write", "outlook_mail_write"]) {
       const schema = metadata.tools.find((tool) => tool.name === toolName)?.parameters as any;
       expect(schema.properties.attachmentMediaUri).toMatchObject({ type: "string", maxLength: 4096 });
@@ -149,35 +150,36 @@ describe("microsoft-graph plugin contract", () => {
     for (const schema of [uploadSchema, updateSchema, todoSchema, ...["outlook_calendar_write", "outlook_mail_write"].map((name) => metadata.tools.find((tool) => tool.name === name)?.parameters as any)]) expect(JSON.stringify(schema)).not.toMatch(/contentBase64|sourceFilePath|attachmentContentBase64/);
     for (const toolName of ["onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete", "outlook_calendar_write", "outlook_mail_write", "microsoft_todo_write"]) {
       const schema = metadata.tools.find((tool) => tool.name === toolName)?.parameters as any;
-      expect(schema.properties.chatConfirmed.description, toolName).toContain("originating chat");
-      expect(schema.properties.chatConfirmed.description, toolName).toContain("the user");
+      expect(schema.properties.chatConfirmed.description, toolName).toContain("ignored");
+      expect(schema.properties.chatConfirmed.description, toolName).toContain("never authorize");
+      expect(schema.properties.chatConfirmationToken.description, toolName).toContain("ignored");
     }
     expect(configSchema.properties).not.toHaveProperty("maxWriteBytes");
   });
 
-  it("binds optional OneDrive fingerprints to the semantic write effect", () => {
+  it("requires OneDrive fingerprints in the semantic write effect", () => {
     const fingerprint = "a".repeat(64);
     const root = { label: "synthetic_documents", drive_id: "synthetic-drive", item_id: "synthetic-root" };
-    expect(oneDriveWriteChatConfirmationCriteria("onedrive_upload", {
+    expect(oneDriveWriteApprovalCriteria("onedrive_upload", {
       rootLabel: "synthetic_documents",
-      relativePath: " invoices//a.pdf ",
+      relativePath: " SYNTHETIC_FOLDER//a.pdf ",
       sourceMediaUri: "media://inbound/first.pdf",
       sourceSha256: fingerprint,
       sourceByteSize: 42,
     }, root)).toEqual({
       operation: "upload",
       authorizedRoot: { label: "synthetic_documents", driveId: "synthetic-drive", itemId: "synthetic-root" },
-      relativePath: "invoices/a.pdf",
+      relativePath: "SYNTHETIC_FOLDER/a.pdf",
       contentType: "application/octet-stream",
       sourceSha256: fingerprint,
       sourceByteSize: 42,
     });
-    expect(oneDriveWriteChatConfirmationCriteria("onedrive_upload", {
+    expect(() => oneDriveWriteApprovalCriteria("onedrive_upload", {
       rootLabel: "synthetic_documents",
       relativePath: "a.pdf",
       sourceMediaUri: "media://inbound/a.pdf",
-    }, root)).toBeUndefined();
-    expect(() => oneDriveWriteChatConfirmationCriteria("onedrive_upload", {
+    }, root)).toThrow("invalid_source_fingerprint");
+    expect(() => oneDriveWriteApprovalCriteria("onedrive_upload", {
       rootLabel: "synthetic_documents",
       relativePath: "a.pdf",
       sourceMediaUri: "media://inbound/a.pdf",
@@ -185,31 +187,24 @@ describe("microsoft-graph plugin contract", () => {
     }, root)).toThrow("invalid_source_fingerprint");
   });
 
-  it("expires, clears, restarts, and evicts confirmation receipts fail closed", () => {
-    let now = 100;
-    const binding = { sessionId: "session-a", agentId: "main", toolName: "onedrive_upload", criteria: "{}" };
-    const expiring = new ChatConfirmationStore(10, 2, () => now);
-    const expired = expiring.issue(binding);
-    expect(expiring.arm(expired, binding)).toBe(true);
-    now = 110;
-    expect(expiring.claim(expired, binding)).toBe(false);
-
-    const cleared = new ChatConfirmationStore();
-    const clearedToken = cleared.issue(binding);
-    expect(cleared.arm(clearedToken, binding)).toBe(true);
-    cleared.clearSession(binding.sessionId);
-    expect(cleared.claim(clearedToken, binding)).toBe(false);
-
-    const beforeRestart = new ChatConfirmationStore();
-    const restartToken = beforeRestart.issue(binding);
-    expect(new ChatConfirmationStore().arm(restartToken, binding)).toBe(false);
-
-    const evicting = new ChatConfirmationStore(1_000, 1, () => 100);
-    const evicted = evicting.issue(binding);
-    const nextBinding = { ...binding, criteria: "{\"next\":true}" };
-    const current = evicting.issue(nextBinding);
-    expect(evicting.arm(evicted, binding)).toBe(false);
-    expect(evicting.arm(current, nextBinding)).toBe(true);
+  it("keeps allow-always trust process-local and exact-scope", () => {
+    const scope = { agentId: "main", toolName: "outlook_mail_write", action: "mark_read" };
+    const store = new WarningApprovalTrustStore();
+    expect(store.has(scope)).toBe(false);
+    store.grant(scope);
+    expect(store.has(scope)).toBe(true);
+    expect(store.has({ ...scope, agentId: "other" })).toBe(false);
+    expect(store.has({ ...scope, toolName: "microsoft_todo_write" })).toBe(false);
+    expect(store.has({ ...scope, action: "move" })).toBe(false);
+    expect(new WarningApprovalTrustStore().has(scope)).toBe(false);
+    const bounded = new WarningApprovalTrustStore(1);
+    bounded.grant(scope);
+    expect(() => bounded.grant({ ...scope, action: "move" })).toThrow("warning_approval_trust_capacity_exceeded");
+    store.clear();
+    expect(store.has(scope)).toBe(false);
+    expect(normalizedWarningApprovalAction("onedrive_metadata_update", {})).toBe("metadata_update");
+    expect(normalizedWarningApprovalAction("outlook_mail_write", { action: "mark_read" })).toBe("mark_read");
+    expect(normalizedWarningApprovalAction("outlook_mail_write", { action: "INVALID" })).toBe("unknown");
   });
 
   it("keeps caller cancellation ahead of the plugin deadline", () => {
@@ -224,20 +219,20 @@ describe("microsoft-graph plugin contract", () => {
   it("reads OneDrive upload sources only from protected media/inbound staging", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "microsoft-graph-staging-"));
     const inbound = join(workspace, "media", "inbound");
-    const staged = join(inbound, "batch", "invoice.xlsx");
+    const staged = join(inbound, "batch", "SYNTHETIC_RECORD.xlsx");
     const outside = join(workspace, "outside.xlsx");
     try {
       await mkdir(join(inbound, "batch"), { recursive: true });
       await writeFile(staged, Buffer.from([0, 255, 1, 254]));
       await writeFile(outside, "outside");
-      expect(await readProtectedMediaSource("media://inbound/batch/invoice.xlsx", workspace, 4)).toEqual(Buffer.from([0, 255, 1, 254]));
+      expect(await readProtectedMediaSource("media://inbound/batch/SYNTHETIC_RECORD.xlsx", workspace, 4)).toEqual(Buffer.from([0, 255, 1, 254]));
       await expect(readProtectedMediaSource(outside, workspace, 1024)).rejects.toThrow("invalid_source_media_uri");
-      await expect(readProtectedMediaSource("media/inbound/batch/invoice.xlsx", workspace, 1024)).rejects.toThrow("invalid_source_media_uri");
-      await expect(readProtectedMediaSource("media://inbound/batch/invoice.xlsx", workspace, 3)).rejects.toThrow("invalid_source_media_uri");
+      await expect(readProtectedMediaSource("media/inbound/batch/SYNTHETIC_RECORD.xlsx", workspace, 1024)).rejects.toThrow("invalid_source_media_uri");
+      await expect(readProtectedMediaSource("media://inbound/batch/SYNTHETIC_RECORD.xlsx", workspace, 3)).rejects.toThrow("invalid_source_media_uri");
       await symlink(staged, join(inbound, "symlink.xlsx"));
       await expect(readProtectedMediaSource("media://inbound/symlink.xlsx", workspace, 1024)).rejects.toThrow("invalid_source_media_uri");
       await link(staged, join(inbound, "hardlink.xlsx"));
-      await expect(readProtectedMediaSource("media://inbound/batch/invoice.xlsx", workspace, 1024)).rejects.toThrow("invalid_source_media_uri");
+      await expect(readProtectedMediaSource("media://inbound/batch/SYNTHETIC_RECORD.xlsx", workspace, 1024)).rejects.toThrow("invalid_source_media_uri");
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -284,16 +279,16 @@ describe("microsoft-graph plugin contract", () => {
     const schema = metadata.tools.find((tool) => tool.name === "outlook_calendar_write")?.parameters as any;
     expect(schema.properties.showAs.anyOf.map((entry: any) => entry.const)).toEqual(["free", "tentative", "busy", "oof", "workingElsewhere", "unknown"]);
     for (const field of ["isReminderOn", "reminderMinutesBeforeStart", "isAllDay", "categories", "importance", "sensitivity", "allowNewTimeProposals", "hideAttendees", "isOnlineMeeting", "onlineMeetingProvider", "responseRequested", "recurrence", "transactionId", "locations", "attendeeDetails"]) expect(schema.properties[field]).toBeTruthy();
-    expect(calendarEventPayload({ subject: "Focus", bodyHtml: "<p>Plan</p>", startDateTime: "2026-09-08T09:00:00", endDateTime: "2026-09-08T10:00:00", startTimeZone: "Europe/Berlin", endTimeZone: "UTC", location: "Office", showAs: "busy", isReminderOn: true, reminderMinutesBeforeStart: 15, categories: ["Blue category"], importance: "high" })).toEqual({
-      subject: "Focus",
-      body: { contentType: "HTML", content: "<p>Plan</p>" },
-      start: { dateTime: "2026-09-08T09:00:00", timeZone: "Europe/Berlin" },
+    expect(calendarEventPayload({ subject: "Synthetic Event", bodyHtml: "<p>Synthetic body</p>", startDateTime: "2026-09-08T09:00:00", endDateTime: "2026-09-08T10:00:00", location: "Synthetic Location", showAs: "busy", isReminderOn: true, reminderMinutesBeforeStart: 15, categories: ["Synthetic Category"], importance: "high" })).toEqual({
+      subject: "Synthetic Event",
+      body: { contentType: "HTML", content: "<p>Synthetic body</p>" },
+      start: { dateTime: "2026-09-08T09:00:00", timeZone: "UTC" },
       end: { dateTime: "2026-09-08T10:00:00", timeZone: "UTC" },
-      location: { displayName: "Office" },
+      location: { displayName: "Synthetic Location" },
       showAs: "busy",
       isReminderOn: true,
       reminderMinutesBeforeStart: 15,
-      categories: ["Blue category"],
+      categories: ["Synthetic Category"],
       importance: "high",
     });
     expect(calendarEventPayload({ reminderMinutesBeforeStart: 30 })).toEqual({ reminderMinutesBeforeStart: 30, isReminderOn: true });
@@ -302,13 +297,13 @@ describe("microsoft-graph plugin contract", () => {
   });
 
   it("rejects Graph-invalid event timing and recurrence combinations", () => {
-    expect(() => calendarEventPayload({ startDateTime: "2026-09-08T10:00:00", endDateTime: "2026-09-08T09:00:00", timeZone: "Europe/Berlin" })).toThrow("invalid_event_time_order");
-    expect(() => calendarEventPayload({ startDateTime: "2026-02-30T09:00:00", endDateTime: "2026-03-01T10:00:00", timeZone: "Europe/Berlin" })).toThrow("invalid_datetime");
-    expect(() => calendarEventPayload({ startDateTime: "2026-09-08T24:00:00", endDateTime: "2026-09-09T01:00:00", timeZone: "Europe/Berlin" })).toThrow("invalid_datetime");
-    expect(() => calendarEventPayload({ startDateTime: "2024-02-29T09:00:00", endDateTime: "2024-02-29T10:00:00", timeZone: "Europe/Berlin" })).not.toThrow();
+    expect(() => calendarEventPayload({ startDateTime: "2026-09-08T10:00:00", endDateTime: "2026-09-08T09:00:00", timeZone: "UTC" })).toThrow("invalid_event_time_order");
+    expect(() => calendarEventPayload({ startDateTime: "2026-02-30T09:00:00", endDateTime: "2026-03-01T10:00:00", timeZone: "UTC" })).toThrow("invalid_datetime");
+    expect(() => calendarEventPayload({ startDateTime: "2026-09-08T24:00:00", endDateTime: "2026-09-09T01:00:00", timeZone: "UTC" })).toThrow("invalid_datetime");
+    expect(() => calendarEventPayload({ startDateTime: "2024-02-29T09:00:00", endDateTime: "2024-02-29T10:00:00", timeZone: "UTC" })).not.toThrow();
     expect(() => calendarEventPayload({ startDateTime: "2026-09-08T09:00:00", endDateTime: "2026-09-08T10:00:00", startTimeZone: "Unresolvable Graph Zone A", endTimeZone: "Unresolvable Graph Zone B" })).toThrow("invalid_event_time_zone");
-    expect(() => calendarEventPayload({ startDateTime: "2026-09-08T00:00:00", endDateTime: "2026-09-09T00:00:00", startTimeZone: "Europe/Berlin", endTimeZone: "UTC", isAllDay: true })).toThrow("invalid_all_day_event");
-    expect(() => calendarEventPayload({ startDateTime: "2026-09-08T00:01:00", endDateTime: "2026-09-09T00:00:00", timeZone: "Europe/Berlin", isAllDay: true })).toThrow("invalid_all_day_event");
+    expect(() => calendarEventPayload({ startDateTime: "2026-09-08T00:00:00", endDateTime: "2026-09-09T00:00:00", startTimeZone: "Pacific Standard Time", endTimeZone: "UTC", isAllDay: true })).toThrow("invalid_all_day_event");
+    expect(() => calendarEventPayload({ startDateTime: "2026-09-08T00:01:00", endDateTime: "2026-09-09T00:00:00", timeZone: "UTC", isAllDay: true })).toThrow("invalid_all_day_event");
     expect(calendarEventPayload({ startDateTime: "2026-09-08T09:00:00", recurrence: { pattern: { type: "relativeMonthly", interval: 1, daysOfWeek: ["monday"] }, range: { type: "noEnd", startDate: "2026-09-08" } } }).recurrence).toEqual({ pattern: { type: "relativeMonthly", interval: 1, daysOfWeek: ["monday"], index: "first" }, range: { type: "noEnd", startDate: "2026-09-08" } });
     expect(() => calendarEventPayload({ startDateTime: "2026-09-08T09:00:00", recurrence: { pattern: { type: "daily", interval: 1, dayOfMonth: 8 }, range: { type: "noEnd", startDate: "2026-09-08" } } })).toThrow("invalid_recurrence");
     expect(() => calendarEventPayload({ startDateTime: "2026-09-08T09:00:00", recurrence: { pattern: { type: "daily", interval: 1 }, range: { type: "endDate", startDate: "2026-09-08", endDate: "2026-09-07" } } })).toThrow("invalid_recurrence");
@@ -316,7 +311,7 @@ describe("microsoft-graph plugin contract", () => {
     expect(() => calendarEventPayload({ startDateTime: "2026-02-28T09:00:00", recurrence: { pattern: { type: "daily", interval: 1 }, range: { type: "endDate", startDate: "2026-02-28", endDate: "2026-02-30" } } })).toThrow("invalid_recurrence");
     expect(() => calendarEventPayload({ startDateTime: "2024-02-29T09:00:00", recurrence: { pattern: { type: "daily", interval: 1 }, range: { type: "noEnd", startDate: "2024-02-29" } } })).not.toThrow();
     expect(() => calendarEventPayload({ startDateTime: "2026-09-08T09:00:00", recurrence: { pattern: { type: "daily", interval: 1 }, range: { type: "noEnd", startDate: "2026-09-09" } } })).toThrow("invalid_recurrence");
-    expect(calendarEventPayload({ startDateTime: "2026-09-08T00:00:00", endDateTime: "2026-09-09T00:00:00", timeZone: "Europe/Berlin", isAllDay: true }).isAllDay).toBe(true);
+    expect(calendarEventPayload({ startDateTime: "2026-09-08T00:00:00", endDateTime: "2026-09-09T00:00:00", isAllDay: true })).toMatchObject({ start: { timeZone: "UTC" }, end: { timeZone: "UTC" }, isAllDay: true });
     const crossMidnight = calendarEventPayload({ startDateTime: "2026-09-07T23:00:00Z", endDateTime: "2026-09-08T00:00:00Z", timeZone: "Europe/Berlin", recurrence: { pattern: { type: "daily", interval: 1 }, range: { type: "noEnd", startDate: "2026-09-08" } } });
     expect(crossMidnight).toMatchObject({ start: { dateTime: "2026-09-08T01:00:00" }, recurrence: { range: { startDate: "2026-09-08" } } });
     expect(() => calendarEventPayload({ startDateTime: "2026-09-07T23:00:00Z", endDateTime: "2026-09-08T00:00:00Z", timeZone: "Europe/Berlin", recurrence: { pattern: { type: "daily", interval: 1 }, range: { type: "noEnd", startDate: "2026-09-07" } } })).toThrow("invalid_recurrence");
@@ -336,9 +331,9 @@ describe("microsoft-graph plugin contract", () => {
     expect(calendarPageIsTruncated(25, 50)).toBe(true);
     expect(calendarPageIsTruncated(50, 50)).toBe(false);
     expect(calendarPageIsTruncated(50, 50, "/me/calendarView?$skiptoken=next")).toBe(true);
-    const item = { subject: "Family planning", bodyPreview: "Agenda", location: { displayName: "Home" }, organizer: { emailAddress: { address: "owner@example.com" } }, attendees: [{ emailAddress: { address: "guest@example.com" } }], categories: ["Family"], showAs: "busy", isAllDay: false };
-    expect(eventMatchesSearch(item, { search: "planning", searchFields: ["subject"], showAs: "busy", attendee: "guest@example.com" })).toBe(true);
-    expect(eventMatchesSearch(item, { search: "office", searchFields: ["location"] })).toBe(false);
+    const item = { subject: "Synthetic planning record", bodyPreview: "Synthetic preview", location: { displayName: "Synthetic Location" }, organizer: { emailAddress: { address: "organizer@example.invalid" } }, attendees: [{ emailAddress: { address: "attendee@example.invalid" } }], categories: ["Synthetic Category"], showAs: "busy", isAllDay: false };
+    expect(eventMatchesSearch(item, { search: "planning", searchFields: ["subject"], showAs: "busy", attendee: "attendee@example.invalid" })).toBe(true);
+    expect(eventMatchesSearch(item, { search: "absent", searchFields: ["location"] })).toBe(false);
   });
 
   it("uses explicit offsets for local calendar windows and validates continuation scope", () => {
@@ -466,7 +461,7 @@ describe("microsoft-graph plugin contract", () => {
     expect(() => validateAttachmentContent({ contentBytes: "YR==" }, 1024)).toThrow("invalid_provider_response");
   });
 
-  it("rejects non-canonical OneDrive media references before policy, credentials, or network", async () => {
+  it("rejects direct OneDrive mutations without an approval snapshot before policy, credentials, or network", async () => {
     const factories: Array<(context: any) => any> = [];
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     try {
@@ -474,7 +469,7 @@ describe("microsoft-graph plugin contract", () => {
       for (const index of [4, 5]) {
         const tool = factories[index]({ agentId: "main" });
         const response = await tool.execute("x", { rootLabel: "synthetic_documents", relativePath: "a.bin", sourceMediaUri: "/tmp/a.bin" });
-        expect(response.details).toEqual({ ok: false, error: "invalid_source_media_uri" });
+        expect(response.details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
       }
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
@@ -482,7 +477,7 @@ describe("microsoft-graph plugin contract", () => {
     }
   });
 
-  it("accepts OneDrive writes beyond the removed plugin limit before connector checks", async () => {
+  it("requires approval snapshots before direct OneDrive connector checks", async () => {
     const factories: Array<(context: any) => any> = [];
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     try {
@@ -491,8 +486,8 @@ describe("microsoft-graph plugin contract", () => {
         const tool = factory({ agentId: "main" });
         return [tool.name, tool];
       }));
-      expect((await tools.onedrive_upload.execute("upload", { rootLabel: "synthetic_documents", relativePath: "large.bin", sourceMediaUri: "media://inbound/large.bin" })).details).toEqual({ ok: false, error: "connector_disabled" });
-      expect((await tools.onedrive_update.execute("update", { rootLabel: "synthetic_documents", relativePath: "large.bin", sourceMediaUri: "media://inbound/large.bin" })).details).toEqual({ ok: false, error: "connector_disabled" });
+      expect((await tools.onedrive_upload.execute("upload", { rootLabel: "synthetic_documents", relativePath: "large.bin", sourceMediaUri: "media://inbound/large.bin" })).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+      expect((await tools.onedrive_update.execute("update", { rootLabel: "synthetic_documents", relativePath: "large.bin", sourceMediaUri: "media://inbound/large.bin" })).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       fetchSpy.mockRestore();
@@ -528,21 +523,21 @@ describe("microsoft-graph plugin contract", () => {
     expect(writeSchema.properties.action.anyOf.map((entry: any) => entry.const)).toEqual(expect.arrayContaining(["update_properties", "reply_all_draft", "copy", "add_attachment"]));
     for (const field of ["replyTo", "categories", "importance", "inferenceClassification", "isDeliveryReceiptRequested", "isReadReceiptRequested", "flagStatus", "flagStartDateTime", "flagDueDateTime", "internetMessageId", "internetMessageHeaders", "destinationFolderId", "attachmentMediaUri"]) expect(writeSchema.properties[field]).toBeTruthy();
 
-    const kql = mailListQuery({ action: "search_messages", searchKql: "from:person@example.com AND hasAttachments:true", includeHeaders: true }, 25);
-    expect(kql.query.get("$search")).toBe('"from:person@example.com AND hasAttachments:true"');
+    const kql = mailListQuery({ action: "search_messages", searchKql: "from:person@example.invalid AND hasAttachments:true", includeHeaders: true }, 25);
+    expect(kql.query.get("$search")).toBe('"from:person@example.invalid AND hasAttachments:true"');
     expect(kql.fields).toContain("internetMessageHeaders");
     expect(kql.fields).toContain("changeKey");
     const filtered = mailListQuery({ action: "list_messages", receivedAfter: "2026-09-01T00:00:00Z", isRead: false, importance: "high", orderBy: "receivedDateTime" }, 10);
     expect(filtered.query.get("$filter")).toBe("receivedDateTime ge 2026-09-01T00:00:00Z and isRead eq false and importance eq 'high'");
     expect(filtered.query.get("$orderby")).toBe("receivedDateTime desc");
-    expect(() => mailListQuery({ action: "search_messages", search: "invoice", isRead: false }, 10)).toThrow("invalid_search_combination");
+    expect(() => mailListQuery({ action: "search_messages", search: "synthetic-query", isRead: false }, 10)).toThrow("invalid_search_combination");
     expect(() => mailListQuery({ action: "list_messages", receivedAfter: "2026-02-30T12:00:00Z" }, 10)).toThrow("invalid_datetime");
   });
 
   it("maps stable writable mail properties without allowing sender impersonation", () => {
-    expect(mailMessagePayload({ subject: "Draft", bodyText: "Text", replyTo: ["reply@example.com"], categories: ["Blue category"], importance: "high", isReadReceiptRequested: true, flagStatus: "flagged", flagStartDateTime: "2026-09-08T09:00:00", flagDueDateTime: "2026-09-09T09:00:00", flagTimeZone: "Europe/Berlin", internetMessageId: "<draft@example.invalid>", internetMessageHeaders: [{ name: "X-Trace", value: "bounded" }] }, true, true)).toEqual({
-      subject: "Draft", body: { contentType: "Text", content: "Text" }, replyTo: [{ emailAddress: { address: "reply@example.com" } }], categories: ["Blue category"], importance: "high", isReadReceiptRequested: true,
-      flag: { flagStatus: "flagged", startDateTime: { dateTime: "2026-09-08T09:00:00", timeZone: "Europe/Berlin" }, dueDateTime: { dateTime: "2026-09-09T09:00:00", timeZone: "Europe/Berlin" } },
+    expect(mailMessagePayload({ subject: "Draft", bodyText: "Text", replyTo: ["reply@example.invalid"], categories: ["Synthetic Category"], importance: "high", isReadReceiptRequested: true, flagStatus: "flagged", flagStartDateTime: "2026-09-08T09:00:00", flagDueDateTime: "2026-09-09T09:00:00", internetMessageId: "<draft@example.invalid>", internetMessageHeaders: [{ name: "X-Trace", value: "bounded" }] }, true, true)).toEqual({
+      subject: "Draft", body: { contentType: "Text", content: "Text" }, replyTo: [{ emailAddress: { address: "reply@example.invalid" } }], categories: ["Synthetic Category"], importance: "high", isReadReceiptRequested: true,
+      flag: { flagStatus: "flagged", startDateTime: { dateTime: "2026-09-08T09:00:00", timeZone: "UTC" }, dueDateTime: { dateTime: "2026-09-09T09:00:00", timeZone: "UTC" } },
       internetMessageHeaders: [{ name: "X-Trace", value: "bounded" }],
       internetMessageId: "<draft@example.invalid>",
     });
@@ -550,10 +545,10 @@ describe("microsoft-graph plugin contract", () => {
     expect(() => mailMessagePayload({ isReadReceiptRequested: true }, false)).toThrow("invalid_mail_payload");
     expect(() => mailMessagePayload({ internetMessageHeaders: [{ name: "X-Late", value: "no" }] }, true)).toThrow("invalid_internet_headers");
     expect(() => mailMessagePayload({ flagDueDateTime: "2026-09-09T09:00:00" }, false)).toThrow("invalid_followup_flag");
-    expect(mailMessagePayload({ bodyText: "Reply", bcc: ["hidden@example.com"], replyTo: ["reply@example.com"], categories: ["Blue category"], importance: "high", isDeliveryReceiptRequested: true }, true)).toEqual({
+    expect(mailMessagePayload({ bodyText: "Reply", bcc: ["hidden@example.invalid"], replyTo: ["reply@example.invalid"], categories: ["Blue category"], importance: "high", isDeliveryReceiptRequested: true }, true)).toEqual({
       body: { contentType: "Text", content: "Reply" },
-      bccRecipients: [{ emailAddress: { address: "hidden@example.com" } }],
-      replyTo: [{ emailAddress: { address: "reply@example.com" } }],
+      bccRecipients: [{ emailAddress: { address: "hidden@example.invalid" } }],
+      replyTo: [{ emailAddress: { address: "reply@example.invalid" } }],
       categories: ["Blue category"],
       importance: "high",
       isDeliveryReceiptRequested: true,
@@ -566,25 +561,25 @@ describe("microsoft-graph plugin contract", () => {
       body: { message: { body: { contentType: "Text", content: "Reply" } } },
     });
     expect(mailReplyForwardPlan({ action: "reply_all_draft", bodyText: "Reply all" })).toEqual({ endpoint: "createReplyAll", body: { message: { body: { contentType: "Text", content: "Reply all" } } } });
-    expect(mailReplyForwardPlan({ action: "forward_draft", bodyHtml: "<p>Forward</p>", to: ["person@example.com"] })).toEqual({ endpoint: "createForward", body: { message: { body: { contentType: "HTML", content: "<p>Forward</p>" }, toRecipients: [{ emailAddress: { address: "person@example.com" } }] } } });
+    expect(mailReplyForwardPlan({ action: "forward_draft", bodyHtml: "<p>Forward</p>", to: ["person@example.invalid"] })).toEqual({ endpoint: "createForward", body: { message: { body: { contentType: "HTML", content: "<p>Forward</p>" }, toRecipients: [{ emailAddress: { address: "person@example.invalid" } }] } } });
     expect(() => mailReplyForwardPlan({ action: "reply_draft", bodyText: "Reply", categories: ["Blue category"] })).toThrow("invalid_write_parameter");
     expect(() => mailReplyForwardPlan({ action: "reply_draft", bodyText: "Reply", bodyHtml: "<p>Reply</p>" })).toThrow("invalid_body_format");
     expect(() => mailReplyForwardPlan({ action: "reply_draft", bodyText: "Reply", internetMessageHeaders: [{ name: "X-Late", value: "no" }] })).toThrow("invalid_write_parameter");
-    expect(() => mailReplyForwardPlan({ action: "forward_draft", bodyText: "Forward", replyTo: ["reply@example.com"] })).toThrow("invalid_write_parameter");
-    expect(() => mailReplyForwardPlan({ action: "forward_draft", bodyText: "Forward", to: ["person@example.com"], flagDueDateTime: "2026-09-09T09:00:00" })).toThrow("invalid_write_parameter");
+    expect(() => mailReplyForwardPlan({ action: "forward_draft", bodyText: "Forward", replyTo: ["reply@example.invalid"] })).toThrow("invalid_write_parameter");
+    expect(() => mailReplyForwardPlan({ action: "forward_draft", bodyText: "Forward", to: ["person@example.invalid"], flagDueDateTime: "2026-09-09T09:00:00" })).toThrow("invalid_write_parameter");
     expect(mailMessageActionPath("message+id=", "createReplyAll")).toBe("/me/messages/message%2Bid%3D/createReplyAll");
     expect(mailMessageActionPath("message", "copy")).toBe("/me/messages/message/copy");
     expect(mailMessageActionPath("message", "attachments")).toBe("/me/messages/message/attachments");
   });
 
-  it("executes the registered mail tool and rejects invalid reply/forward patches before any network request", async () => {
+  it("rejects direct mail mutations without an approval snapshot before any network request", async () => {
     const factories: Array<(context: any) => any> = [];
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     try {
       entry.register({ pluginConfig: { enabled: true }, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
       const tool = factories[12]({ agentId: "main" });
       const response = await tool.execute("x", { action: "reply_draft", messageId: "message", bodyText: "Reply", bodyHtml: "<p>Reply</p>" });
-      expect(response.details).toEqual({ ok: false, error: "invalid_body_format" });
+      expect(response.details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       fetchSpy.mockRestore();
@@ -598,9 +593,9 @@ describe("microsoft-graph plugin contract", () => {
     expect(readSchema.properties.action.anyOf.map((entry: any) => entry.const)).toEqual(expect.arrayContaining(["search_lists", "search_tasks", "list_checklist", "list_linked_resources", "list_attachments", "get_attachment"]));
     expect(writeSchema.properties.action.anyOf.map((entry: any) => entry.const)).toEqual(expect.arrayContaining(["update_checklist", "delete_checklist", "add_linked_resource", "update_linked_resource", "delete_linked_resource", "add_attachment", "delete_attachment"]));
     for (const field of ["bodyHtml", "categories", "recurrence", "isReminderOn", "completedDateTime"]) expect(writeSchema.properties[field]).toBeTruthy();
-    expect(taskPayload({ title: "Task", bodyHtml: "<p>Details</p>", categories: ["Blue"], isReminderOn: false, completedDateTime: "2026-09-08T12:00:00", timeZone: "Europe/Berlin" })).toEqual({ title: "Task", body: { contentType: "html", content: "<p>Details</p>" }, categories: ["Blue"], isReminderOn: false, completedDateTime: { dateTime: "2026-09-08T12:00:00", timeZone: "Europe/Berlin" } });
-    expect(todoTaskMatches({ title: "Quarterly report", body: { content: "Finance" }, categories: ["Blue"], status: "inProgress", isReminderOn: false }, { search: "finance", searchFields: ["body"], categories: ["Blue"], status: "inProgress", isReminderOn: false })).toBe(true);
-    expect(todoTaskMatches({ title: "Quarterly report", categories: ["Blue"] }, { search: "invoice", searchFields: ["title"] })).toBe(false);
+    expect(taskPayload({ title: "Synthetic Task", bodyHtml: "<p>Synthetic details</p>", categories: ["Synthetic Category"], isReminderOn: false, completedDateTime: "2026-09-08T12:00:00" })).toEqual({ title: "Synthetic Task", body: { contentType: "html", content: "<p>Synthetic details</p>" }, categories: ["Synthetic Category"], isReminderOn: false, completedDateTime: { dateTime: "2026-09-08T12:00:00", timeZone: "UTC" } });
+    expect(todoTaskMatches({ title: "Synthetic task record", body: { content: "Synthetic content" }, categories: ["Synthetic Category"], status: "inProgress", isReminderOn: false }, { search: "synthetic content", searchFields: ["body"], categories: ["Synthetic Category"], status: "inProgress", isReminderOn: false })).toBe(true);
+    expect(todoTaskMatches({ title: "Synthetic task record", categories: ["Synthetic Category"] }, { search: "absent", searchFields: ["title"] })).toBe(false);
     expect(todoTaskPath("list+id=", "task+id=")).toBe("/me/todo/lists/list%2Bid%3D/tasks/task%2Bid%3D");
     expect(todoTaskChildPath("list", "task", "checklistItems", "check")).toBe("/me/todo/lists/list/tasks/task/checklistItems/check");
     expect(todoTaskChildPath("AAList=", "BBTask=", "checklistItems", "CCCheck=")).toBe("/me/todo/lists/AAList%3D/tasks/BBTask%3D/checklistItems/CCCheck%3D");
@@ -665,19 +660,268 @@ describe("microsoft-graph plugin contract", () => {
     expect(inventory.approvals).toContainEqual({ tool: "onedrive_delete", condition: "delete", level: "critical" });
     expect(inventory.approvals).toContainEqual({ tool: "onedrive_agents_instructions", condition: "read", level: "none" });
     expect(inventory.approvals).toContainEqual({ tool: "outlook_calendar_write", action: "create", level: "warning" });
-    expect(inventory.confirmationModes).toEqual({ none: "none", warning: "originating-chat-batch", critical: "formal-plugin-approval" });
+    expect(inventory.confirmationModes).toEqual({ none: "none", warning: "native-plugin-approval", critical: "native-plugin-approval" });
     for (const tool of ["outlook_calendar_write", "outlook_mail_write", "microsoft_todo_write"]) {
       expect(inventory.approvals).toContainEqual({ tool, condition: "unknown_or_missing_action", level: "warning" });
     }
     expect(JSON.stringify(inventory)).not.toMatch(/credentials|secret|token|password/i);
   });
 
-  it("uses originating-chat batch confirmation for warnings and formal approval only for critical calls", async () => {
+  it("uses configurable native warning approval and process-scoped allow-always trust", async () => {
+    const register = (pluginConfig: Record<string, unknown>) => {
+      const hooks: Record<string, (...args: any[]) => Promise<any>> = {};
+      entry.register({ pluginConfig, registerTool: vi.fn(), on: (name: string, handler: any) => { hooks[name] = handler; }, logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+      return hooks;
+    };
+    const context = { agentId: "main", sessionId: "native-approval" };
+    const warningEvent = { toolName: "outlook_mail_write", toolCallId: "warning-call", params: { action: "mark_read", messageId: "message-1", isRead: true } };
+
+    for (const pluginConfig of [{}, { warningApprovalsRequired: true }]) {
+      const request = await register(pluginConfig).before_tool_call(warningEvent, context);
+      expect(request.requireApproval).toMatchObject({
+        severity: "warning",
+        allowedDecisions: ["allow-once", "allow-always", "deny"],
+      });
+      expect(request.requireApproval.description).not.toContain("message-1");
+    }
+
+    const disabled = await register({ warningApprovalsRequired: false }).before_tool_call(warningEvent, context);
+    expect(disabled).toEqual({ params: warningEvent.params });
+
+    const hooks = register({ warningApprovalsRequired: true });
+    const first = await hooks.before_tool_call(warningEvent, context);
+    first.requireApproval.onResolution("allow-once");
+    expect((await hooks.before_tool_call(warningEvent, context)).requireApproval).toBeTruthy();
+    first.requireApproval.onResolution("allow-always");
+    expect(await hooks.before_tool_call(warningEvent, context)).toEqual({ params: warningEvent.params });
+    expect((await hooks.before_tool_call({ ...warningEvent, toolCallId: "other-agent-call" }, { ...context, agentId: "other" })).requireApproval).toBeTruthy();
+    expect((await hooks.before_tool_call({ ...warningEvent, toolCallId: "move-call", params: { action: "move", messageId: "message-1", destination: "archive" } }, context)).requireApproval).toBeTruthy();
+    expect((await hooks.before_tool_call({ toolName: "microsoft_todo_write", toolCallId: "todo-call", params: { action: "create_list", title: "List" } }, context)).requireApproval).toBeTruthy();
+
+    const legacy = await register({ warningApprovalsRequired: true }).before_tool_call({
+      ...warningEvent,
+      toolCallId: "legacy-call",
+      params: { ...warningEvent.params, chatConfirmed: true, chatConfirmationToken: `mgw1_${"A".repeat(43)}` },
+    }, context);
+    expect(legacy.requireApproval).toMatchObject({ severity: "warning", allowedDecisions: ["allow-once", "allow-always", "deny"] });
+
+    const critical = await hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: "critical-call", params: { action: "send_draft", messageId: "message-1", chatConfirmed: true, chatConfirmationToken: `mgw1_${"A".repeat(43)}` } }, context);
+    expect(critical.requireApproval).toMatchObject({ severity: "critical", allowedDecisions: ["allow-once", "deny"] });
+    expect(critical.requireApproval.onResolution).toEqual(expect.any(Function));
+  });
+
+  it("consumes exact execution snapshots once and fails closed without evicting live bindings", () => {
+    const snapshots = new NativeApprovalSnapshotStore(1);
+    snapshots.record("call-1", { agentId: "main", sessionId: "session-1", toolName: "outlook_mail_write", params: JSON.stringify({ action: "mark_read" }) });
+    expect(() => snapshots.record("call-2", { agentId: "main", sessionId: "session-1", toolName: "outlook_mail_write", params: JSON.stringify({ action: "send_draft" }) })).toThrow("approval_context_capacity_exceeded");
+    expect(snapshots.consume("call-1", "main", "session-1", "outlook_mail_write", { action: "send_draft" })).toBe(false);
+    expect(snapshots.consume("call-1", "main", "session-1", "outlook_mail_write", { action: "mark_read" })).toBeUndefined();
+  });
+
+  it.each([
+    ["wrong call ID", "wrong-call", "main", "session-1", "outlook_mail_write", { action: "mark_read", messageId: "message-1", isRead: true }, undefined],
+    ["missing call ID", "", "main", "session-1", "outlook_mail_write", { action: "mark_read", messageId: "message-1", isRead: true }, undefined],
+    ["cross-agent", "bound-call", "other", "session-1", "outlook_mail_write", { action: "mark_read", messageId: "message-1", isRead: true }, false],
+    ["cross-session", "bound-call", "main", "session-2", "outlook_mail_write", { action: "mark_read", messageId: "message-1", isRead: true }, false],
+    ["cross-tool", "bound-call", "main", "session-1", "microsoft_todo_write", { action: "mark_read", messageId: "message-1", isRead: true }, false],
+    ["cross-action", "bound-call", "main", "session-1", "outlook_mail_write", { action: "send_draft", messageId: "message-1" }, false],
+    ["cross-params", "bound-call", "main", "session-1", "outlook_mail_write", { action: "mark_read", messageId: "message-2", isRead: true }, false],
+  ] as const)("rejects an approval snapshot on %s", (_case, callId, agentId, sessionId, toolName, params, expected) => {
+    const snapshots = new NativeApprovalSnapshotStore();
+    snapshots.record("bound-call", {
+      agentId: "main",
+      sessionId: "session-1",
+      toolName: "outlook_mail_write",
+      params: JSON.stringify({ action: "mark_read", isRead: true, messageId: "message-1" }),
+    });
+    expect(snapshots.consume(callId, agentId, sessionId, toolName, params)).toBe(expected);
+    if (callId === "bound-call") {
+      expect(snapshots.consume("bound-call", "main", "session-1", "outlook_mail_write", { action: "mark_read", messageId: "message-1", isRead: true })).toBeUndefined();
+    }
+  });
+
+  it.each([
+    { action: "mark_read", messageId: "message-1", isRead: true },
+    { action: "send_draft", messageId: "draft-1" },
+  ])("blocks $action approval when the host omits toolCallId", async (params) => {
+    expect(await beforeMicrosoftGraphToolCall(
+      {},
+      { toolName: "outlook_mail_write", params },
+      { agentId: "main", sessionId: "missing-tool-call-id" },
+    )).toEqual({ block: true, blockReason: "approval_context_tool_call_id_required" });
+  });
+
+  it("consumes an approved mutation snapshot exactly once at tool execution", async () => {
+    const hooks: Record<string, (...args: any[]) => Promise<any> | any> = {};
+    const factories: Array<(context: any) => any> = [];
+    entry.register({
+      pluginConfig: {},
+      registerTool: (factory: any) => factories.push(factory),
+      on: (name: string, handler: any) => { hooks[name] = handler; },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    } as any);
+    const context = { agentId: "main", sessionId: "single-use-snapshot" };
+    const tools = Object.fromEntries(factories.map((factory) => {
+      const tool = factory(context);
+      return [tool.name, tool];
+    }));
+    const params = { action: "mark_read", messageId: "message-1", isRead: true };
+    const approval = await hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: "single-use-call", params }, context);
+    expect(approval.requireApproval).toMatchObject({ severity: "warning" });
+    expect((await tools.outlook_mail_write.execute("single-use-call", params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+    approval.requireApproval.onResolution("allow-once");
+
+    expect((await tools.outlook_mail_write.execute("", params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+    expect((await tools.outlook_mail_write.execute("wrong-call", params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+    expect((await tools.outlook_mail_write.execute("single-use-call", params)).details).toEqual({ ok: false, error: "connector_disabled" });
+    expect((await tools.outlook_mail_write.execute("single-use-call", params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+  });
+
+  it.each(["deny", "timeout", "cancelled"] as const)("does not bind execution after native approval resolution %s", async (decision) => {
+    const hooks: Record<string, (...args: any[]) => Promise<any> | any> = {};
+    const factories: Array<(context: any) => any> = [];
+    entry.register({
+      pluginConfig: {},
+      registerTool: (factory: any) => factories.push(factory),
+      on: (name: string, handler: any) => { hooks[name] = handler; },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    } as any);
+    const context = { agentId: "main", sessionId: `approval-${decision}` };
+    const tool = factories.map((factory) => factory(context)).find((candidate) => candidate.name === "outlook_mail_write");
+    const params = { action: "send_draft", messageId: "draft-1" };
+    const toolCallId = `approval-${decision}`;
+    const approval = await hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId, params }, context);
+    approval.requireApproval.onResolution(decision);
+
+    expect((await tool.execute(toolCallId, params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+  });
+
+  it.each(["drive_id", "item_id"] as const)("binds approved OneDrive mutations to the canonical %s", async (identityField) => {
+    const policy = graphPolicyFixture();
+    const root = policy.services.onedrive.allowed_roots[0];
+    delete root.agents_instructions;
+    root.agents.main.permissions.read = true;
+    const hooks: Record<string, (...args: any[]) => Promise<any> | any> = {};
+    const factories: Array<(context: any) => any> = [];
+    entry.register({
+      pluginConfig: { enabled: true, policy },
+      registerTool: (factory: any) => factories.push(factory),
+      on: (name: string, handler: any) => { hooks[name] = handler; },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    } as any);
+    const context = { agentId: "main", sessionId: `root-identity-${identityField}` };
+    const tools = Object.fromEntries(factories.map((factory) => {
+      const tool = factory(context);
+      return [tool.name, tool];
+    }));
+    const params = { rootLabel: root.label, relativePath: "folder/file.txt", description: "updated" };
+    const toolCallId = `root-identity-${identityField}`;
+    const approval = await hooks.before_tool_call({ toolName: "onedrive_metadata_update", toolCallId, params }, context);
+    expect(approval.requireApproval).toMatchObject({ severity: "warning" });
+    approval.requireApproval.onResolution("allow-once");
+
+    root[identityField] = `${root[identityField]}-changed`;
+    expect((await tools.onedrive_metadata_update.execute(toolCallId, params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+  });
+
+  it("renders privacy-minimized action, target, and risk details in native approvals", async () => {
+    const policy = graphPolicyFixture();
+    const root = policy.services.onedrive.allowed_roots[0];
+    delete root.agents_instructions;
+    root.permissions = { read: true, write: true, delete: true };
+    root.agents.main.permissions = { read: true, write: true, delete: true };
+    const config = { enabled: true, warningApprovalsRequired: true, policy };
+    const workspaceDir = await mkdtemp(join(tmpdir(), "microsoft-graph-approval-copy-"));
+    await mkdir(join(workspaceDir, "media", "inbound"), { recursive: true });
+    const uploadBytes = Buffer.alloc(17, 0x63);
+    const uploadSha256 = createHash("sha256").update(uploadBytes).digest("hex");
+    await writeFile(join(workspaceDir, "media", "inbound", "file.txt"), uploadBytes);
+    const context = { agentId: "main", sessionId: "approval-copy", workspaceDir };
+
+    const upload: any = await beforeMicrosoftGraphToolCall(config, {
+      toolName: "onedrive_upload",
+      toolCallId: "approval-copy-upload",
+      params: { rootLabel: root.label, relativePath: `${"long-folder/".repeat(80)}file.txt`, sourceMediaUri: "media://inbound/file.txt", sourceSha256: uploadSha256, sourceByteSize: uploadBytes.byteLength },
+    }, context);
+    expect(upload.requireApproval.description).toContain(`OneDrive root "${root.label}", path "long-folder/`);
+    expect(upload.requireApproval.description).toContain(`content SHA-256 ${uploadSha256}, 17 bytes`);
+    expect(upload.requireApproval.description.length).toBeLessThanOrEqual(512);
+
+    const calendar: any = await beforeMicrosoftGraphToolCall(config, {
+      toolName: "outlook_calendar_write",
+      toolCallId: "approval-copy-calendar",
+      params: { action: "update", calendarId: "calendar-1", eventId: "event-1", subject: "Updated" },
+    }, context);
+    expect(calendar.requireApproval.description).toContain('calendar "calendar-1", event "event-1"');
+
+    const multiwrite: any = await beforeMicrosoftGraphToolCall(config, {
+      toolName: "outlook_calendar_write",
+      toolCallId: "approval-copy-multiwrite",
+      params: { action: "multiwrite", operations: [
+        { operationId: "create-1", kind: "create", calendarId: `calendar-${"a".repeat(200)}`, subject: "One", startDateTime: "2099-01-15T08:00:00", endDateTime: "2099-01-15T09:00:00" },
+        { operationId: "update-1", kind: "update", calendarId: `calendar-${"b".repeat(200)}`, eventId: "event-1", subject: "Two" },
+        { operationId: "update-2", kind: "update", calendarId: `calendar-${"c".repeat(200)}`, eventId: "event-2", subject: "Three" },
+      ] },
+    }, context);
+    expect(multiwrite.requireApproval.description).toContain("Target: 3 calendar operations across 3 calendar(s)");
+    expect(multiwrite.requireApproval.description.length).toBeLessThanOrEqual(512);
+
+    const draft: any = await beforeMicrosoftGraphToolCall(config, {
+      toolName: "outlook_mail_write",
+      toolCallId: "approval-copy-draft",
+      params: { action: "create_draft", subject: "Private", bodyText: "Private", to: ["one@example.invalid"], cc: ["two@example.invalid"] },
+    }, context);
+    expect(draft.requireApproval.description).toContain("recipient count 2");
+    expect(draft.requireApproval.description).not.toContain("one@example.invalid");
+    expect(draft.requireApproval.description).not.toContain("two@example.invalid");
+
+    const send: any = await beforeMicrosoftGraphToolCall(config, {
+      toolName: "outlook_mail_write",
+      toolCallId: "approval-copy-send",
+      params: { action: "send_draft", messageId: "private-message-id" },
+    }, context);
+    expect(send.requireApproval.description).toContain("recipients come from the draft; recipient count is unavailable in this call");
+    expect(send.requireApproval.description).not.toContain("private-message-id");
+
+    const todo: any = await beforeMicrosoftGraphToolCall(config, {
+      toolName: "microsoft_todo_write",
+      toolCallId: "approval-copy-todo",
+      params: { action: "create_task", listId: "list-1", title: "PRIVATE TODO TITLE" },
+    }, context);
+    expect(todo.requireApproval.description).toContain('To Do list "list-1", task "new task"');
+    expect(todo.requireApproval.description).not.toContain("PRIVATE TODO TITLE");
+    await rm(workspaceDir, { recursive: true, force: true });
+  });
+
+  it("offers the required native decisions for every declared mutation action", async () => {
+    const policy = graphPolicyFixture();
+    const root = policy.services.onedrive.allowed_roots[0];
+    delete root.agents_instructions;
+    root.permissions = { read: true, write: true, delete: true };
+    root.agents.main.permissions = { read: true, write: true, delete: true };
+    const workspaceDir = await mkdtemp(join(tmpdir(), "microsoft-graph-all-approvals-"));
+    await mkdir(join(workspaceDir, "media", "inbound"), { recursive: true });
+    const newBytes = Buffer.alloc(7, 0x61);
+    const existingBytes = Buffer.alloc(8, 0x62);
+    await writeFile(join(workspaceDir, "media", "inbound", "new.txt"), newBytes);
+    await writeFile(join(workspaceDir, "media", "inbound", "existing.txt"), existingBytes);
     const hooks: Record<string, (...args: any[]) => Promise<any>> = {};
-    entry.register({ pluginConfig: {}, registerTool: vi.fn(), on: (name: string, handler: any) => { hooks[name] = handler; }, logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+    entry.register({
+      pluginConfig: { enabled: true, warningApprovalsRequired: true, policy },
+      registerTool: vi.fn(),
+      on: (name: string, handler: any) => { hooks[name] = handler; },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    } as any);
+    const context = { agentId: "main", sessionId: "all-mutation-approvals", workspaceDir };
     const metadata = getToolPluginMetadata(entry)!;
-    const ownerChat = { agentId: "main", sessionId: "session-confirmation", requester: { senderIsOwner: true, channel: "telegram" } };
-    for (const tool of metadata.tools) {
+    const oneDriveParams: Record<string, Record<string, unknown>> = {
+      onedrive_upload: { rootLabel: root.label, relativePath: "new.txt", sourceMediaUri: "media://inbound/new.txt", sourceSha256: createHash("sha256").update(newBytes).digest("hex"), sourceByteSize: newBytes.byteLength },
+      onedrive_update: { rootLabel: root.label, relativePath: "existing.txt", sourceMediaUri: "media://inbound/existing.txt", sourceSha256: createHash("sha256").update(existingBytes).digest("hex"), sourceByteSize: existingBytes.byteLength },
+      onedrive_metadata_update: { rootLabel: root.label, relativePath: "existing.txt", name: "renamed.txt" },
+      onedrive_create_folder: { rootLabel: root.label, parentRelativePath: "", name: "folder" },
+      onedrive_delete: { rootLabel: root.label, relativePath: "existing.txt" },
+    };
+    for (const tool of metadata.tools.filter((candidate) => candidate.name in oneDriveParams || candidate.name.endsWith("_write"))) {
       const actions = (tool.parameters as any).properties?.action?.anyOf?.map((value: any) => value.const) ?? [undefined];
       for (const action of actions) {
         const calendarParams = tool.name === "outlook_calendar_write" && action === "create"
@@ -688,74 +932,52 @@ describe("microsoft-graph plugin contract", () => {
               ? { action, operations: [{ operationId: "create-1", kind: "create", subject: "Synthetic fixture", startDateTime: "2099-01-15T08:00:00", endDateTime: "2099-01-15T09:00:00", timeZone: "Europe/Berlin" }] }
               : tool.name === "outlook_calendar_write" && action === "attach"
                 ? { action, eventId: "event-1" }
-              : undefined;
-        const event = { toolName: tool.name, params: calendarParams ?? (action === undefined ? {} : { action }) };
-        const first = await hooks.before_tool_call(event, ownerChat);
-        const level = classifyApproval(tool.name, event.params);
-        if (level === "none") {
-          expect(first, `${tool.name}:${action ?? "call"}`).toBeUndefined();
-        } else if (level === "warning") {
-          expect(first, `${tool.name}:${action ?? "call"}`).toMatchObject({ block: true, blockReason: expect.stringContaining("chat_confirmation_required") });
-          expect(first.blockReason, `${tool.name}:${action ?? "call"}`).toContain("the user's explicit confirmation");
-          expect(first.requireApproval, `${tool.name}:${action ?? "call"}`).toBeUndefined();
-          const confirmationToken = first.blockReason.match(/chatConfirmationToken="(mgw1_[A-Za-z0-9_-]{43})"/)?.[1];
-          expect(confirmationToken, `${tool.name}:${action ?? "call"}:token`).toBeTruthy();
-          const confirmedParams = { ...event.params, chatConfirmed: true, chatConfirmationToken: confirmationToken };
-          const confirmed = await hooks.before_tool_call({ ...event, params: confirmedParams }, ownerChat);
-          expect(confirmed, `${tool.name}:${action ?? "call"}:confirmed`).toBeUndefined();
-          const replay = await hooks.before_tool_call({ ...event, params: confirmedParams }, ownerChat);
-          expect(replay, `${tool.name}:${action ?? "call"}:replay`).toMatchObject({ block: true, blockReason: expect.stringContaining("chat_confirmation_invalid_or_changed") });
-          const untrusted = await hooks.before_tool_call({ ...event, params: confirmedParams }, { ...ownerChat, requester: { senderIsOwner: false, channel: "telegram" } });
-          expect(untrusted, `${tool.name}:${action ?? "call"}:untrusted`).toMatchObject({ block: true });
-        } else {
-          expect(first.requireApproval, `${tool.name}:${action ?? "call"}`).toMatchObject({ allowedDecisions: ["allow-once", "deny"] });
-          const confirmed = await hooks.before_tool_call({ ...event, params: { ...event.params, chatConfirmed: true } }, ownerChat);
-          expect(confirmed.requireApproval, `${tool.name}:${action ?? "call"}:critical-confirmed`).toMatchObject({ severity: "critical", allowedDecisions: ["allow-once", "deny"] });
-        }
+                : undefined;
+        const params = oneDriveParams[tool.name] ?? calendarParams ?? { action };
+        const level = classifyApproval(tool.name, params);
+        const result = await hooks.before_tool_call({ toolName: tool.name, toolCallId: `all-approvals-${tool.name}-${action ?? "call"}`, params }, context);
+        expect(result.requireApproval, `${tool.name}:${action ?? "call"}`).toMatchObject(level === "critical"
+          ? { severity: "critical", allowedDecisions: ["allow-once", "deny"] }
+          : { severity: "warning", allowedDecisions: ["allow-once", "allow-always", "deny"] });
+        expect(result.requireApproval.description, `${tool.name}:${action ?? "call"}`).toMatch(/Action: .+\. Target: .+\. Risk: .+\./);
+        expect(result.requireApproval.description.length, `${tool.name}:${action ?? "call"}`).toBeLessThanOrEqual(512);
       }
     }
-    const unknownCall = await hooks.before_tool_call({ toolName: "outlook_calendar_write", params: { action: "future_action" } }, ownerChat);
-    expect(unknownCall).toEqual({ block: true, blockReason: "unsupported_action" });
-    expect(unknownCall.requireApproval).toBeUndefined();
-
-    const originalBatch = { action: "multiwrite", operations: [{ operationId: "create-1", kind: "create", subject: "Synthetic original", startDateTime: "2099-01-15T08:00:00", endDateTime: "2099-01-15T09:00:00", timeZone: "Europe/Berlin" }] };
-    const challenge = await hooks.before_tool_call({ toolName: "outlook_calendar_write", params: originalBatch }, ownerChat);
-    const token = challenge.blockReason.match(/chatConfirmationToken="(mgw1_[A-Za-z0-9_-]{43})"/)?.[1];
-    const changed = await hooks.before_tool_call({ toolName: "outlook_calendar_write", params: { ...originalBatch, operations: [{ ...originalBatch.operations[0], subject: "Changed" }], chatConfirmed: true, chatConfirmationToken: token } }, ownerChat);
-    expect(changed).toMatchObject({ block: true, blockReason: expect.stringContaining("chat_confirmation_invalid_or_changed") });
+    await rm(workspaceDir, { recursive: true, force: true });
   });
 
-  it("keeps managed-root discovery behind warning confirmation and critical formal approval", async () => {
+  it("runs managed-root checks before warning execution and keeps critical approval call-bound", async () => {
     const policy = graphPolicyFixture();
     const root = policy.services.onedrive!.allowed_roots[0];
     root.permissions = { read: true, write: true, delete: true };
     root.agents = { main: { permissions: { read: true, write: true, delete: true } } };
     const config = { enabled: true, policy };
-    const context = { agentId: "main", sessionId: "approval-order", requester: { senderIsOwner: true, channel: "telegram" } };
+    const context = { agentId: "main", sessionId: "approval-order", requester: { senderIsOwner: true, channel: "synthetic-channel" } };
     const credentialReader = vi.fn(async () => ({ clientId: "client", refreshToken: "refresh", tenant: "tenant", scopes: ["Files.Read", "offline_access"] }));
     const tokenExchange = vi.fn(async () => "token");
     const candidateReader = vi.fn(async () => null);
     const dependencies = { credentialReader, tokenExchange, candidateReader, cache: new OneDriveAgentsSessionCache() };
 
     const warningParams = { rootLabel: root.label, relativePath: "folder/file.txt", description: "updated" };
-    const warning = await beforeMicrosoftGraphToolCall(config, { toolName: "onedrive_metadata_update", params: warningParams }, context, dependencies);
-    expect(warning).toMatchObject({ block: true, blockReason: expect.stringContaining("chat_confirmation_required") });
-    expect(credentialReader).not.toHaveBeenCalled();
-    expect(tokenExchange).not.toHaveBeenCalled();
-    expect(candidateReader).not.toHaveBeenCalled();
+    const warning = await beforeMicrosoftGraphToolCall(config, { toolName: "onedrive_metadata_update", toolCallId: "managed-warning", params: warningParams }, context, dependencies);
+    expect(warning).toMatchObject({ requireApproval: { severity: "warning", allowedDecisions: ["allow-once", "allow-always", "deny"] } });
+    expect(credentialReader).toHaveBeenCalledTimes(1);
+    expect(tokenExchange).toHaveBeenCalledTimes(1);
+    expect(candidateReader).toHaveBeenCalled();
 
-    const confirmationToken = (warning as { blockReason: string }).blockReason.match(/chatConfirmationToken="(mgw1_[A-Za-z0-9_-]{43})"/)?.[1];
-    await expect(beforeMicrosoftGraphToolCall(config, {
+    credentialReader.mockClear(); tokenExchange.mockClear(); candidateReader.mockClear();
+    await expect(beforeMicrosoftGraphToolCall({ ...config, warningApprovalsRequired: false }, {
       toolName: "onedrive_metadata_update",
-      params: { ...warningParams, chatConfirmed: true, chatConfirmationToken: confirmationToken },
-    }, context, dependencies)).resolves.toBeUndefined();
+      toolCallId: "warning-disabled-call",
+      params: { ...warningParams, chatConfirmed: true, chatConfirmationToken: `mgw1_${"A".repeat(43)}` },
+    }, context, { ...dependencies, cache: new OneDriveAgentsSessionCache() })).resolves.toMatchObject({ params: warningParams });
     expect(credentialReader).toHaveBeenCalledTimes(1);
     expect(tokenExchange).toHaveBeenCalledTimes(1);
     expect(candidateReader).toHaveBeenCalled();
 
     credentialReader.mockClear(); tokenExchange.mockClear(); candidateReader.mockClear();
     const criticalParams = { rootLabel: root.label, relativePath: "folder/file.txt" };
-    const critical = await beforeMicrosoftGraphToolCall(config, { toolName: "onedrive_delete", params: criticalParams }, context, { ...dependencies, cache: new OneDriveAgentsSessionCache() });
+    const critical = await beforeMicrosoftGraphToolCall(config, { toolName: "onedrive_delete", toolCallId: "managed-critical", params: criticalParams }, context, { ...dependencies, cache: new OneDriveAgentsSessionCache() });
     expect(critical).toMatchObject({ requireApproval: { severity: "critical", allowedDecisions: ["allow-once", "deny"] } });
     expect(credentialReader).not.toHaveBeenCalled();
     expect(tokenExchange).not.toHaveBeenCalled();
@@ -767,8 +989,8 @@ describe("microsoft-graph plugin contract", () => {
     expect(candidateReader).toHaveBeenCalled();
   });
 
-  it("validates calendar writes before confirmation and accepts equivalent timezone aliases", async () => {
-    expect(() => calendarChatConfirmationCriteria({
+  it("validates calendar writes before native approval and reuses exact action trust", async () => {
+    expect(() => calendarApprovalCriteria({
       action: "create",
       subject: "Synthetic timezone fixture",
       startDateTime: "2099-01-15T08:00:00",
@@ -778,7 +1000,7 @@ describe("microsoft-graph plugin contract", () => {
 
     const hooks: Record<string, (...args: any[]) => Promise<any>> = {};
     entry.register({ pluginConfig: {}, registerTool: vi.fn(), on: (name: string, handler: any) => { hooks[name] = handler; }, logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
-    const ownerChat = { agentId: "main", sessionId: "session-timezone-alias", requester: { senderIsOwner: true, channel: "telegram" } };
+    const approvalContext = { agentId: "main", sessionId: "session-timezone-alias", requester: { senderIsOwner: true, channel: "synthetic-channel" } };
     const intended = {
       action: "create",
       subject: "Synthetic timezone-alias test event",
@@ -790,17 +1012,18 @@ describe("microsoft-graph plugin contract", () => {
       isReminderOn: true,
       reminderMinutesBeforeStart: 15,
     };
-    const invalid = await hooks.before_tool_call({ toolName: "outlook_calendar_write", params: { ...intended, timeZone: "Not/A-Timezone" } }, ownerChat);
+    const invalid = await hooks.before_tool_call({ toolName: "outlook_calendar_write", params: { ...intended, timeZone: "Not/A-Timezone" } }, approvalContext);
     expect(invalid).toEqual({ block: true, blockReason: "invalid_datetime_timezone" });
 
-    const challenge = await hooks.before_tool_call({ toolName: "outlook_calendar_write", params: intended }, ownerChat);
-    const token = challenge.blockReason.match(/chatConfirmationToken="(mgw1_[A-Za-z0-9_-]{43})"/)?.[1];
-    expect(token).toBeTruthy();
+    const challenge = await hooks.before_tool_call({ toolName: "outlook_calendar_write", toolCallId: "timezone-challenge", params: intended }, approvalContext);
+    expect(challenge.requireApproval).toMatchObject({ severity: "warning" });
+    challenge.requireApproval.onResolution("allow-always");
     const equivalentAlias = await hooks.before_tool_call({
       toolName: "outlook_calendar_write",
-      params: { ...intended, timeZone: "W. Europe Standard Time", chatConfirmed: true, chatConfirmationToken: token },
-    }, ownerChat);
-    expect(equivalentAlias).toBeUndefined();
+      toolCallId: "timezone-alias-call",
+      params: { ...intended, timeZone: "W. Europe Standard Time" },
+    }, approvalContext);
+    expect(equivalentAlias).toMatchObject({ params: { ...intended, timeZone: "W. Europe Standard Time" } });
   });
 
   it("fails closed before secret access without runtime identity", async () => {
@@ -1062,7 +1285,7 @@ describe("microsoft-graph plugin contract", () => {
       const bases = [
         { action: "list_events" },
         { action: "search_events", search: "meeting" },
-        { action: "get_schedule", schedules: ["person@example.com"] },
+        { action: "get_schedule", schedules: ["person@example.invalid"] },
       ];
       for (const base of bases) {
         expect((await tool.execute("x", { ...base, startDateTime: malformed, endDateTime: valid })).details).toEqual({ ok: false, error: "invalid_datetime" });
@@ -1071,7 +1294,7 @@ describe("microsoft-graph plugin contract", () => {
       for (const base of bases.slice(0, 2)) {
         expect((await tool.execute("x", { ...base, startDateTime: valid, endDateTime: "2026-03-01T11:00:00Z", timeZone: "Unsupported Synthetic Zone" })).details).toEqual({ ok: false, error: "invalid_datetime_timezone" });
       }
-      expect((await tool.execute("x", { action: "get_schedule", schedules: ["person@example.com"], startDateTime: "2026-03-01T10:00:00", endDateTime: "2026-03-01T11:00:00", timeZone: "Unsupported Synthetic Zone" })).details).toEqual({ ok: false, error: "invalid_datetime_timezone" });
+      expect((await tool.execute("x", { action: "get_schedule", schedules: ["person@example.invalid"], startDateTime: "2026-03-01T10:00:00", endDateTime: "2026-03-01T11:00:00", timeZone: "Unsupported Synthetic Zone" })).details).toEqual({ ok: false, error: "invalid_datetime_timezone" });
       expect((await tool.execute("x", { action: "get_event", eventId: "event", timeZone: "Unsupported Synthetic Zone" })).details).toEqual({ ok: false, error: "invalid_datetime_timezone" });
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
@@ -1079,12 +1302,12 @@ describe("microsoft-graph plugin contract", () => {
     }
   });
 
-  it("rejects unsupported calendar responses before credential access", async () => {
+  it("rejects direct calendar mutations without an approval snapshot before credential access", async () => {
     const factories: Array<(context: any) => any> = [];
     entry.register({ pluginConfig: {}, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
     const tool = factories[10]({ agentId: "main" });
     const response = await tool.execute("x", { action: "respond", eventId: "event", response: "forward" });
-    expect(response.details).toEqual({ ok: false, error: "invalid_response" });
+    expect(response.details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
   });
 
   it("blocks mutations to shared or non-owned To Do lists", () => {

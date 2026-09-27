@@ -5,7 +5,7 @@
 ## Security model
 
 - Every operation is checked against a credential-free, default-deny per-agent policy before plugin-side key selection, vault I/O, OAuth, or Graph access.
-- Warning-level writes require an exact session-bound confirmation from the same originating OpenClaw session/chat. Agent and session identity come from OpenClaw's authenticated runtime context. Destructive, send, and respond operations require OpenClaw call-bound approval.
+- Warning-level mutations require OpenClaw-native call approval by default. Operators may explicitly set `warningApprovalsRequired: false`; critical delete, send, and respond operations always retain native call-bound approval.
 - One shared delegated OAuth credential serves every authorized read and write operation. The plugin requests only the operation-specific scope for each exchange.
 - One AES-256-GCM encrypted vault record, one fail-closed lock, and one authenticated quarantine marker protect the rotating refresh-token lifecycle.
 - Access-token caching is bounded and transactional: a token associated with a rotated refresh token is admitted only after durable vault replacement and verification.
@@ -18,7 +18,7 @@ See [architecture](docs/ARCHITECTURE.md), [OAuth access matrix](docs/OAUTH_ACCES
 
 ## Setup guide
 
-Version 3.0.0 uses one Microsoft delegated OAuth credential and one encrypted local vault. The policy contains authorization rules only; it never contains credential locations or credential material.
+Version 3.1.0 uses one Microsoft delegated OAuth credential and one encrypted local vault. The policy contains authorization rules only; it never contains credential locations or credential material.
 
 ### 1. Check prerequisites
 
@@ -57,12 +57,12 @@ The migration source is one JSON document stored under a single `pass` reference
 
 Create the entry interactively with `pass insert -m <pass-ref>`. Do not place this JSON in the OpenClaw config or policy, and never commit it or paste it into chat, issues, logs, screenshots, or test fixtures. Migration validates that this one credential covers every scope implied by the policy; it does not merge separate read and write credentials.
 
-### 3. Install version 3.0.0
+### 3. Install version 3.1.0
 
-Version 3.0.0 is a release candidate and is not yet available from npm. After publication, install the exact reviewed package and version:
+Version 3.1.0 is not yet available from npm. After publication, install the exact reviewed package and version:
 
 ```bash
-openclaw plugins install npm:@baumus/openclaw-microsoft-graph@3.0.0 --pin
+openclaw plugins install npm:@baumus/openclaw-microsoft-graph@3.1.0 --pin
 ```
 
 Review the package source, integrity, and declared capabilities before accepting the interactive consent prompt. Installation does not create credentials, consent Microsoft permissions, grant tool access, or make an incomplete configuration usable. OpenClaw may leave the plugin disabled until its required configuration is present.
@@ -143,6 +143,7 @@ Add the following shape to `openclaw.json`. If you already use `tools.allow`, me
         enabled: true,
         config: {
           enabled: true,
+          warningApprovalsRequired: true,
           credentialVaultKey: {
             source: "store",
             provider: "default",
@@ -158,6 +159,8 @@ Add the following shape to `openclaw.json`. If you already use `tools.allow`, me
 ```
 
 `$include` is OpenClaw host-config composition. The plugin receives the resolved policy object and does not read policy files itself. If the plugin remains disabled after saving valid configuration, enable it explicitly and accept capabilities only after review:
+
+`warningApprovalsRequired` defaults to `true` when omitted. Set it to `false` only when policy-authorized warning-level mutations should run without an approval prompt. This setting never affects critical approvals and never bypasses policy authorization, parameter validation, managed-root instruction checks, protected-media checks, or write preconditions.
 
 ```bash
 openclaw plugins enable microsoft-graph
@@ -193,17 +196,21 @@ openclaw microsoft-graph credentials status
 
 Expected credential status is `result: "valid"` with secret-free metadata. Then, from an agent explicitly granted in policy, make one read-only request against an allowlisted resource and confirm that an ungranted agent or resource is denied. Do not start validation with a write or destructive action. `plugins list` or a cold manifest inspection alone does not prove that the running Gateway registered the plugin.
 
-### 9. Understand confirmations and approvals
+### 9. Understand approvals
 
 | Class | Examples | Required user action |
 | --- | --- | --- |
-| none | Explicitly recognized read actions | No write confirmation; policy authorization still applies. |
-| warning | Create/update/draft/move/mark operations | In the same originating OpenClaw session/chat, review one summary of the exact action or batch and explicitly confirm it. The unchanged call is retried once with the plugin-issued, session-bound token. |
-| critical | Delete, send, and calendar respond operations | Use OpenClaw's call-bound approval and choose `allow-once` or `deny`. Chat confirmation fields do not downgrade or replace this approval. |
+| none | Explicitly recognized read actions | No mutation approval; policy authorization still applies. |
+| warning | Create/update/draft/move/mark operations | By default, use OpenClaw's native approval and choose `allow-once`, `allow-always`, or `deny`. With `warningApprovalsRequired: false`, no approval is requested. |
+| critical | Delete, send, and calendar respond operations | Use OpenClaw's native call-bound approval and choose `allow-once` or `deny`. Warning configuration and legacy chat fields cannot downgrade or replace this approval. |
 
-Warning tokens are one-time, expire with process/session state, and are bound to the exact normalized request. Never invent, edit, copy between chats, or reuse a `chatConfirmationToken`. Changed parameters require a new summary and confirmation. Critical calls do not offer a persistent allow decision.
+For warning requests, `allow-always` trusts only the authenticated agent ID, exact tool name, and normalized action (for example, `outlook_mail_write` + `mark_read`). It does not trust a resource, arbitrary future action, or another agent/tool/action. Trust is held only in plugin process memory and is revoked by plugin reload or process restart; it is not written to OpenClaw config or disk. Every trusted future call still runs authorization, validation, managed-root instruction discovery, protected-media validation, and execution preconditions. Approval-free trusted/configured warning calls also require the host's call identity so the plugin can bind and reverify their exact execution parameters. Critical calls never offer `allow-always`.
 
-OneDrive mutation authorization is checked before a write gate is issued. Warning confirmation and critical approval occur before optional managed-root instruction discovery; discovery then requires its own read authority before credential or Graph access. For other workloads, execution revalidates policy authorization before selecting the key, reading the vault, exchanging OAuth, or calling Graph.
+The deprecated `chatConfirmed` and `chatConfirmationToken` tool fields remain accepted for compatibility but are ignored and can never authorize execution. The plugin returns the exact parameters it inspected with each native approval so OpenClaw freezes that snapshot while approval is pending. It also binds the host tool-call identity to that snapshot and consumes it at execution; any later composed rewrite fails closed before plugin execution. If no approval route is available, or approval is denied, cancelled, malformed, or times out, the host blocks the call.
+
+Native approval text identifies the mutation action, a minimized target, and the relevant risk without including message bodies, event bodies, subjects, recipient addresses, or To Do titles. OneDrive upload/update approvals include the allowlisted root, relative path, required SHA-256, and byte size; preflight and execution each securely open the protected artifact and fail before their downstream credential or Graph boundary if that exact content identity does not match. Calendar approvals include calendar/event identity, and multiwrite approvals include the operation count. Mail send approval identifies that recipients come from the stored draft and explicitly notes that the recipient count is unavailable from the send call itself.
+
+OneDrive mutation authorization occurs before a warning approval request or approval-free warning continuation. For upload/update, the protected artifact's opened-file identity, exact lowercase SHA-256, and byte size are verified before any applicable managed-root instruction discovery. Discovery requires its own read authority before credential or Graph access. Execution independently reopens and revalidates the artifact plus policy authorization and all media/write preconditions before selecting the key, reading the vault, exchanging OAuth, or calling Graph.
 
 ### 10. Status, recovery, and rollback
 
@@ -239,7 +246,7 @@ Apply requires `RESTORE MICROSOFT GRAPH CREDENTIAL`. A `complete` receipt means 
 - One shared credential has the union of its consented Microsoft scopes. Policy and approval gates constrain normal plugin use but do not provide provider-side read/write isolation after credential, key, host-account, or plugin compromise.
 - OpenClaw may resolve declared SecretInputs while loading configuration. The plugin guarantees authorization before plugin-side key selection and vault/provider access, not suppression of host-level SecretRef materialization.
 - Unknown actions, malformed resources, missing grants, missing credentials, unsafe files, and unsupported filesystem conditions fail closed.
-- Process-local access-token, continuation, instruction, and confirmation state is lost on restart. Retry from a fresh read/status check rather than assuming an interrupted mutation failed.
+- Process-local access-token, continuation, instruction, and warning allow-always trust is lost on restart. Retry from a fresh read/status check rather than assuming an interrupted mutation failed.
 
 ## Development
 
