@@ -98,14 +98,14 @@ class ConfigurationPage {
   private render() {
     if (this.disposed || this.signal.aborted) return;
     const main = el("main", "mg-ui"); const header = el("header", "mg-header");
-    append(header, el("div", "mg-eyebrow", "Plugins / Microsoft Graph"), el("h1", "", "Microsoft-Zugriff"), el("p", "mg-lead", "Lege fest, welcher Agent auf welche Microsoft-Daten zugreifen darf und wann eine Freigabe nötig ist."));
+    append(header, el("div", "mg-eyebrow", "Plugins / Microsoft Graph"), el("h1", "", "Microsoft Graph Zugriff"), el("p", "mg-lead", "Lege fest, welcher Agent auf welche Microsoft-Daten zugreifen darf und wann eine Freigabe nötig ist."));
     append(main, header);
     if (!this.host.connection.connected) { append(main, el("p", "mg-message", "Verbinde dich mit dem Gateway, um die Regeln zu bearbeiten.")); this.container.replaceChildren(main); return; }
     if (!this.host.connection.canAdmin) { append(main, el("p", "mg-message", "Zum Anzeigen und Ändern dieser Regeln brauchst du Administratorrechte.")); this.container.replaceChildren(main); return; }
     if (!this.snapshot) { append(main, el("p", "mg-message", this.error || "Regeln werden geladen…")); this.container.replaceChildren(main); return; }
-    const rail = el("nav", "mg-steps"); rail.setAttribute("aria-label", "Schritte");
-    ["OneDrive", "Dienste", "Freigaben", "Prüfen"].forEach((name, index) => { const tab = button(`${index + 1}. ${name}`, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost"); tab.disabled = this.busy; tab.setAttribute("aria-current", index === this.step ? "step" : "false"); append(rail, tab); }); append(main, rail);
-    if (this.included) append(main, el("p", "mg-banner", `Die Regeln liegen in der eingebundenen Datei ${this.includeName}. Änderungen werden beim Speichern in diese Datei zurückgeschrieben.`));
+    const rail = el("nav", "mg-steps"); rail.setAttribute("aria-label", "Konfigurationsschritte");
+    ["OneDrive", "Dienste", "Freigaben", "Prüfen"].forEach((name, index) => { const tab = button(`${index + 1}  ${name}`, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost"); tab.disabled = this.busy; tab.setAttribute("aria-current", index === this.step ? "step" : "false"); append(rail, tab); }); append(main, rail);
+    if (this.included) append(main, el("p", "mg-banner", `Policy-Quelle: ${this.includeName}. Änderungen werden beim Speichern in diese Datei geschrieben.`));
     const body = el("section", "mg-body"); if (this.step === 0) this.renderOneDrive(body); else if (this.step === 1) this.renderServices(body); else if (this.step === 2) this.renderApprovals(body); else this.renderReview(body); append(main, body);
     if (this.error) append(main, el("p", "mg-error", this.error)); if (this.success) append(main, el("p", "mg-success", this.success));
     const footer = el("footer", "mg-footer"); append(footer, el("span", "mg-dirty", this.dirty ? "Ungespeicherte Änderungen" : "Keine ungespeicherten Änderungen"));
@@ -147,7 +147,7 @@ class ConfigurationPage {
     if (!roots.length) append(body, el("p", "mg-message", "Noch kein OneDrive-Ordner freigegeben."));
     for (const [index, root] of roots.entries()) {
       const card = el("fieldset", "mg-section"); append(card, el("legend", "", root.path));
-      append(card, el("p", "mg-hint", "Dieser Ordner und alle Unterordner"));
+      append(card, el("p", "mg-hint", "Gilt auch für alle Unterordner"));
       const row = el("div", "mg-check-grid");
       for (const [op, label] of [["read", "Lesen"], ["write", "Schreiben"], ["delete", "Löschen"]] as const) checkbox(row, label, root.agents[agentId]?.permissions[op] === true, checked => {
         const grant = root.agents[agentId] ?? { permissions: {} };
@@ -257,8 +257,8 @@ class ConfigurationPage {
 export default defineControlUiPlugin({ id, activate(host) {
   const pageId = "configure";
   const disposers = [
-    host.ui.registerPage({ id: pageId, label: "Microsoft-Zugriff", mount(container, context) { const view = new ConfigurationPage(container, context.host, context.signal); return { dispose: () => view.dispose() }; } }),
-    host.ui.registerNavigation({ id: "configure", label: "Microsoft-Zugriff", page: { id: pageId }, icon: "settings", order: 80 }),
+    host.ui.registerPage({ id: pageId, label: "Microsoft Graph Zugriff", mount(container, context) { const view = new ConfigurationPage(container, context.host, context.signal); return { dispose: () => view.dispose() }; } }),
+    host.ui.registerNavigation({ id: "configure", label: "Microsoft Graph Zugriff", page: { id: pageId }, icon: "settings", order: 80 }),
   ];
   return () => { for (const dispose of disposers.reverse()) dispose(); };
 } });

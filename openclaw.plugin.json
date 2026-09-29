@@ -2,7 +2,7 @@
   "id": "microsoft-graph",
   "name": "Microsoft Graph",
   "description": "Gateway-owned bounded Microsoft Graph v1.0 core-resource tools for OneDrive, Outlook Calendar, Outlook Mail, and Microsoft To Do.",
-  "version": "3.3.0",
+  "version": "3.3.1",
   "categories": [
     "productivity"
   ],
@@ -427,9 +427,9 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/26a1e3f6de0c375897a7a056f21a0d54ea021c74de3d0df048a815a4c52b1f29/index.js",
+    "entry": "dist/control-ui/d9fcfe34924778c0566097a46425fd6468eed3b4537d3c4c4785593b1f43243c/index.js",
     "styles": [
-      "dist/control-ui/26a1e3f6de0c375897a7a056f21a0d54ea021c74de3d0df048a815a4c52b1f29/index.css"
+      "dist/control-ui/d9fcfe34924778c0566097a46425fd6468eed3b4537d3c4c4785593b1f43243c/index.css"
     ]
   },
   "contracts": {
