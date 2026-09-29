@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -20,7 +21,13 @@ const expected = [
   "openclaw.plugin.json",
   "package.json",
   "scripts/bounded-json.mjs",
+  "src/control-ui.ts",
+  "src/control-ui.css",
 ].sort();
+const manifest = JSON.parse(readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"));
+if (manifest.controlUi?.entry) expected.push(manifest.controlUi.entry);
+for (const style of manifest.controlUi?.styles ?? []) expected.push(style);
+expected.sort();
 
 const { stdout } = await execFileAsync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
   encoding: "utf8",

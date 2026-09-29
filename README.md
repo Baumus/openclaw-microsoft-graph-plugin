@@ -266,3 +266,9 @@ Tests use synthetic fixtures and mocked provider boundaries. They must not use r
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+### Configuration UI (OpenClaw 2026.9.6+)
+
+Administrators can enable **Settings → Labs → Custom plugin UI**, then open **Microsoft Graph configuration** in the Control UI. The page edits only OneDrive folder/agent rights, per-agent Calendar/Mail/To Do access, and service-specific warning approvals. New OneDrive paths are resolved to immutable folder IDs by an admin-only Gateway method. Critical actions always retain call-bound approval. A revision-checked save writes through a supported single-file `$include` policy boundary. Credential migration and recovery remain in the interactive CLI; no credential is entered in the browser.
+
+When `policy` is owned by `$include`, the page intentionally disables direct save. Export the proposed policy, apply it through the owning included-file workflow, and reload the page to verify. The generic Plugins Settings and CLI paths remain available when custom plugin UI is disabled.

@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.3.0 - 2026-09-29
+
+- Narrow the native Microsoft access page to OneDrive folder/agent rights, per-agent Calendar/Mail/To Do use, and per-service warning approvals. Preserve critical call-bound approval and existing fine-grained grants.
+- Resolve new OneDrive folder paths to immutable drive/item IDs through an admin-only, bounded, credential-backed Gateway query; no token or provider content enters the browser.
+- Keep service warning approvals inside the policy so one Gateway config patch can write through a supported single-file `$include` boundary.
+
+
 - Bound native approval copy, severity, decisions, and execution to one exact host-composed parameter snapshot. The plugin now makes its inspected parameters authoritative in the OpenClaw hook result and rejects any later execution-time rewrite, including warning-to-critical changes after process-local `allow-always` trust.
 
 ## 3.1.0 - 2026-09-25
@@ -29,3 +36,9 @@ All notable changes to this project are documented here.
 - Capped each confirmed calendar multiwrite at 100 operations in schema and runtime.
 
 This changelog does not claim official Microsoft or OpenClaw support, security certification, or production suitability.
+
+## 3.2.0
+
+- Add a native, configuration-only Microsoft Graph Control UI page with guided resources, per-agent permissions, review, admin-scoped validation, and safe include-file export.
+- Save inline policy changes through revision-checked `config.patch`; keep credential migration and recovery in the existing CLI flows.
+- Require OpenClaw 2026.9.6 for the tested native UI and browser asset contract.
