@@ -22,6 +22,7 @@ const expected = [
   "package.json",
   "scripts/bounded-json.mjs",
   "src/control-ui.ts",
+  "src/control-ui-i18n.ts",
   "src/control-ui.css",
 ].sort();
 const manifest = JSON.parse(readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"));

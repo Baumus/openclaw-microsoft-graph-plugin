@@ -1,5 +1,6 @@
 import { defineControlUiPlugin, type ControlUiHost } from "openclaw/plugin-sdk/control-ui";
 import "./control-ui.css";
+import { localize, format, setLocale, isRtl } from "./control-ui-i18n.js";
 
 type Grant = { operations: string[]; resources?: string[] };
 type Root = { label: string; path: string; drive_id: string; item_id: string; include_descendants: true; agents_instructions?: "trusted"; permissions: Record<"read" | "write" | "delete", boolean>; agents: Record<string, { permissions: Partial<Record<"read" | "write" | "delete", boolean>> }> };
@@ -10,7 +11,7 @@ const operations = { calendar: ["read", "create", "update", "respond", "attach",
 const serviceNames = { onedrive: "OneDrive", calendar: "Kalender", mail: "E-Mail", todo: "To Do" } as const;
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 const blankPolicy = (): Policy => ({ version: 2, rules: { default: "deny" }, services: { onedrive: { allowed_roots: [] }, calendar: { agents: {} }, mail: { agents: {} }, todo: { agents: {} } } });
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", value?: string): HTMLElementTagNameMap[K] { const node = document.createElement(tag); if (className) node.className = className; if (value !== undefined) node.textContent = value; return node; }
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", value?: string): HTMLElementTagNameMap[K] { const node = document.createElement(tag); if (className) node.className = className; if (value !== undefined) node.textContent = localize(value); return node; }
 function append(parent: HTMLElement, ...children: HTMLElement[]) { parent.append(...children); }
 function field(parent: HTMLElement, label: string, value: string, set: (value: string) => void, hint?: string) {
   const wrap = el("label", "mg-field"); const title = el("span", "mg-label", label); const input = el("input"); input.value = value; input.autocomplete = "off"; input.addEventListener("change", () => set(input.value.trim())); append(wrap, title, input); if (hint) append(wrap, el("small", "mg-hint", hint)); append(parent, wrap); return input;
@@ -44,8 +45,8 @@ function collectDiff(before: unknown, after: unknown, path = "", replacements: s
 }
 function policySummary(policy: Policy): string[] {
   return [
-    `${policy.services.onedrive.allowed_roots.length} OneDrive-Ordner`,
-    ...(["calendar", "mail", "todo"] as const).map(s => `${Object.keys(policy.services[s].agents).length} Agenten für ${serviceNames[s]}`),
+    format("{count} OneDrive-Ordner", { count: policy.services.onedrive.allowed_roots.length }),
+    ...(["calendar", "mail", "todo"] as const).map(s => format("{count} Agenten für {service}", { count: Object.keys(policy.services[s].agents).length, service: localize(serviceNames[s]) })),
   ];
 }
 class ConfigurationPage {
@@ -71,7 +72,7 @@ class ConfigurationPage {
   private statusChecksRemaining = 0;
   private readonly unsubscribe: () => void;
   constructor(private container: HTMLElement, private host: ControlUiHost, private signal: AbortSignal) {
-    this.unsubscribe = host.subscribe(() => { if (!this.snapshot && !this.busy && this.authorized) void this.load(); else this.render(); });
+    this.unsubscribe = host.subscribe(() => { setLocale(host.locale); if (!this.snapshot && !this.busy && this.authorized) void this.load(); else this.render(); });
     void this.load();
     this.render();
   }
@@ -131,16 +132,17 @@ class ConfigurationPage {
   }
   private render() {
     if (this.disposed || this.signal.aborted) return;
-    const main = el("main", "mg-ui"); const header = el("header", "mg-header");
-    append(header, el("div", "mg-eyebrow", "Plugins / Microsoft Graph"), el("h1", "", "Microsoft Graph Zugriff"), el("p", "mg-lead", "Lege fest, welcher Agent auf welche Microsoft-Daten zugreifen darf und wann eine Freigabe nötig ist."));
+    setLocale(this.host.locale);
+    const main = el("main", "mg-ui"); main.dir = isRtl() ? "rtl" : "ltr"; const header = el("header", "mg-header");
+    append(header, el("div", "mg-eyebrow", "Plugins / Microsoft Graph"), el("h1", "", "Microsoft Graph"), el("p", "mg-lead", "Lege fest, welcher Agent auf welche Microsoft-Daten zugreifen darf und wann eine Freigabe nötig ist."));
     append(main, header);
     if (!this.host.connection.connected) { append(main, el("p", "mg-message", "Verbinde dich mit dem Gateway, um die Regeln zu bearbeiten.")); this.container.replaceChildren(main); return; }
     if (!this.host.connection.canAdmin) { append(main, el("p", "mg-message", "Zum Anzeigen und Ändern dieser Regeln brauchst du Administratorrechte.")); this.container.replaceChildren(main); return; }
     if (!this.snapshot) { append(main, el("p", "mg-message", this.error || "Regeln werden geladen…")); this.container.replaceChildren(main); return; }
-    const rail = el("nav", "mg-steps"); rail.setAttribute("aria-label", "Konfigurationsschritte");
-    ["OneDrive", "Dienste", "Freigaben", "Prüfen"].forEach((name, index) => { const tab = button(`${index + 1}  ${name}`, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost"); tab.disabled = this.busy; tab.setAttribute("aria-current", index === this.step ? "step" : "false"); append(rail, tab); }); append(main, rail);
-    if (this.included) append(main, el("p", "mg-banner", `Policy-Quelle: ${this.includeName}. Änderungen werden beim Speichern in diese Datei geschrieben.`));
-    const application = this.statusError.startsWith("Die Regeln wurden außerhalb") ? "unknown" : this.applicationStatus;
+    const rail = el("nav", "mg-steps"); rail.setAttribute("aria-label", localize("Konfigurationsschritte"));
+    ["OneDrive", "Dienste", "Freigaben", "Prüfen"].forEach((name, index) => { const tab = button(`${index + 1}  ${localize(name)}`, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost"); tab.disabled = this.busy; tab.setAttribute("aria-current", index === this.step ? "step" : "false"); append(rail, tab); }); append(main, rail);
+    if (this.included) append(main, el("p", "mg-banner", format("Policy-Quelle: {name}. Änderungen werden beim Speichern in diese Datei geschrieben.", { name: this.includeName })));
+    const application = this.statusError === "Die Regeln wurden außerhalb dieser Seite geändert. Bitte neu laden, um den aktuellen Stand zu sehen." ? "unknown" : this.applicationStatus;
     const status = el("div", application === "applied" ? "mg-success" : "mg-warning");
     status.setAttribute("role", "status");
     append(status, el("strong", "", application === "applied" ? "Gespeicherte Regeln im Gateway angewendet" : application === "pending" ? "Regeln gespeichert – Anwendung noch ausstehend" : "Anwendung der Regeln nicht bestätigt"));
@@ -151,7 +153,7 @@ class ConfigurationPage {
     const body = el("section", "mg-body"); if (this.step === 0) this.renderOneDrive(body); else if (this.step === 1) this.renderServices(body); else if (this.step === 2) this.renderApprovals(body); else this.renderReview(body); append(main, body);
     if (this.error) append(main, el("p", "mg-error", this.error)); if (this.success) append(main, el("p", "mg-success", this.success));
     const footer = el("footer", "mg-footer"); append(footer, el("span", "mg-dirty", this.dirty ? "Ungespeicherte Änderungen" : "Keine ungespeicherten Änderungen"));
-    if (this.dirty) append(footer, button("Änderungen verwerfen", () => { if (window.confirm("Alle ungespeicherten Änderungen verwerfen?")) { this.policy = clone(this.initial!); this.error = ""; this.success = ""; this.render(); } }, "ghost"));
+    if (this.dirty) append(footer, button("Änderungen verwerfen", () => { if (window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { this.policy = clone(this.initial!); this.error = ""; this.success = ""; this.render(); } }, "ghost"));
     if (this.step > 0) append(footer, button("Zurück", () => { this.step--; this.render(); }));
     if (this.step < 3) append(footer, button("Weiter", () => { this.step++; this.render(); if (this.step === 3) void this.validate(); }, "primary"));
     if (this.step === 3 && this.dirty) append(footer, button("Änderungen speichern", () => { void this.save(); }, "primary"));
@@ -198,12 +200,12 @@ class ConfigurationPage {
         root.permissions[op] = Object.values(root.agents).some(a => a.permissions[op] === true);
         this.render();
       });
-      append(card, row, button("Ordner für alle Agenten entfernen", () => { if (window.confirm(`Den Ordner ${root.path} für alle Agenten entfernen?`)) { roots.splice(index, 1); this.render(); } }, "danger")); append(body, card);
+      append(card, row, button("Ordner für alle Agenten entfernen", () => { if (window.confirm(format("Den Ordner {path} für alle Agenten entfernen?", { path: root.path }))) { roots.splice(index, 1); this.render(); } }, "danger")); append(body, card);
     }
     const add = el("section", "mg-section"); append(add, el("h3", "", "Ordner hinzufügen"));
-    append(add, el("p", "mg-hint", "Pfad in deinem OneDrive, zum Beispiel /Projekte/Kunden. Der Ordner wird vor dem Hinzufügen geprüft; technische IDs werden automatisch ermittelt."));
+    append(add, el("p", "mg-hint", "Pfad in deinem OneDrive, zum Beispiel /Projects/Clients. Der Ordner wird vor dem Hinzufügen geprüft; technische IDs werden automatisch ermittelt."));
     const input = field(add, "Ordnerpfad", this.newFolderPath, value => { this.newFolderPath = value; });
-    input.placeholder = "/Projekte/Kunden";
+    input.placeholder = "/Projects/Clients";
     input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); this.newFolderPath = input.value.trim(); void this.addFolder(); } });
     append(add, button("Ordner prüfen und hinzufügen", () => { void this.addFolder(); }, "primary")); append(body, add);
   }
@@ -214,7 +216,7 @@ class ConfigurationPage {
     for (const service of ["calendar", "mail", "todo"] as const) {
       const card = el("fieldset", "mg-section"); append(card, el("legend", "", serviceNames[service]));
       const grants = this.policy.services[service].agents; const existing = grants[agentId];
-      checkbox(card, `${serviceNames[service]} nutzen`, !!existing, checked => {
+      checkbox(card, format("{service} nutzen", { service: localize(serviceNames[service]) }), !!existing, checked => {
         const key = `${service}:${agentId}`;
         if (checked) grants[agentId] = existing ?? this.removedServiceGrants[key] ?? { operations: [...operations[service]] };
         else { if (existing) this.removedServiceGrants[key] = clone(existing); delete grants[agentId]; }
@@ -235,7 +237,7 @@ class ConfigurationPage {
         this.policy.rules.warningApprovalsByService = { ...configured, [service]: checked }; this.render();
       });
       const critical = service === "onedrive" ? "Löschen" : service === "calendar" ? "Löschen oder auf Termine antworten" : service === "mail" ? "Löschen oder E-Mail senden" : "Löschen";
-      append(card, el("p", "", `Kritisch · ${critical}: immer einzeln fragen.`));
+      append(card, el("p", "", format("Kritisch · {action}: immer einzeln fragen.", { action: localize(critical) })));
       append(body, card);
     }
   }
@@ -244,9 +246,9 @@ class ConfigurationPage {
     append(body, el("p", "mg-status", policySummary(this.policy).join(" · ")));
 
     const newScopes = this.scopes.filter(scope => !this.initialScopes.includes(scope));
-    if (this.pluginEnabled && newScopes.length) append(body, el("p", "mg-warning", `Für neue Zugriffe kann eine Microsoft-Einwilligung nötig sein (${newScopes.join(", ")}). Solange das Plugin aktiv ist, kann diese Seite erweiterte Rechte nicht speichern.`));
+    if (this.pluginEnabled && newScopes.length) append(body, el("p", "mg-warning", format("Für neue Zugriffe kann eine Microsoft-Einwilligung nötig sein ({scopes}). Solange das Plugin aktiv ist, kann diese Seite erweiterte Rechte nicht speichern.", { scopes: newScopes.join(", ") })));
     const approvals = this.policy.rules.warningApprovalsByService ?? {};
-    for (const service of ["onedrive", "calendar", "mail", "todo"] as const) if (approvals[service] === false) append(body, el("p", "mg-warning", `${serviceNames[service]}: Warn-Aktionen dürfen ohne Rückfrage ausgeführt werden. Kritische Aktionen benötigen weiterhin eine Freigabe.`));
+    for (const service of ["onedrive", "calendar", "mail", "todo"] as const) if (approvals[service] === false) append(body, el("p", "mg-warning", format("{service}: Warn-Aktionen dürfen ohne Rückfrage ausgeführt werden. Kritische Aktionen benötigen weiterhin eine Freigabe.", { service: localize(serviceNames[service]) })));
     if (!this.dirty) { append(body, el("p", "", "Keine Änderungen zum Speichern.")); return; }
     if (JSON.stringify(this.initial) !== JSON.stringify(this.policy)) checkbox(body, "Ich habe die Zugriffsänderungen geprüft, auch entzogene Rechte", this.confirmedRemoval, v => { this.confirmedRemoval = v; });
 
@@ -254,8 +256,8 @@ class ConfigurationPage {
   private async validate(): Promise<boolean> {
     this.error = "";
     const roster = new Set(this.host.agents.rows.map(a => a.id));
-    for (const service of ["calendar", "mail", "todo"] as const) for (const agent of Object.keys(this.policy.services[service].agents)) if (!roster.has(agent)) { this.error = `Unknown configured agent: ${agent}`; this.render(); return false; }
-    for (const root of this.policy.services.onedrive.allowed_roots) for (const agent of Object.keys(root.agents)) if (!roster.has(agent)) { this.error = `Unknown configured agent: ${agent}`; this.render(); return false; }
+    for (const service of ["calendar", "mail", "todo"] as const) for (const agent of Object.keys(this.policy.services[service].agents)) if (!roster.has(agent)) { this.error = format("Unknown configured agent: {agent}", { agent }); this.render(); return false; }
+    for (const root of this.policy.services.onedrive.allowed_roots) for (const agent of Object.keys(root.agents)) if (!roster.has(agent)) { this.error = format("Unknown configured agent: {agent}", { agent }); this.render(); return false; }
     try { const result = await this.host.request<{ valid: boolean; requiredScopes: string[] }>("microsoft-graph.configuration.validate", { policy: this.policy }); this.scopes = result.requiredScopes; this.render(); return result.valid; }
     catch { this.error = "Policy validation failed. Check root labels, paths, IDs, and grant resources."; this.render(); return false; }
   }
@@ -267,7 +269,7 @@ class ConfigurationPage {
     try {
       if (!(await this.validate())) return;
       const newScopes = this.scopes.filter(scope => !this.initialScopes.includes(scope));
-      if (this.pluginEnabled && newScopes.length) { this.error = `Cannot save while the plugin is enabled: new delegated scopes require independent consent verification (${newScopes.join(", ")}).`; return; }
+      if (this.pluginEnabled && newScopes.length) { this.error = format("Cannot save while the plugin is enabled: new delegated scopes require independent consent verification ({scopes}).", { scopes: newScopes.join(", ") }); return; }
       const fresh = await this.host.request<ConfigSnapshot>("config.get", {});
       if (fresh.hash !== this.snapshot.hash) { this.error = "Configuration changed since this draft loaded. Reload and reapply your changes."; return; }
       const freshAuthored = fresh.parsed?.plugins?.entries?.[id]?.config?.policy;
@@ -298,10 +300,11 @@ class ConfigurationPage {
 }
 
 export default defineControlUiPlugin({ id, activate(host) {
+  setLocale(host.locale);
   const pageId = "configure";
   const disposers = [
-    host.ui.registerPage({ id: pageId, label: "Microsoft Graph Zugriff", mount(container, context) { const view = new ConfigurationPage(container, context.host, context.signal); return { dispose: () => view.dispose() }; } }),
-    host.ui.registerNavigation({ id: "configure", label: "Microsoft Graph Zugriff", page: { id: pageId }, icon: "settings", order: 80 }),
+    host.ui.registerPage({ id: pageId, label: "Microsoft Graph", mount(container, context) { const view = new ConfigurationPage(container, context.host, context.signal); return { dispose: () => view.dispose() }; } }),
+    host.ui.registerNavigation({ id: "configure", label: "Microsoft Graph", page: { id: pageId }, icon: "settings", order: 80 }),
   ];
   return () => { for (const dispose of disposers.reverse()) dispose(); };
 } });

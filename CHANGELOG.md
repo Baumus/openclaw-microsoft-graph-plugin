@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.4.0 - 2026-09-30
+
+- Localize the Microsoft Graph configuration UI for English, German, Spanish, and Arabic, with English fallback for other host locales.
+- Resize the packaged plugin identity icon to OpenClaw’s recommended 512 × 512 pixels for reliable display.
+
 ## 3.3.2 - 2026-09-30
 
 - Show a persistent saved-versus-applied Gateway status in Microsoft Graph Zugriff, recheck pending application automatically for one minute, and offer a manual status check without claiming success when revision evidence is missing.
@@ -20,10 +25,15 @@ All notable changes to this project are documented here.
 - Keep service warning approvals inside the policy so one Gateway config patch can write through a supported single-file `$include` boundary.
 
 
-- Bound native approval copy, severity, decisions, and execution to one exact host-composed parameter snapshot. The plugin now makes its inspected parameters authoritative in the OpenClaw hook result and rejects any later execution-time rewrite, including warning-to-critical changes after process-local `allow-always` trust.
+## 3.2.0 - 2026-09-29
+
+- Add a native, configuration-only Microsoft Graph Control UI page with guided resources, per-agent permissions, review, and admin-scoped validation.
+- Save policy changes through revision-checked `config.patch` on a supported single-file include boundary; keep credential migration and recovery in the CLI.
+- Require OpenClaw 2026.9.6 for the native UI and browser asset contract.
 
 ## 3.1.0 - 2026-09-25
 
+- Bound native approval copy, severity, decisions, and execution to one exact host-composed parameter snapshot. The plugin now makes its inspected parameters authoritative in the OpenClaw hook result and rejects any later execution-time rewrite, including warning-to-critical changes after process-local `allow-always` trust.
 - Capped each calendar multiwrite at 100 operations in schema and runtime.
 - Replaced bespoke chat-confirmation authority with configurable OpenClaw-native warning approval. Warning approval defaults on, supports process-lifetime agent/tool/action `allow-always` trust, and leaves critical mutations at `allow-once` or `deny`; legacy chat fields are inert compatibility inputs.
 - Added privacy-minimized native approval copy that names the action, target, and action-specific risk, including OneDrive root/path, calendar/event identity, multiwrite counts, and recipient-count context.
@@ -45,9 +55,3 @@ All notable changes to this project are documented here.
 - Capped each confirmed calendar multiwrite at 100 operations in schema and runtime.
 
 This changelog does not claim official Microsoft or OpenClaw support, security certification, or production suitability.
-
-## 3.2.0
-
-- Add a native, configuration-only Microsoft Graph Control UI page with guided resources, per-agent permissions, review, admin-scoped validation, and safe include-file export.
-- Save inline policy changes through revision-checked `config.patch`; keep credential migration and recovery in the existing CLI flows.
-- Require OpenClaw 2026.9.6 for the tested native UI and browser asset contract.

@@ -1,6 +1,6 @@
 # Microsoft-Zugriff — focused Control UI
 
-**Status:** Implemented in the 3.3.0 source worktree; runtime activation and visual browser check remain separate verification steps.
+**Status:** Implemented in the 3.4.0 source branch. Runtime activation and visual browser verification are separate from this source release PR.
 
 The native Control UI page has exactly three editable areas:
 
@@ -18,8 +18,7 @@ OpenClaw 2026.9.6 documents write-through for changes wholly owned by one single
 
 The folder-resolution RPC is `operator.admin`, accepts only one bounded path under `/me/drive`, uses the existing vault credential with `Files.Read`, and returns only normalized path and immutable drive/item IDs. It does not return tokens, file content, or other provider data. The UI never stores secrets.
 
-## Remaining acceptance evidence
+## Release acceptance evidence
 
-- Deterministic tests, typecheck, build, package check, and plugin validation must pass.
-- A connected browser-capable Control UI client is needed for desktop/mobile/keyboard visual review.
-- A non-disruptive activation window is needed to load the 3.3.0 backend. Source build success alone does not prove the installed 3.2.0 runtime has changed.
+- Deterministic tests, typecheck, build, package check, and plugin validation must pass for the release commit.
+- Browser visual verification and runtime activation are separate evidence from the source PR.

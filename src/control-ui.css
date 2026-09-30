@@ -45,13 +45,13 @@
 .mg-check input { width: 17px; height: 17px; margin: 0; accent-color: var(--mg-accent); }
 .mg-check-grid { display: flex; flex-wrap: wrap; column-gap: 26px; row-gap: 3px; margin: 12px 0 8px; }
 .mg-banner, .mg-warning, .mg-error, .mg-success, .mg-message, .mg-status { color: var(--mg-text); background: var(--mg-panel); border: 1px solid var(--mg-border); border-radius: 9px; padding: 12px 15px; margin: 16px 0; line-height: 1.45; overflow-wrap: anywhere; }
-.mg-banner { border-left: 4px solid #a77728; background: color-mix(in srgb, #a77728 8%, var(--mg-panel)); }
-.mg-warning { border-left: 4px solid #a77728; }
-.mg-error { border-left: 4px solid #ba3535; }
-.mg-success { border-left: 4px solid #26805e; }
+.mg-banner { border-inline-start: 4px solid #a77728; background: color-mix(in srgb, #a77728 8%, var(--mg-panel)); }
+.mg-warning { border-inline-start: 4px solid #a77728; }
+.mg-error { border-inline-start: 4px solid #ba3535; }
+.mg-success { border-inline-start: 4px solid #26805e; }
 .mg-status { font-weight: 600; }
 .mg-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 9px; margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--mg-border); background: transparent; }
-.mg-dirty { margin-right: auto; color: var(--mg-muted); font-size: .88rem; }
+.mg-dirty { margin-inline-end: auto; color: var(--mg-muted); font-size: .88rem; }
 @media (max-width: 650px) {
   .mg-ui { padding: 18px 16px 32px; }
   .mg-steps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
