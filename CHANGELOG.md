@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.5.0 - unreleased
+
+- Add operator-terminal Microsoft device-code sign-in with policy-derived scopes and direct encrypted-vault publication; retain create-only migration from `pass`.
+
 ## 3.4.0 - 2026-09-30
 
 - Localize the Microsoft Graph configuration UI for English, German, Spanish, and Arabic, with English fallback for other host locales.

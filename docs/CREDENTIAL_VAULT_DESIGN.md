@@ -37,7 +37,9 @@ After OAuth dispatch, transport errors, malformed/empty/truncated/oversized HTTP
 
 ## Migration and rollback
 
-The local CLI preserves exact interactive confirmation for apply operations, then sends a closed parameter object to a plugin-owned Gateway RPC. The active Gateway executes against its materialized plugin config and returns only a validated sanitized envelope. Status is scoped to `operator.read`; migration, restore, and recovery (including dry-runs) require `operator.admin`. These methods remain registered while `config.enabled` is `false`, allowing credential setup before Microsoft Graph tools are enabled. Dry-runs perform no vault, lock, pass-destination, or quarantine mutation.
+The local CLI preserves exact interactive confirmation for apply operations, then sends a closed parameter object to a plugin-owned Gateway RPC. The active Gateway executes against its materialized plugin config and returns only a validated sanitized envelope. Status is scoped to `operator.read`; device sign-in, migration, restore, and recovery (including dry-runs) require `operator.admin`. These methods remain registered while `config.enabled` is `false`, allowing credential setup before Microsoft Graph tools are enabled. Dry-runs perform no vault, lock, pass-destination, or quarantine mutation.
+
+`sign-in --client-id <app-id> --tenant <tenant-id>` requests policy-derived delegated scopes plus `offline_access` using the Microsoft device-code flow. The Gateway owns polling and the refresh token; the terminal receives only the verification instruction and a sanitized result with granted scopes. A missing or incomplete grant, failed consent, invalid vault, or existing vault fails closed. Sign-in is create-only and does not replace or recover a quarantined credential.
 
 `migrate-from-pass` requires `--source <pass-ref>`. It validates that this one selected credential covers every scope implied by current policy grants. It never merges credentials. Dry-run performs validation without creating the vault; apply uses create-only publication and emits a secret-free receipt.
 

@@ -103,6 +103,8 @@ describe("single credential operator surfaces", () => {
       [CREDENTIAL_GATEWAY_METHODS.migrate]: "operator.admin",
       [CREDENTIAL_GATEWAY_METHODS.restore]: "operator.admin",
       [CREDENTIAL_GATEWAY_METHODS.recover]: "operator.admin",
+      [CREDENTIAL_GATEWAY_METHODS.deviceStart]: "operator.admin",
+      [CREDENTIAL_GATEWAY_METHODS.deviceStatus]: "operator.admin",
     });
 
     const invoke = async (method: string, params: unknown) => {

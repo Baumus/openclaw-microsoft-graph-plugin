@@ -18,7 +18,7 @@ See [architecture](docs/ARCHITECTURE.md), [OAuth access matrix](docs/OAUTH_ACCES
 
 ## Setup guide
 
-Version 3.4.0 uses one Microsoft delegated OAuth credential and one encrypted local vault. The policy contains authorization rules only; it never contains credential locations or credential material.
+Version 3.5.0 uses one Microsoft delegated OAuth credential and one encrypted local vault. The policy contains authorization rules only; it never contains credential locations or credential material.
 
 ### 1. Check prerequisites
 
@@ -40,11 +40,10 @@ openclaw --version
 ### 2. Prepare the Microsoft delegated credential
 
 1. Register an application in Microsoft Entra and record its **Application (client) ID**. Select the tenant/account audience appropriate for your organization.
-2. Configure a public-client redirect or device-code flow in accordance with your tenant policy. This plugin has no initial sign-in flow and does not need or accept a client secret.
-3. Request delegated Microsoft Graph consent only for operations enabled by your policy. Also request `offline_access` so the authorization flow returns a refresh token. Use the [OAuth access matrix](docs/OAUTH_ACCESS_MATRIX.md) to calculate the set. For example, a policy that permits every workload's read and write operations needs the applicable `Files.ReadWrite`, `Calendars.ReadWrite`, `Mail.ReadWrite`, `Mail.Send`, and `Tasks.ReadWrite` grants; a read-only policy should use the corresponding read scopes instead.
-4. Complete authorization with an operator-approved OAuth client and securely capture the resulting refresh token. Record the exact scopes represented by the grant. Tenant conditional-access and consent rules remain authoritative.
+2. Enable public-client/device-code support for that application in accordance with tenant policy. No client secret is needed or accepted. An administrator may need to grant delegated consent first; tenant conditional-access and consent rules remain authoritative.
+3. Configure the policy and vault-key SecretRef below. Then run the interactive sign-in command in section 7 as the OpenClaw host operator. It derives requested delegated scopes from the configured policy and stores the resulting refresh token directly in the encrypted vault. No token is copied into a file or command argument.
 
-The migration source is one JSON document stored under a single `pass` reference:
+The older `pass` migration path remains available for an already authorized credential. Its source is one JSON document stored under a single `pass` reference:
 
 ```json
 {
@@ -57,12 +56,12 @@ The migration source is one JSON document stored under a single `pass` reference
 
 Create the entry interactively with `pass insert -m <pass-ref>`. Do not place this JSON in the OpenClaw config or policy, and never commit it or paste it into chat, issues, logs, screenshots, or test fixtures. Migration validates that this one credential covers every scope implied by the policy; it does not merge separate read and write credentials.
 
-### 3. Install version 3.4.0
+### 3. Install version 3.5.0
 
-Version 3.4.0 is not yet available from npm. After publication, install the exact reviewed package and version:
+Version 3.5.0 is not yet available from npm. After publication, install the exact reviewed package and version:
 
 ```bash
-openclaw plugins install npm:@baumus/openclaw-microsoft-graph@3.4.0 --pin
+openclaw plugins install npm:@baumus/openclaw-microsoft-graph@3.5.0 --pin
 ```
 
 Review the package source, integrity, and declared capabilities before accepting the interactive consent prompt. Installation does not create credentials, consent Microsoft permissions, grant tool access, or make an incomplete configuration usable. OpenClaw may leave the plugin disabled until its required configuration is present.
@@ -166,9 +165,18 @@ Add the following shape to `openclaw.json`. If you already use `tools.allow`, me
 openclaw plugins enable microsoft-graph
 ```
 
-### 7. Migrate the selected credential into the vault
+### 7. Sign in and create the encrypted vault
 
-First inspect status, then dry-run the one selected source. Substitute your own `pass` reference locally; it is intentionally not echoed in receipts.
+From an interactive OpenClaw host terminal under the operator account, run:
+
+```text
+openclaw microsoft-graph credentials status
+openclaw microsoft-graph credentials sign-in --client-id <approved-app-id> --tenant <tenant-id>
+```
+
+The command prints the requested scopes, Microsoft verification URL, and one-time code **only in that terminal**. Complete the sign-in in your browser using the approved client. The Gateway polls Microsoft's token endpoint, checks the granted scopes against the configured policy, and publishes the refresh token directly to an empty encrypted vault. The final receipt lists the granted scopes, not the token. Keep the terminal private; do not paste the code or credentials into chat. If tenant consent or conditional access blocks authorization, resolve that with your tenant administrator. Sign-in never overwrites an existing or quarantined vault; inspect status and use a separately reviewed reauthorization procedure if one already exists.
+
+For an existing `pass` credential, first inspect status, then dry-run the one selected source. Substitute your own `pass` reference locally; it is intentionally not echoed in receipts.
 
 ```text
 openclaw microsoft-graph credentials status
@@ -178,9 +186,9 @@ openclaw microsoft-graph credentials migrate-from-pass --source <pass-ref> --app
 
 The dry run validates the policy, key, source credential, and required scope coverage without creating the vault. `--apply` is create-only, requires an interactive terminal, and asks you to type `MIGRATE MICROSOFT GRAPH CREDENTIAL` exactly. A successful receipt reports `result: "created"` plus sanitized generation, key ID, digest, binding, and timestamp fields. A second migration does not overwrite an existing vault.
 
-Credential commands call plugin-owned RPC methods on the active Gateway so SecretRefs are resolved only in the Gateway's materialized configuration. The Gateway may perform migration while this plugin's `config.enabled` is `false`; ordinary Microsoft Graph tools remain disabled until it is set to `true`. Status requires `operator.read`; migration, recovery, and restore require `operator.admin`. RPC parameters and responses are closed, validated shapes and never include the vault key, pass contents, OAuth tokens, or raw operation errors.
+Credential commands call plugin-owned RPC methods on the active Gateway so SecretRefs are resolved only in the Gateway's materialized configuration. The Gateway may perform migration while this plugin's `config.enabled` is `false`; ordinary Microsoft Graph tools remain disabled until it is set to `true`. Status requires `operator.read`; sign-in, migration, recovery, and restore require `operator.admin`. RPC parameters and responses are closed, validated shapes and never include the vault key, pass contents, OAuth tokens, or raw operation errors.
 
-Do not delete the source entry until you have completed validation and established your backup/recovery plan. Version 3 normal operation uses only the encrypted vault and no longer needs `pass`.
+If migrating from `pass`, do not delete the source entry until you have completed validation and established your backup/recovery plan. Version 3 normal operation uses only the encrypted vault and no longer needs `pass`.
 
 ### 8. Validate the setup
 

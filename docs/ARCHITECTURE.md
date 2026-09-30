@@ -35,7 +35,7 @@ The policy is an operator-controlled object at `plugins.entries["microsoft-graph
 
 Policy version 2 is credential-free. One static SecretRef supplies the AES-256-GCM key for one OAuth credential record below `<state>/plugin-data/microsoft-graph/credentials`. The vault is reached only after policy authorization. Access tokens stay process-local; refresh tokens are never returned or intentionally logged. There is no provider-side read/write isolation: the shared credential carries the union of consented scopes, while policy and approval gates govern ordinary plugin operations.
 
-Local credential commands cross into the active Gateway through plugin-owned, operator-scoped RPC methods so only the Gateway's materialized config reaches vault operations. The read-scoped status method and admin-scoped migration, restore, and recovery methods accept closed parameter objects and return closed sanitized envelopes. Raw errors and secret-bearing values never cross this boundary. Gateway startup registers these methods even while `config.enabled` is `false`; that flag continues to block all Microsoft Graph tools.
+Local credential commands cross into the active Gateway through plugin-owned, operator-scoped RPC methods so only the Gateway's materialized config reaches vault operations. The read-scoped status method and admin-scoped device sign-in, migration, restore, and recovery methods accept closed parameter objects and return closed sanitized envelopes. Raw errors and secret-bearing values never cross this boundary. Gateway startup registers these methods even while `config.enabled` is `false`; that flag continues to block all Microsoft Graph tools.
 
 ### Microsoft Graph
 

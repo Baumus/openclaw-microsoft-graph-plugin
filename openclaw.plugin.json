@@ -2,7 +2,7 @@
   "id": "microsoft-graph",
   "name": "Microsoft Graph",
   "description": "Gateway-owned bounded Microsoft Graph v1.0 core-resource tools for OneDrive, Outlook Calendar, Outlook Mail, and Microsoft To Do.",
-  "version": "3.4.0",
+  "version": "3.5.0",
   "categories": [
     "productivity"
   ],
