@@ -72,7 +72,7 @@
     "esbuild": "^0.25.9",
     "openclaw": "2026.9.5",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.2"
   },
   "openclaw": {
     "extensions": [
