@@ -112,7 +112,8 @@ const catalogs: Record<string, Record<string, string>> = {
     "Eine Anmeldung läuft bereits. Warte auf ihren Abschluss oder brich sie ab.": "A sign-in is already in progress. Wait for it to finish or cancel it.",
     "Lege zuerst mindestens einen Agentenzugriff fest und speichere die Regeln.": "First grant access to at least one agent and save the rules.",
     "Die Anmeldung konnte nicht abgeschlossen werden. Prüfe App-ID, Tenant und Microsoft-Einwilligung; versuche es erneut.": "Sign-in could not be completed. Check the app ID, tenant and Microsoft consent, then try again.",
-    "Bitte eine gültige Microsoft App-ID und Tenant-ID oder -Domain eingeben.": "Enter a valid Microsoft app ID and tenant ID or domain."
+    "Bitte eine gültige Microsoft App-ID und Tenant-ID oder -Domain eingeben.": "Enter a valid Microsoft app ID and tenant ID or domain.",
+    "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Status check interrupted. Check the connection; this page will retry."
   },
   "de": {
     "Kalender": "Kalender",
@@ -223,7 +224,8 @@ const catalogs: Record<string, Record<string, string>> = {
     "Eine Anmeldung läuft bereits. Warte auf ihren Abschluss oder brich sie ab.": "Eine Anmeldung läuft bereits. Warte auf ihren Abschluss oder brich sie ab.",
     "Lege zuerst mindestens einen Agentenzugriff fest und speichere die Regeln.": "Lege zuerst mindestens einen Agentenzugriff fest und speichere die Regeln.",
     "Die Anmeldung konnte nicht abgeschlossen werden. Prüfe App-ID, Tenant und Microsoft-Einwilligung; versuche es erneut.": "Die Anmeldung konnte nicht abgeschlossen werden. Prüfe App-ID, Tenant und Microsoft-Einwilligung; versuche es erneut.",
-    "Bitte eine gültige Microsoft App-ID und Tenant-ID oder -Domain eingeben.": "Bitte eine gültige Microsoft App-ID und Tenant-ID oder -Domain eingeben."
+    "Bitte eine gültige Microsoft App-ID und Tenant-ID oder -Domain eingeben.": "Bitte eine gültige Microsoft App-ID und Tenant-ID oder -Domain eingeben.",
+    "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut."
   },
   "es": {
     "Kalender": "Calendario",
@@ -334,7 +336,8 @@ const catalogs: Record<string, Record<string, string>> = {
     "Eine Anmeldung läuft bereits. Warte auf ihren Abschluss oder brich sie ab.": "Ya hay un inicio de sesión en curso. Espera a que termine o cancélalo.",
     "Lege zuerst mindestens einen Agentenzugriff fest und speichere die Regeln.": "Primero concede acceso a al menos un agente y guarda las reglas.",
     "Die Anmeldung konnte nicht abgeschlossen werden. Prüfe App-ID, Tenant und Microsoft-Einwilligung; versuche es erneut.": "No se pudo completar el inicio de sesión. Comprueba el ID de aplicación, el inquilino y el consentimiento de Microsoft e inténtalo de nuevo.",
-    "Bitte eine gültige Microsoft App-ID und Tenant-ID oder -Domain eingeben.": "Introduce un ID de aplicación de Microsoft y un ID o dominio de inquilino válidos."
+    "Bitte eine gültige Microsoft App-ID und Tenant-ID oder -Domain eingeben.": "Introduce un ID de aplicación de Microsoft y un ID o dominio de inquilino válidos.",
+    "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Se interrumpió la comprobación del estado. Comprueba la conexión; esta página volverá a intentarlo."
   },
   "ar": {
     "Kalender": "التقويم",
@@ -445,7 +448,8 @@ const catalogs: Record<string, Record<string, string>> = {
     "Eine Anmeldung läuft bereits. Warte auf ihren Abschluss oder brich sie ab.": "توجد عملية تسجيل دخول جارية. انتظر اكتمالها أو ألغها.",
     "Lege zuerst mindestens einen Agentenzugriff fest und speichere die Regeln.": "امنح وكيلًا واحدًا على الأقل حق الوصول أولًا، ثم احفظ القواعد.",
     "Die Anmeldung konnte nicht abgeschlossen werden. Prüfe App-ID, Tenant und Microsoft-Einwilligung; versuche es erneut.": "تعذر إكمال تسجيل الدخول. تحقق من معرّف التطبيق والمستأجر وموافقة مايكروسوفت، ثم حاول مجددًا.",
-    "Bitte eine gültige Microsoft App-ID und Tenant-ID oder -Domain eingeben.": "أدخل معرّف تطبيق مايكروسوفت ومعرّف مستأجر أو نطاقًا صالحًا."
+    "Bitte eine gültige Microsoft App-ID und Tenant-ID oder -Domain eingeben.": "أدخل معرّف تطبيق مايكروسوفت ومعرّف مستأجر أو نطاقًا صالحًا.",
+    "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "انقطع التحقق من الحالة. تحقق من الاتصال؛ ستحاول هذه الصفحة مجددًا."
   }
 };
 let locale = "en";

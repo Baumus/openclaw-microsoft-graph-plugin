@@ -208,11 +208,12 @@ class ConfigurationPage {
     try {
       const result = await this.credentialCall<DeviceStatus>("microsoft-graph.credentials.device-status", { sessionId: this.device.sessionId });
       if (this.disposed || this.signal.aborted || this.authState !== "pending") return;
+      this.authError = "";
       if (result.state === "created") { this.authState = "created"; this.authError = ""; await this.refreshCredential(); }
       else if (result.state === "failed") { this.authState = "failed"; this.authError = this.signInError(result.error ?? ""); }
       else if (Date.now() >= Date.parse(this.device.expiresAt)) { this.authState = "failed"; this.authError = this.signInError("device_authorization_expired"); }
       else this.scheduleAuthCheck();
-    } catch { this.authState = "failed"; this.authError = this.signInError(""); }
+    } catch { this.authError = "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut."; if (Date.now() >= Date.parse(this.device.expiresAt)) { this.authState = "failed"; this.authError = this.signInError("device_authorization_expired"); } else this.scheduleAuthCheck(); }
     this.render();
   }
   private async startAuth() {
@@ -246,7 +247,7 @@ class ConfigurationPage {
       append(card, el("p", "mg-status", "1. Öffne Microsoft in einem neuen Tab. 2. Gib dort den Code ein. 3. Bestätige die angezeigten Berechtigungen. Diese Seite erkennt den Abschluss automatisch."));
       const link = el("a", "mg-button primary", "Microsoft-Anmeldung öffnen"); link.href = this.device.verificationUri; link.target = "_blank"; link.rel = "noopener noreferrer"; append(card, link);
       const code = el("p", "mg-auth-code", this.device.userCode); code.setAttribute("aria-label", localize("Microsoft-Anmeldecode")); append(card, el("p", "mg-hint", "Einmaliger Microsoft-Anmeldecode:"), code);
-      append(card, button("Code kopieren", () => { void navigator.clipboard.writeText(this.device!.userCode).catch(() => { this.authError = "Kopieren nicht möglich. Markiere den Code und gib ihn bei Microsoft ein."; this.render(); }); }));
+      append(card, button("Code kopieren", () => { if (!navigator.clipboard?.writeText) { this.authError = "Kopieren nicht möglich. Markiere den Code und gib ihn bei Microsoft ein."; this.render(); return; } void navigator.clipboard.writeText(this.device!.userCode).catch(() => { this.authError = "Kopieren nicht möglich. Markiere den Code und gib ihn bei Microsoft ein."; this.render(); }); }));
       append(card, el("p", "mg-hint", "Warte auf die Bestätigung hier. Der Code läuft nach spätestens 15 Minuten ab."));
       const cancel = button("Anmeldung abbrechen", () => { void this.cancelAuth(); }, "ghost"); cancel.disabled = this.authBusy; append(card, cancel);
     } else {
