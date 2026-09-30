@@ -35,13 +35,11 @@ OAuth has a bounded request timeout and a 64 KiB response parser. Successful res
 
 After OAuth dispatch, transport errors, malformed/empty/truncated/oversized HTTP-200 bodies, invalid token or expiry fields, and uncertain local publication retain or quarantine the authenticated marker bound to the observed vault generation and digest. Later calls fail with `credential_reauthorization_required` before exchange. Recovery requires the current secret-free binding from `status`; reauthorization is safer whenever Microsoft may have rotated the remote token.
 
-## Migration and rollback
+## Sign-in and rollback
 
-The local CLI preserves exact interactive confirmation for apply operations, then sends a closed parameter object to a plugin-owned Gateway RPC. The active Gateway executes against its materialized plugin config and returns only a validated sanitized envelope. Status is scoped to `operator.read`; device sign-in, migration, restore, and recovery (including dry-runs) require `operator.admin`. These methods remain registered while `config.enabled` is `false`, allowing credential setup before Microsoft Graph tools are enabled. Dry-runs perform no vault, lock, pass-destination, or quarantine mutation.
+The local CLI preserves exact interactive confirmation for apply operations, then sends a closed parameter object to a plugin-owned Gateway RPC. The active Gateway executes against its materialized plugin config and returns only a validated sanitized envelope. Status is scoped to `operator.read`; device sign-in, cancellation, restore, and recovery (including dry-runs) require `operator.admin`. These methods remain registered while `config.enabled` is `false`, allowing credential setup before Microsoft Graph tools are enabled. Dry-runs perform no vault, lock, pass-destination, or quarantine mutation.
 
-`sign-in --client-id <app-id> --tenant <tenant-id>` requests policy-derived delegated scopes plus `offline_access` using the Microsoft device-code flow. The Gateway owns polling and the refresh token; the terminal receives only the verification instruction and a sanitized result with granted scopes. A missing or incomplete grant, failed consent, invalid vault, or existing vault fails closed. Sign-in is create-only and does not replace or recover a quarantined credential.
-
-`migrate-from-pass` requires `--source <pass-ref>`. It validates that this one selected credential covers every scope implied by current policy grants. It never merges credentials. Dry-run performs validation without creating the vault; apply uses create-only publication and emits a secret-free receipt.
+`sign-in --client-id <app-id> --tenant <tenant-id>` requests policy-derived delegated scopes plus `offline_access` using the Microsoft device-code flow. The Gateway owns polling and the refresh token; the Control UI receives only the one-time verification instruction and sanitized status. The terminal CLI remains an alternative. A missing or incomplete grant, failed consent, invalid vault, or existing vault fails closed. Sign-in is create-only and does not replace or recover a quarantined credential.
 
 `restore-pass` requires `--destination <pass-ref>`. It writes and reads back the one current credential while vault operation remains unchanged. `unknown` means the local outcome could not be verified. No pass entry is deleted automatically.
 
@@ -49,4 +47,4 @@ Rollback cannot undo Microsoft-side refresh-token rotation or prove freshness of
 
 ## Security tradeoff
 
-The shared credential reduces operational and migration complexity. It does not provide provider-side read/write isolation: compromise of the credential, key, or a plugin bypass has the union of Microsoft scopes consented to the shared credential. Default-deny policy and write approvals remain the authority for ordinary plugin operations.
+The shared credential reduces operational complexity. It does not provide provider-side read/write isolation: compromise of the credential, key, or a plugin bypass has the union of Microsoft scopes consented to the shared credential. Default-deny policy and write approvals remain the authority for ordinary plugin operations.

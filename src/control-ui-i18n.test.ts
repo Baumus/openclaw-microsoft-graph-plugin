@@ -12,6 +12,16 @@ describe("Microsoft Graph Control UI localization", () => {
     expect(hostLocales).toHaveLength(21);
   });
 
+  it("translates the browser sign-in actions in all supported locales", () => {
+    for (const code of ["en", "de", "es", "ar"]) {
+      setLocale(code);
+      expect(localize("Mit Microsoft verbinden")).toBeTruthy();
+      expect(localize("Microsoft-Anmeldung öffnen")).toBeTruthy();
+      expect(localize("Anmeldung abbrechen")).toBeTruthy();
+      if (code !== "de") expect(localize("Microsoft-Anmeldung öffnen")).not.toBe("Microsoft-Anmeldung öffnen");
+    }
+  });
+
   it("preserves dynamic values and handles RTL locales", () => {
     setLocale("ar");
     expect(isRtl()).toBe(true);

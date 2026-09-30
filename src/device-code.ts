@@ -11,7 +11,7 @@ const SAFE_CLIENT = /^[0-9a-fA-F-]{36}$/;
 const SAFE_SESSION = /^[0-9a-fA-F-]{36}$/;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-type DeviceSession = { id: string; grantedScopes?: string[]; state: "pending" | "created" | "failed"; expiresAt: number; error?: string; interval: number; deviceCode: string; clientId: string; tenant: string; scopes: string[] };
+type DeviceSession = { id: string; grantedScopes?: string[]; state: "pending" | "created" | "failed"; committing?: boolean; expiresAt: number; error?: string; interval: number; deviceCode: string; userCode: string; verificationUri: string; clientId: string; tenant: string; scopes: string[] };
 type StartResult = { sessionId: string; userCode: string; verificationUri: string; expiresAt: string; scopes: string[] };
 type StatusResult = { state: "pending" | "created" | "failed"; error?: string; scopes?: string[] };
 
@@ -34,7 +34,11 @@ export class DeviceCodeSignIn {
 
   async start(clientId: string, tenant: string): Promise<StartResult> {
     if (!SAFE_CLIENT.test(clientId) || !SAFE_TENANT.test(tenant) || tenant.includes("..")) throw new Error("invalid_rpc_parameters");
-    if (this.starting || (this.session?.state === "pending" && this.session.expiresAt > Date.now())) throw new Error("device_authorization_in_progress");
+    if (this.starting) throw new Error("device_authorization_in_progress");
+    if (this.session?.state === "pending" && this.session.expiresAt > Date.now()) {
+      if (this.session.clientId !== clientId || this.session.tenant !== tenant) throw new Error("device_authorization_in_progress");
+      return { sessionId: this.session.id, userCode: this.session.userCode, verificationUri: this.session.verificationUri, expiresAt: new Date(this.session.expiresAt).toISOString(), scopes: this.session.scopes };
+    }
     this.starting = true;
     try {
       const key = this.config.credentialVaultKey;
@@ -52,16 +56,23 @@ export class DeviceCodeSignIn {
         || !Number.isSafeInteger(value.expires_in) || Number(value.expires_in) < 30 || Number(value.expires_in) > 3600
         || !Number.isSafeInteger(value.interval) || Number(value.interval) < 1 || Number(value.interval) > 60) throw new Error("device_authorization_failed");
       const now = Date.now();
-      const session: DeviceSession = { id: randomUUID(), state: "pending", expiresAt: now + Math.min(Number(value.expires_in) * 1000, MAX_LIFETIME_MS), interval: Number(value.interval) * 1000, deviceCode: value.device_code, clientId, tenant, scopes };
+      const session: DeviceSession = { id: randomUUID(), state: "pending", expiresAt: now + Math.min(Number(value.expires_in) * 1000, MAX_LIFETIME_MS), interval: Number(value.interval) * 1000, deviceCode: value.device_code, userCode: value.user_code, verificationUri: value.verification_uri, clientId, tenant, scopes };
       this.session = session;
-      void this.poll(session, key).catch(() => { if (this.session === session) { session.state = "failed"; session.error = "device_authorization_failed"; session.deviceCode = ""; } });
+      void this.poll(session, key).catch(() => { if (this.session === session) { session.state = "failed"; session.error = "device_authorization_failed"; session.deviceCode = ""; session.userCode = ""; } });
       return { sessionId: session.id, userCode: value.user_code, verificationUri: value.verification_uri, expiresAt: new Date(session.expiresAt).toISOString(), scopes };
     } finally { this.starting = false; }
   }
 
+  cancel(sessionId: string): StatusResult {
+    if (!SAFE_SESSION.test(sessionId) || !this.session || this.session.id !== sessionId) throw new Error("device_session_unavailable");
+    if (this.session.committing) throw new Error("device_authorization_in_progress");
+    if (this.session.state === "pending") { this.session.state = "failed"; this.session.error = "device_authorization_cancelled"; this.session.deviceCode = ""; this.session.userCode = ""; }
+    return this.status(sessionId);
+  }
+
   status(sessionId: string): StatusResult {
     if (!SAFE_SESSION.test(sessionId) || !this.session || this.session.id !== sessionId) throw new Error("device_session_unavailable");
-    if (this.session.state === "pending" && Date.now() >= this.session.expiresAt) { this.session.state = "failed"; this.session.error = "device_authorization_expired"; this.session.deviceCode = ""; }
+    if (this.session.state === "pending" && Date.now() >= this.session.expiresAt) { this.session.state = "failed"; this.session.error = "device_authorization_expired"; this.session.deviceCode = ""; this.session.userCode = ""; }
     return { state: this.session.state, ...(this.session.error ? { error: this.session.error } : {}), ...(this.session.grantedScopes ? { scopes: this.session.grantedScopes } : {}) };
   }
 
@@ -87,6 +98,7 @@ export class DeviceCodeSignIn {
         const granted = [...new Set(value.scope.split(/\s+/).filter(Boolean))];
         const credential = { clientId: session.clientId, tenant: session.tenant, refreshToken: value.refresh_token, scopes: granted.some((scope) => scope.toLowerCase() === "offline_access") ? granted : [...granted, "offline_access"] };
         for (const scope of session.scopes.filter((scope) => scope !== "offline_access")) selectScope(credential, [scope]);
+        session.committing = true;
         const lock = await acquireVaultLock(this.stateDir(), "device-code-sign-in");
         try {
           if ((await inspectVaultCredential(this.stateDir(), key)).result !== "missing") throw new Error("credential_vault_conflict");
@@ -102,6 +114,6 @@ export class DeviceCodeSignIn {
       break;
     }
     if (session.state === "pending") { session.state = "failed"; session.error = "device_authorization_expired"; }
-    session.deviceCode = "";
+    session.deviceCode = ""; session.userCode = "";
   }
 }

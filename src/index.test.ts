@@ -63,11 +63,11 @@ describe("microsoft-graph plugin contract", () => {
       ["microsoft-graph.configuration.validate", "operator.admin"],
       ["microsoft-graph.configuration.resolveFolder", "operator.admin"],
       ["microsoft-graph.credentials.status", "operator.read"],
-      ["microsoft-graph.credentials.migrate-from-pass", "operator.admin"],
       ["microsoft-graph.credentials.restore-pass", "operator.admin"],
       ["microsoft-graph.credentials.recover-refresh", "operator.admin"],
       ["microsoft-graph.credentials.device-start", "operator.admin"],
       ["microsoft-graph.credentials.device-status", "operator.admin"],
+      ["microsoft-graph.credentials.device-cancel", "operator.admin"],
     ]);
   });
 

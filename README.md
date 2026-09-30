@@ -27,7 +27,7 @@ You need:
 - Node.js `>=24.16.0 <25` or `>=26.1.0`.
 - OpenClaw `>=2026.9.6` running as the OS account that will own the plugin state.
 - A Microsoft Entra app registration and one delegated user grant for the account the plugin will use. Application permissions, client secrets, certificates, and daemon/service-principal flows are not supported.
-- GNU `pass` and its GPG setup for the one-time migration source (and optional rollback destination). Version 3 does not read `pass` during normal tool calls.
+- GNU `pass` and GPG only if you choose the optional emergency `restore-pass` backup. Normal setup and tool calls do not use `pass`.
 - Permission to edit the OpenClaw configuration and to review the third-party plugin's declared capabilities.
 
 Check the local versions before continuing:
@@ -41,20 +41,7 @@ openclaw --version
 
 1. Register an application in Microsoft Entra and record its **Application (client) ID**. Select the tenant/account audience appropriate for your organization.
 2. Enable public-client/device-code support for that application in accordance with tenant policy. No client secret is needed or accepted. An administrator may need to grant delegated consent first; tenant conditional-access and consent rules remain authoritative.
-3. Configure the policy and vault-key SecretRef below. Then run the interactive sign-in command in section 7 as the OpenClaw host operator. It derives requested delegated scopes from the configured policy and stores the resulting refresh token directly in the encrypted vault. No token is copied into a file or command argument.
-
-The older `pass` migration path remains available for an already authorized credential. Its source is one JSON document stored under a single `pass` reference:
-
-```json
-{
-  "clientId": "replace-with-application-client-id",
-  "tenant": "replace-with-tenant-id-or-common",
-  "refreshToken": "replace-with-refresh-token",
-  "scopes": ["Files.ReadWrite", "Calendars.ReadWrite", "offline_access"]
-}
-```
-
-Create the entry interactively with `pass insert -m <pass-ref>`. Do not place this JSON in the OpenClaw config or policy, and never commit it or paste it into chat, issues, logs, screenshots, or test fixtures. Migration validates that this one credential covers every scope implied by the policy; it does not merge separate read and write credentials.
+3. Configure the policy and vault-key SecretRef below. Then open the Microsoft Graph plugin page in the OpenClaw Control UI and follow **Connect to Microsoft** in section 7. The Gateway derives requested delegated scopes from the configured policy and stores the refresh token directly in the encrypted vault. No token is copied into a file or command argument.
 
 ### 3. Install version 3.5.0
 
@@ -165,30 +152,18 @@ Add the following shape to `openclaw.json`. If you already use `tools.allow`, me
 openclaw plugins enable microsoft-graph
 ```
 
-### 7. Sign in and create the encrypted vault
+### 7. Sign in from the browser UI
 
-From an interactive OpenClaw host terminal under the operator account, run:
+Open **Plugins → Microsoft Graph** in an administrator Control UI session. Save the access rules and wait until the page confirms that the Gateway has applied them. Under **Connect to Microsoft**, enter the approved public application's client ID and tenant ID/domain, then select **Start sign-in**. Open the Microsoft link, enter the one-time code shown on this page, and approve the displayed delegated permissions. The page detects completion automatically; you can cancel before authorization finishes.
+
+The Gateway, not the browser, polls Microsoft's token endpoint, verifies the granted scopes against the applied policy, and writes the refresh token directly to an **empty encrypted vault**. The UI only receives a one-time code, scoped status, and sanitized errors. It never receives OAuth tokens or the vault key. The code expires within 15 minutes. A CLI alternative remains available from an interactive host terminal:
 
 ```text
 openclaw microsoft-graph credentials status
 openclaw microsoft-graph credentials sign-in --client-id <approved-app-id> --tenant <tenant-id>
 ```
 
-The command prints the requested scopes, Microsoft verification URL, and one-time code **only in that terminal**. Complete the sign-in in your browser using the approved client. The Gateway polls Microsoft's token endpoint, checks the granted scopes against the configured policy, and publishes the refresh token directly to an empty encrypted vault. The final receipt lists the granted scopes, not the token. Keep the terminal private; do not paste the code or credentials into chat. If tenant consent or conditional access blocks authorization, resolve that with your tenant administrator. Sign-in never overwrites an existing or quarantined vault; inspect status and use a separately reviewed reauthorization procedure if one already exists.
-
-For an existing `pass` credential, first inspect status, then dry-run the one selected source. Substitute your own `pass` reference locally; it is intentionally not echoed in receipts.
-
-```text
-openclaw microsoft-graph credentials status
-openclaw microsoft-graph credentials migrate-from-pass --source <pass-ref> --dry-run
-openclaw microsoft-graph credentials migrate-from-pass --source <pass-ref> --apply
-```
-
-The dry run validates the policy, key, source credential, and required scope coverage without creating the vault. `--apply` is create-only, requires an interactive terminal, and asks you to type `MIGRATE MICROSOFT GRAPH CREDENTIAL` exactly. A successful receipt reports `result: "created"` plus sanitized generation, key ID, digest, binding, and timestamp fields. A second migration does not overwrite an existing vault.
-
-Credential commands call plugin-owned RPC methods on the active Gateway so SecretRefs are resolved only in the Gateway's materialized configuration. The Gateway may perform migration while this plugin's `config.enabled` is `false`; ordinary Microsoft Graph tools remain disabled until it is set to `true`. Status requires `operator.read`; sign-in, migration, recovery, and restore require `operator.admin`. RPC parameters and responses are closed, validated shapes and never include the vault key, pass contents, OAuth tokens, or raw operation errors.
-
-If migrating from `pass`, do not delete the source entry until you have completed validation and established your backup/recovery plan. Version 3 normal operation uses only the encrypted vault and no longer needs `pass`.
+Tenant consent and conditional-access rules remain authoritative. Sign-in will not overwrite an existing or quarantined vault; use a separately reviewed recovery or reauthorization procedure in that case. `status` requires `operator.read`; sign-in, cancellation, recovery, and optional `restore-pass` require `operator.admin`. Gateway RPC parameters and responses have closed validated shapes and do not include OAuth tokens, the vault key, `pass` contents, or raw errors.
 
 ### 8. Validate the setup
 
@@ -224,7 +199,7 @@ OneDrive mutation authorization occurs before a warning approval request or appr
 
 `openclaw microsoft-graph credentials status` returns one of:
 
-- `missing`: no vault exists; run the migration dry-run and apply steps.
+- `missing`: no vault exists; use the browser sign-in above.
 - `valid`: the vault decrypts and has no authenticated refresh marker.
 - `quarantined`: a dispatched refresh has an uncertain outcome. Normal exchanges remain blocked.
 - `unavailable`: the key, record, permissions, ownership, filesystem, or authenticated envelope could not be validated. Stop and investigate; do not overwrite the vault.
@@ -258,11 +233,11 @@ Apply requires `RESTORE MICROSOFT GRAPH CREDENTIAL`. A `complete` receipt means 
 
 ## Configuration UI (OpenClaw 2026.9.6+)
 
-Administrators can enable **Settings → Labs → Custom plugin UI**, then open **Microsoft Graph** in the Control UI. Version 3.4.0 offers English, German, Spanish, and Arabic; other host locales fall back to English. The page edits OneDrive folder/agent rights, per-agent Calendar/Mail/To Do access, and warning-level approval choices for each service. New OneDrive paths are resolved to immutable drive/item IDs by an admin-only Gateway method. Critical delete, send, and respond actions always retain call-bound approval.
+Administrators can enable **Settings → Labs → Custom plugin UI**, then open **Microsoft Graph** in the Control UI. Version 3.5.0 offers English, German, Spanish, and Arabic; other host locales fall back to English. The page edits OneDrive folder/agent rights, per-agent Calendar/Mail/To Do access, and warning-level approval choices for each service. New OneDrive paths are resolved to immutable drive/item IDs by an admin-only Gateway method. Critical delete, send, and respond actions always retain call-bound approval.
 
 The page validates the policy and submits a revision-checked, policy-only `config.patch`. A supported single-file object-key `$include` is written through by OpenClaw; an unsupported include layout or concurrent change fails closed. The page re-reads the effective policy after saving and shows whether the saved configuration revision has been applied by the Gateway, is still pending, or cannot be confirmed. Pending application is checked automatically for up to one minute, with a manual recheck available. Do not treat “saved” as proof that the Gateway is using the new rules.
 
-When new delegated scopes would be required, the page blocks saving while the plugin is enabled until Microsoft consent is verified through the separate operator workflow. Credential migration and recovery remain in the interactive CLI; no credential is entered in the browser. Generic plugin settings and CLI paths remain available when Custom plugin UI is disabled.
+When new delegated scopes would be required, the page blocks saving while the plugin is enabled until Microsoft consent is verified through the separate operator workflow. The browser sign-in is a guided Microsoft device-code flow; only the one-time code is displayed. Tokens and the vault key stay on the Gateway. Recovery remains in the interactive CLI. Generic plugin settings and CLI paths remain available when Custom plugin UI is disabled.
 
 ## Development
 

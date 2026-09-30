@@ -30,16 +30,18 @@ async function terminal(signIn: DeviceCodeSignIn, sessionId: string) {
 describe("gateway-side device-code sign-in", () => {
   it("stores the exact granted workload scopes and refresh token only in the vault", async () => {
     const { state, key, config } = await setup();
-    let requested = "";
+    let requested = ""; let deviceRequests = 0;
     const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = new URLSearchParams(init?.body as URLSearchParams);
-      if (body.has("scope")) { requested = body.get("scope")!; return response(deviceResponse); }
+      if (body.has("scope")) { deviceRequests++; requested = body.get("scope")!; return response(deviceResponse); }
       return response({ refresh_token: "synthetic-refresh", scope: requested });
     }) as unknown as typeof fetch;
     const signIn = new DeviceCodeSignIn(config, () => state, fetchFn, async () => undefined);
     const started = await signIn.start(clientId, tenant);
     expect(started).toMatchObject({ userCode: "ABCD-EFGH", verificationUri: "https://microsoft.com/devicelogin" });
     expect(started.scopes).toContain("offline_access");
+    expect(await signIn.start(clientId, tenant)).toEqual(started);
+    expect(deviceRequests).toBe(1);
     expect(await terminal(signIn, started.sessionId)).toEqual({ state: "created", scopes: requested.split(" ") });
     const record = await readVaultCredential(state, key);
     expect(record.credential).toEqual({ clientId, tenant, refreshToken: "synthetic-refresh", scopes: requested.split(" ") });
@@ -59,6 +61,20 @@ describe("gateway-side device-code sign-in", () => {
       expect((await terminal(signIn, started.sessionId)).state).toBe("failed");
       expect(await inspectVaultCredential(state)).toEqual({ result: "missing" });
     }
+  });
+
+  it("cancels a pending browser sign-in without publishing a credential", async () => {
+    const { state, config } = await setup();
+    let release!: () => void;
+    const wait = () => new Promise<void>((resolve) => { release = resolve; });
+    const fetchFn = vi.fn().mockResolvedValue(response(deviceResponse)) as unknown as typeof fetch;
+    const signIn = new DeviceCodeSignIn(config, () => state, fetchFn, wait);
+    const started = await signIn.start(clientId, tenant);
+    expect(signIn.cancel(started.sessionId)).toEqual({ state: "failed", error: "device_authorization_cancelled" });
+    release();
+    await Promise.resolve();
+    expect(await inspectVaultCredential(state)).toEqual({ result: "missing" });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed before network on an existing vault or invalid client", async () => {

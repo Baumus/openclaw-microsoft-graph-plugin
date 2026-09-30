@@ -5,6 +5,10 @@ import { localize, format, setLocale, isRtl } from "./control-ui-i18n.js";
 type Grant = { operations: string[]; resources?: string[] };
 type Root = { label: string; path: string; drive_id: string; item_id: string; include_descendants: true; agents_instructions?: "trusted"; permissions: Record<"read" | "write" | "delete", boolean>; agents: Record<string, { permissions: Partial<Record<"read" | "write" | "delete", boolean>> }> };
 type Policy = { version: 2; rules: { default: "deny"; warningApprovalsByService?: Partial<Record<"onedrive" | "calendar" | "mail" | "todo", boolean>> }; services: { onedrive: { allowed_roots: Root[] }; calendar: { agents: Record<string, Grant> }; mail: { agents: Record<string, Grant> }; todo: { agents: Record<string, Grant> } } };
+type CredentialStatus = { policyVersion: 2; credential: { result: "missing" | "valid" | "quarantined" | "unavailable" } };
+type DeviceStart = { sessionId: string; userCode: string; verificationUri: string; expiresAt: string; scopes: string[] };
+type DeviceStatus = { state: "pending" | "created" | "failed"; error?: string; scopes?: string[] };
+type CredentialReply<T> = { ok: true; value: T } | { ok: false; error: string };
 type ConfigSnapshot = { hash: string; config: { plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; parsed?: { plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; configRevisionHash?: string; appliedConfigHash?: string };
 const id = "microsoft-graph";
 const operations = { calendar: ["read", "create", "update", "respond", "attach", "delete"], mail: ["read", "draft", "update", "move", "mark", "send", "delete"], todo: ["read", "create", "update", "delete"] } as const;
@@ -70,13 +74,21 @@ class ConfigurationPage {
   private disposed = false;
   private statusTimer?: ReturnType<typeof setTimeout>;
   private statusChecksRemaining = 0;
+  private authTimer?: ReturnType<typeof setTimeout>;
+  private credential?: CredentialStatus["credential"];
+  private authClientId = "";
+  private authTenant = "";
+  private device?: DeviceStart;
+  private authState: "idle" | "pending" | "created" | "failed" = "idle";
+  private authError = "";
+  private authBusy = false;
   private readonly unsubscribe: () => void;
   constructor(private container: HTMLElement, private host: ControlUiHost, private signal: AbortSignal) {
     this.unsubscribe = host.subscribe(() => { setLocale(host.locale); if (!this.snapshot && !this.busy && this.authorized) void this.load(); else this.render(); });
     void this.load();
     this.render();
   }
-  dispose() { this.disposed = true; this.stopStatusChecks(); this.unsubscribe(); this.container.replaceChildren(); }
+  dispose() { this.disposed = true; if (this.authTimer) clearTimeout(this.authTimer); this.stopStatusChecks(); this.unsubscribe(); this.container.replaceChildren(); }
   private get dirty() { return !!this.initial && JSON.stringify(this.initial) !== JSON.stringify(this.policy); }
   private get authorized() { return this.host.connection.connected && this.host.connection.canAdmin; }
   private get applicationStatus(): "applied" | "pending" | "unknown" {
@@ -125,6 +137,7 @@ class ConfigurationPage {
       this.policy = policy ? clone(policy) : blankPolicy(); this.initial = clone(this.policy);
       this.snapshot = snap;
       this.watchApplication();
+      await this.refreshCredential();
       this.selectedAgent = this.host.agents.rows[0]?.id ?? ""; this.removedServiceGrants = {};
       try { const baseline = await this.host.request<{ requiredScopes: string[] }>("microsoft-graph.configuration.validate", { policy: this.policy }); this.initialScopes = baseline.requiredScopes; this.scopes = baseline.requiredScopes; } catch { this.initialScopes = []; this.scopes = []; }
     } catch { this.error = "Configuration could not be loaded. Check administrator access and Gateway connection."; }
@@ -139,6 +152,7 @@ class ConfigurationPage {
     if (!this.host.connection.connected) { append(main, el("p", "mg-message", "Verbinde dich mit dem Gateway, um die Regeln zu bearbeiten.")); this.container.replaceChildren(main); return; }
     if (!this.host.connection.canAdmin) { append(main, el("p", "mg-message", "Zum Anzeigen und Ändern dieser Regeln brauchst du Administratorrechte.")); this.container.replaceChildren(main); return; }
     if (!this.snapshot) { append(main, el("p", "mg-message", this.error || "Regeln werden geladen…")); this.container.replaceChildren(main); return; }
+    this.renderSignIn(main);
     const rail = el("nav", "mg-steps"); rail.setAttribute("aria-label", localize("Konfigurationsschritte"));
     ["OneDrive", "Dienste", "Freigaben", "Prüfen"].forEach((name, index) => { const tab = button(`${index + 1}  ${localize(name)}`, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost"); tab.disabled = this.busy; tab.setAttribute("aria-current", index === this.step ? "step" : "false"); append(rail, tab); }); append(main, rail);
     if (this.included) append(main, el("p", "mg-banner", format("Policy-Quelle: {name}. Änderungen werden beim Speichern in diese Datei geschrieben.", { name: this.includeName })));
@@ -158,6 +172,92 @@ class ConfigurationPage {
     if (this.step < 3) append(footer, button("Weiter", () => { this.step++; this.render(); if (this.step === 3) void this.validate(); }, "primary"));
     if (this.step === 3 && this.dirty) append(footer, button("Änderungen speichern", () => { void this.save(); }, "primary"));
     append(main, footer); this.container.replaceChildren(main);
+  }
+  private async credentialCall<T>(method: string, params: Record<string, unknown>): Promise<T> {
+    const reply = await this.host.request<CredentialReply<T>>(method, params);
+    if (!reply || typeof reply !== "object" || typeof reply.ok !== "boolean") throw new Error("internal_error");
+    if (!reply.ok) throw new Error(reply.error);
+    return reply.value;
+  }
+  private async refreshCredential() {
+    try {
+      const status = await this.credentialCall<CredentialStatus>("microsoft-graph.credentials.status", {});
+      if (!this.disposed && !this.signal.aborted) this.credential = status.credential;
+    } catch { if (!this.disposed && !this.signal.aborted) this.credential = { result: "unavailable" }; }
+  }
+  private signInError(code: string): string {
+    const messages: Record<string, string> = {
+      credential_scope_missing: "Die Microsoft-Freigabe enthält nicht alle benötigten Berechtigungen. Prüfe die Einwilligung und starte erneut.",
+      credential_vault_conflict: "Es gibt bereits einen Zugang. Dieser Assistent überschreibt ihn nicht.",
+      credential_vault_locked: "Der Zugang wird gerade geändert. Bitte später erneut versuchen.",
+      credential_vault_unavailable: "Der verschlüsselte Zugang ist nicht bereit. Prüfe den Vault-Schlüssel in der Plugin-Konfiguration.",
+      device_authorization_declined: "Die Anmeldung wurde bei Microsoft abgelehnt. Du kannst erneut starten.",
+      device_authorization_expired: "Der Anmeldecode ist abgelaufen. Starte die Anmeldung erneut.",
+      device_authorization_cancelled: "Die Anmeldung wurde abgebrochen.",
+      device_authorization_in_progress: "Eine Anmeldung läuft bereits. Warte auf ihren Abschluss oder brich sie ab.",
+      invalid_policy: "Lege zuerst mindestens einen Agentenzugriff fest und speichere die Regeln.",
+    };
+    return messages[code] ?? "Die Anmeldung konnte nicht abgeschlossen werden. Prüfe App-ID, Tenant und Microsoft-Einwilligung; versuche es erneut.";
+  }
+  private scheduleAuthCheck() {
+    if (this.disposed || this.signal.aborted || this.authState !== "pending" || !this.device || this.authTimer) return;
+    this.authTimer = setTimeout(() => { this.authTimer = undefined; void this.checkAuth(); }, 4000);
+  }
+  private async checkAuth() {
+    if (!this.device || this.authState !== "pending" || this.disposed || this.signal.aborted) return;
+    try {
+      const result = await this.credentialCall<DeviceStatus>("microsoft-graph.credentials.device-status", { sessionId: this.device.sessionId });
+      if (this.disposed || this.signal.aborted || this.authState !== "pending") return;
+      if (result.state === "created") { this.authState = "created"; this.authError = ""; await this.refreshCredential(); }
+      else if (result.state === "failed") { this.authState = "failed"; this.authError = this.signInError(result.error ?? ""); }
+      else if (Date.now() >= Date.parse(this.device.expiresAt)) { this.authState = "failed"; this.authError = this.signInError("device_authorization_expired"); }
+      else this.scheduleAuthCheck();
+    } catch { this.authState = "failed"; this.authError = this.signInError(""); }
+    this.render();
+  }
+  private async startAuth() {
+    if (this.authBusy || this.authState === "pending" || this.credential?.result !== "missing" || this.dirty || this.applicationStatus !== "applied") return;
+    if (!/^[0-9a-fA-F-]{36}$/.test(this.authClientId.trim()) || !/^[A-Za-z0-9.-]{1,253}$/.test(this.authTenant.trim())) { this.authError = "Bitte eine gültige Microsoft App-ID und Tenant-ID oder -Domain eingeben."; this.render(); return; }
+    this.authBusy = true; this.authError = ""; this.render();
+    try {
+      const started = await this.credentialCall<DeviceStart>("microsoft-graph.credentials.device-start", { clientId: this.authClientId.trim(), tenant: this.authTenant.trim() });
+      if (this.disposed || this.signal.aborted) return;
+      this.device = started; this.authState = "pending"; this.scheduleAuthCheck();
+    } catch (error) { this.authState = "failed"; this.authError = this.signInError(error instanceof Error ? error.message : ""); }
+    finally { this.authBusy = false; this.render(); }
+  }
+  private async cancelAuth() {
+    if (!this.device || this.authState !== "pending") return;
+    this.authBusy = true; this.render();
+    try { const result = await this.credentialCall<DeviceStatus>("microsoft-graph.credentials.device-cancel", { sessionId: this.device.sessionId }); if (result.state === "created") { this.authState = "created"; this.authError = ""; await this.refreshCredential(); } else { this.authState = "failed"; this.authError = this.signInError(result.error ?? "device_authorization_cancelled"); } }
+    catch { this.authError = this.signInError(""); }
+    finally { this.authBusy = false; if (this.authTimer) clearTimeout(this.authTimer); this.authTimer = undefined; if (this.authState === "pending") this.scheduleAuthCheck(); this.render(); }
+  }
+  private renderSignIn(main: HTMLElement) {
+    const card = el("section", "mg-section mg-auth");
+    append(card, el("h2", "", "Mit Microsoft verbinden"));
+    const result = this.credential?.result;
+    if (result === "valid" || this.authState === "created") { append(card, el("p", "mg-success", "Microsoft-Zugang ist sicher gespeichert. Du kannst die freigegebenen Dienste nutzen.")); append(main, card); return; }
+    if (result === "quarantined") { append(card, el("p", "mg-warning", "Der vorhandene Zugang ist gesperrt und muss separat wiederhergestellt werden. Dieser Assistent überschreibt ihn nicht.")); append(main, card); return; }
+    if (result === "unavailable") { append(card, el("p", "mg-warning", "Zugangsstatus nicht verfügbar. Prüfe Vault-Schlüssel und Gateway-Verbindung.")); append(main, card); return; }
+    if (!result) { append(card, el("p", "", "Zugangsstatus wird geladen…")); append(main, card); return; }
+    append(card, el("p", "", "Melde dich in deinem Browser bei Microsoft an. Der Zugang wird danach direkt verschlüsselt gespeichert; du musst keinen Token kopieren."));
+    if (this.authState === "pending" && this.device) {
+      append(card, el("p", "mg-status", "1. Öffne Microsoft in einem neuen Tab. 2. Gib dort den Code ein. 3. Bestätige die angezeigten Berechtigungen. Diese Seite erkennt den Abschluss automatisch."));
+      const link = el("a", "mg-button primary", "Microsoft-Anmeldung öffnen"); link.href = this.device.verificationUri; link.target = "_blank"; link.rel = "noopener noreferrer"; append(card, link);
+      const code = el("p", "mg-auth-code", this.device.userCode); code.setAttribute("aria-label", localize("Microsoft-Anmeldecode")); append(card, el("p", "mg-hint", "Einmaliger Microsoft-Anmeldecode:"), code);
+      append(card, button("Code kopieren", () => { void navigator.clipboard.writeText(this.device!.userCode).catch(() => { this.authError = "Kopieren nicht möglich. Markiere den Code und gib ihn bei Microsoft ein."; this.render(); }); }));
+      append(card, el("p", "mg-hint", "Warte auf die Bestätigung hier. Der Code läuft nach spätestens 15 Minuten ab."));
+      const cancel = button("Anmeldung abbrechen", () => { void this.cancelAuth(); }, "ghost"); cancel.disabled = this.authBusy; append(card, cancel);
+    } else {
+      append(card, el("p", "mg-hint", "Du benötigst die App-ID einer genehmigten öffentlichen Microsoft-Anwendung und deine Tenant-ID. Dein Administrator kann dir beide Werte geben. Ein Client Secret wird nicht benötigt."));
+      const client = field(card, "Microsoft App-ID", this.authClientId, value => { this.authClientId = value; }); client.placeholder = "00000000-0000-0000-0000-000000000000";
+      const tenant = field(card, "Tenant-ID oder Tenant-Domain", this.authTenant, value => { this.authTenant = value; }); tenant.placeholder = "example.onmicrosoft.com";
+      const start = button("Anmeldung starten", () => { void this.startAuth(); }, "primary"); start.disabled = this.authBusy || this.dirty || this.applicationStatus !== "applied"; append(card, start);
+      if (this.dirty || this.applicationStatus !== "applied") append(card, el("p", "mg-hint", "Speichere die Zugriffsregeln und warte, bis sie im Gateway angewendet sind."));
+    }
+    if (this.authError) append(card, el("p", "mg-error", this.authError));
+    append(main, card);
   }
   private renderAgentPicker(body: HTMLElement): string {
     const roster = this.host.agents.rows;
