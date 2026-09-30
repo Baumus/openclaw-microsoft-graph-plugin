@@ -61,3 +61,6 @@
   .mg-footer .mg-button { flex: 1 1 auto; }
 }
 @media (prefers-reduced-motion: reduce) { .mg-ui * { scroll-behavior: auto !important; } }
+
+.mg-status-detail { margin: 5px 0 10px; color: var(--mg-muted); line-height: 1.45; }
+.mg-warning > .mg-button { margin-top: 2px; }

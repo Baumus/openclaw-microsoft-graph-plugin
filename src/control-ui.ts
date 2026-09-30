@@ -64,17 +64,50 @@ class ConfigurationPage {
   private busy = false;
   private error = "";
   private success = "";
+  private statusError = "";
   private confirmedRemoval = false;
   private disposed = false;
+  private statusTimer?: ReturnType<typeof setTimeout>;
+  private statusChecksRemaining = 0;
   private readonly unsubscribe: () => void;
   constructor(private container: HTMLElement, private host: ControlUiHost, private signal: AbortSignal) {
     this.unsubscribe = host.subscribe(() => { if (!this.snapshot && !this.busy && this.authorized) void this.load(); else this.render(); });
     void this.load();
     this.render();
   }
-  dispose() { this.disposed = true; this.unsubscribe(); this.container.replaceChildren(); }
+  dispose() { this.disposed = true; this.stopStatusChecks(); this.unsubscribe(); this.container.replaceChildren(); }
   private get dirty() { return !!this.initial && JSON.stringify(this.initial) !== JSON.stringify(this.policy); }
   private get authorized() { return this.host.connection.connected && this.host.connection.canAdmin; }
+  private get applicationStatus(): "applied" | "pending" | "unknown" {
+    const { configRevisionHash, appliedConfigHash } = this.snapshot ?? {};
+    if (!configRevisionHash || !appliedConfigHash) return "unknown";
+    return configRevisionHash === appliedConfigHash ? "applied" : "pending";
+  }
+  private stopStatusChecks() { if (this.statusTimer) clearTimeout(this.statusTimer); this.statusTimer = undefined; this.statusChecksRemaining = 0; }
+  private scheduleStatusCheck() {
+    if (this.disposed || this.signal.aborted || this.applicationStatus !== "pending" || this.statusChecksRemaining <= 0 || this.statusTimer) return;
+    this.statusTimer = setTimeout(() => { this.statusTimer = undefined; void this.checkApplication(); }, 5000);
+  }
+  private async checkApplication() {
+    if (!this.authorized || !this.snapshot || !this.initial || this.disposed || this.signal.aborted) return;
+    if (this.busy) { this.scheduleStatusCheck(); return; }
+    try {
+      const snap = await this.host.request<ConfigSnapshot>("config.get", {});
+      if (this.disposed || this.signal.aborted) return;
+      if (JSON.stringify(snap.config?.plugins?.entries?.[id]?.config?.policy) !== JSON.stringify(this.initial)) {
+        this.stopStatusChecks();
+        this.statusError = "Die Regeln wurden außerhalb dieser Seite geändert. Bitte neu laden, um den aktuellen Stand zu sehen.";
+        this.render();
+        return;
+      }
+      this.snapshot = snap;
+      this.statusError = "";
+      if (this.applicationStatus !== "pending") this.stopStatusChecks();
+      else { if (this.statusChecksRemaining === 0) this.statusChecksRemaining = 12; this.statusChecksRemaining--; this.scheduleStatusCheck(); }
+    } catch { this.stopStatusChecks(); this.statusError = "Statusprüfung fehlgeschlagen. Verbindung prüfen und erneut versuchen."; }
+    this.render();
+  }
+  private watchApplication() { this.stopStatusChecks(); if (this.applicationStatus === "pending") { this.statusChecksRemaining = 12; this.scheduleStatusCheck(); } }
   private async load() {
     if (!this.authorized || this.busy) return;
     this.busy = true; this.error = ""; this.render();
@@ -90,6 +123,7 @@ class ConfigurationPage {
       const policy = entry.policy as Policy | undefined;
       this.policy = policy ? clone(policy) : blankPolicy(); this.initial = clone(this.policy);
       this.snapshot = snap;
+      this.watchApplication();
       this.selectedAgent = this.host.agents.rows[0]?.id ?? ""; this.removedServiceGrants = {};
       try { const baseline = await this.host.request<{ requiredScopes: string[] }>("microsoft-graph.configuration.validate", { policy: this.policy }); this.initialScopes = baseline.requiredScopes; this.scopes = baseline.requiredScopes; } catch { this.initialScopes = []; this.scopes = []; }
     } catch { this.error = "Configuration could not be loaded. Check administrator access and Gateway connection."; }
@@ -106,6 +140,14 @@ class ConfigurationPage {
     const rail = el("nav", "mg-steps"); rail.setAttribute("aria-label", "Konfigurationsschritte");
     ["OneDrive", "Dienste", "Freigaben", "Prüfen"].forEach((name, index) => { const tab = button(`${index + 1}  ${name}`, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost"); tab.disabled = this.busy; tab.setAttribute("aria-current", index === this.step ? "step" : "false"); append(rail, tab); }); append(main, rail);
     if (this.included) append(main, el("p", "mg-banner", `Policy-Quelle: ${this.includeName}. Änderungen werden beim Speichern in diese Datei geschrieben.`));
+    const application = this.statusError.startsWith("Die Regeln wurden außerhalb") ? "unknown" : this.applicationStatus;
+    const status = el("div", application === "applied" ? "mg-success" : "mg-warning");
+    status.setAttribute("role", "status");
+    append(status, el("strong", "", application === "applied" ? "Gespeicherte Regeln im Gateway angewendet" : application === "pending" ? "Regeln gespeichert – Anwendung noch ausstehend" : "Anwendung der Regeln nicht bestätigt"));
+    append(status, el("p", "mg-status-detail", application === "applied" ? "Gespeicherte und angewendete Konfigurationsversion stimmen überein." : application === "pending" ? (this.statusChecksRemaining > 0 ? "Der Gateway hat die gespeicherte Version noch nicht übernommen. Diese Seite prüft den Status automatisch; bis dahin können die bisherigen Regeln gelten." : "Die Anwendung ist weiterhin nicht bestätigt. Die bisherigen Regeln können noch gelten; prüfe den Status erneut.") : "Der Gateway liefert derzeit keinen eindeutigen Anwendungsstatus. Die gespeicherten Regeln können bereits gelten, sind hier aber nicht bestätigt."));
+    if (this.statusError) append(status, el("p", "mg-status-detail", this.statusError));
+    if (application !== "applied") { const recheck = button("Anwendung erneut prüfen", () => { void this.checkApplication(); }, "secondary"); recheck.disabled = this.busy; append(status, recheck); }
+    append(main, status);
     const body = el("section", "mg-body"); if (this.step === 0) this.renderOneDrive(body); else if (this.step === 1) this.renderServices(body); else if (this.step === 2) this.renderApprovals(body); else this.renderReview(body); append(main, body);
     if (this.error) append(main, el("p", "mg-error", this.error)); if (this.success) append(main, el("p", "mg-success", this.success));
     const footer = el("footer", "mg-footer"); append(footer, el("span", "mg-dirty", this.dirty ? "Ungespeicherte Änderungen" : "Keine ungespeicherten Änderungen"));
@@ -220,6 +262,7 @@ class ConfigurationPage {
   private async save() {
     if (!this.dirty || this.busy || !this.snapshot) return;
     if (JSON.stringify(this.initial) !== JSON.stringify(this.policy) && !this.confirmedRemoval) { this.error = "Bitte die Zugriffsänderungen vor dem Speichern bestätigen."; this.render(); return; }
+    this.stopStatusChecks(); this.statusError = "";
     this.busy = true; this.error = ""; this.success = ""; this.render();
     try {
       if (!(await this.validate())) return;
@@ -237,20 +280,20 @@ class ConfigurationPage {
       const result = await this.host.request<{ changedPaths?: string[] }>("config.patch", { raw, baseHash: fresh.hash, replacePaths: replacements, note: "Microsoft Graph configuration UI save" });
       const verify = await this.host.request<ConfigSnapshot>("config.get", {});
       const applied = verify.config?.plugins?.entries?.[id]?.config;
-      if (JSON.stringify(applied?.policy) !== JSON.stringify(this.policy) || false) { this.error = "Configuration write returned, but the effective values could not be verified. Reload before retrying."; return; }
+      if (JSON.stringify(applied?.policy) !== JSON.stringify(this.policy)) { this.error = "Configuration write returned, but the effective values could not be verified. Reload before retrying."; return; }
       this.snapshot = verify; this.initial = clone(this.policy);
-      this.success = verify.configRevisionHash === verify.appliedConfigHash ? "Regeln gespeichert und angewendet." : "Regeln gespeichert; ihre Anwendung steht noch aus.";
+      this.watchApplication();
       void result;
     } catch {
       try {
         const verify = await this.host.request<ConfigSnapshot>("config.get", {});
         if (JSON.stringify(verify.config?.plugins?.entries?.[id]?.config?.policy) === JSON.stringify(this.policy)) {
           this.snapshot = verify; this.initial = clone(this.policy);
-          this.success = "Regeln gespeichert; ihre Anwendung ist noch nicht bestätigt. Prüfe den Gateway-Status.";
+          this.watchApplication();
         } else this.error = "Speichern nicht bestätigt. Der Entwurf bleibt erhalten; bitte vor einem erneuten Versuch neu laden.";
       } catch { this.error = "Speicherzustand unbekannt. Bitte Gateway-Status prüfen und die Seite neu laden."; }
     }
-    finally { this.busy = false; this.render(); }
+    finally { this.busy = false; if (this.applicationStatus === "pending" && !this.statusTimer && this.statusChecksRemaining === 0) this.watchApplication(); this.render(); }
   }
 }
 

@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.3.2 - 2026-09-30
+
+- Show a persistent saved-versus-applied Gateway status in Microsoft Graph Zugriff, recheck pending application automatically for one minute, and offer a manual status check without claiming success when revision evidence is missing.
+
 ## 3.3.1 - 2026-09-29
 
 - Refine the Microsoft Graph access UI with readable theme-aware controls, clearer hierarchy, responsive layout, and a non-overlapping footer.
