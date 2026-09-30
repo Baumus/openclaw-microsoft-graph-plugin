@@ -68,15 +68,15 @@
     "openclaw": ">=2026.9.6"
   },
   "dependencies": {
-    "@openclaw/fs-safe": "0.13.1",
+    "@openclaw/fs-safe": "0.18.2",
     "typebox": "^1.1.38"
   },
   "devDependencies": {
     "clawhub": "0.23.3",
+    "esbuild": "^0.25.9",
     "openclaw": "2026.9.6",
-    "typescript": "^5.9.0",
-    "vitest": "^4.1.11",
-    "esbuild": "^0.25.9"
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
   },
   "openclaw": {
     "extensions": [
