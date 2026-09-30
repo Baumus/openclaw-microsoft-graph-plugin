@@ -58,8 +58,10 @@ describe("microsoft-graph plugin contract", () => {
     expect(() => entry.register(api as any)).not.toThrow();
     expect(registerTool).toHaveBeenCalled();
     expect(registerCli).toHaveBeenCalledTimes(1);
-    expect(registerGatewayMethod).toHaveBeenCalledTimes(4);
+    expect(registerGatewayMethod).toHaveBeenCalledTimes(6);
     expect(registerGatewayMethod.mock.calls.map(([method, _handler, options]) => [method, options.scope])).toEqual([
+      ["microsoft-graph.configuration.validate", "operator.admin"],
+      ["microsoft-graph.configuration.resolveFolder", "operator.admin"],
       ["microsoft-graph.credentials.status", "operator.read"],
       ["microsoft-graph.credentials.migrate-from-pass", "operator.admin"],
       ["microsoft-graph.credentials.restore-pass", "operator.admin"],
@@ -687,6 +689,10 @@ describe("microsoft-graph plugin contract", () => {
 
     const disabled = await register({ warningApprovalsRequired: false }).before_tool_call(warningEvent, context);
     expect(disabled).toEqual({ params: warningEvent.params });
+    const serviceScoped = register({ policy: { ...graphPolicyFixture(), rules: { default: "deny", warningApprovalsByService: { mail: false, todo: true } } } });
+    expect(await serviceScoped.before_tool_call(warningEvent, context)).toEqual({ params: warningEvent.params });
+    expect((await serviceScoped.before_tool_call({ toolName: "microsoft_todo_write", toolCallId: "scoped-todo", params: { action: "create_list", title: "List" } }, context)).requireApproval).toMatchObject({ severity: "warning" });
+    expect((await serviceScoped.before_tool_call({ toolName: "outlook_mail_write", toolCallId: "scoped-critical", params: { action: "send_draft", messageId: "message-1" } }, context)).requireApproval).toMatchObject({ severity: "critical", allowedDecisions: ["allow-once", "deny"] });
 
     const hooks = register({ warningApprovalsRequired: true });
     const first = await hooks.before_tool_call(warningEvent, context);

@@ -42,8 +42,8 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Build
-        run: npm run build
+      - name: Build plugin and Control UI
+        run: npm run plugin:build
 
       - name: Check generated OpenClaw metadata
         run: npm run plugin:build:check

@@ -18,14 +18,14 @@ See [architecture](docs/ARCHITECTURE.md), [OAuth access matrix](docs/OAUTH_ACCES
 
 ## Setup guide
 
-Version 3.1.0 uses one Microsoft delegated OAuth credential and one encrypted local vault. The policy contains authorization rules only; it never contains credential locations or credential material.
+Version 3.4.0 uses one Microsoft delegated OAuth credential and one encrypted local vault. The policy contains authorization rules only; it never contains credential locations or credential material.
 
 ### 1. Check prerequisites
 
 You need:
 
 - Node.js `>=24.16.0 <25` or `>=26.1.0`.
-- OpenClaw `>=2026.9.5` running as the OS account that will own the plugin state.
+- OpenClaw `>=2026.9.6` running as the OS account that will own the plugin state.
 - A Microsoft Entra app registration and one delegated user grant for the account the plugin will use. Application permissions, client secrets, certificates, and daemon/service-principal flows are not supported.
 - GNU `pass` and its GPG setup for the one-time migration source (and optional rollback destination). Version 3 does not read `pass` during normal tool calls.
 - Permission to edit the OpenClaw configuration and to review the third-party plugin's declared capabilities.
@@ -57,12 +57,12 @@ The migration source is one JSON document stored under a single `pass` reference
 
 Create the entry interactively with `pass insert -m <pass-ref>`. Do not place this JSON in the OpenClaw config or policy, and never commit it or paste it into chat, issues, logs, screenshots, or test fixtures. Migration validates that this one credential covers every scope implied by the policy; it does not merge separate read and write credentials.
 
-### 3. Install version 3.1.0
+### 3. Install version 3.4.0
 
-Version 3.1.0 is not yet available from npm. After publication, install the exact reviewed package and version:
+Version 3.4.0 is not yet available from npm. After publication, install the exact reviewed package and version:
 
 ```bash
-openclaw plugins install npm:@baumus/openclaw-microsoft-graph@3.1.0 --pin
+openclaw plugins install npm:@baumus/openclaw-microsoft-graph@3.4.0 --pin
 ```
 
 Review the package source, integrity, and declared capabilities before accepting the interactive consent prompt. Installation does not create credentials, consent Microsoft permissions, grant tool access, or make an incomplete configuration usable. OpenClaw may leave the plugin disabled until its required configuration is present.
@@ -247,6 +247,14 @@ Apply requires `RESTORE MICROSOFT GRAPH CREDENTIAL`. A `complete` receipt means 
 - OpenClaw may resolve declared SecretInputs while loading configuration. The plugin guarantees authorization before plugin-side key selection and vault/provider access, not suppression of host-level SecretRef materialization.
 - Unknown actions, malformed resources, missing grants, missing credentials, unsafe files, and unsupported filesystem conditions fail closed.
 - Process-local access-token, continuation, instruction, and warning allow-always trust is lost on restart. Retry from a fresh read/status check rather than assuming an interrupted mutation failed.
+
+## Configuration UI (OpenClaw 2026.9.6+)
+
+Administrators can enable **Settings → Labs → Custom plugin UI**, then open **Microsoft Graph** in the Control UI. Version 3.4.0 offers English, German, Spanish, and Arabic; other host locales fall back to English. The page edits OneDrive folder/agent rights, per-agent Calendar/Mail/To Do access, and warning-level approval choices for each service. New OneDrive paths are resolved to immutable drive/item IDs by an admin-only Gateway method. Critical delete, send, and respond actions always retain call-bound approval.
+
+The page validates the policy and submits a revision-checked, policy-only `config.patch`. A supported single-file object-key `$include` is written through by OpenClaw; an unsupported include layout or concurrent change fails closed. The page re-reads the effective policy after saving and shows whether the saved configuration revision has been applied by the Gateway, is still pending, or cannot be confirmed. Pending application is checked automatically for up to one minute, with a manual recheck available. Do not treat “saved” as proof that the Gateway is using the new rules.
+
+When new delegated scopes would be required, the page blocks saving while the plugin is enabled until Microsoft consent is verified through the separate operator workflow. Credential migration and recovery remain in the interactive CLI; no credential is entered in the browser. Generic plugin settings and CLI paths remain available when Custom plugin UI is disabled.
 
 ## Development
 
