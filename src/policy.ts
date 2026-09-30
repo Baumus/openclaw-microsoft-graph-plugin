@@ -25,7 +25,7 @@ type GraphPolicyServices = {
   todo: { agents: Record<string, AgentGrant> };
 };
 type GraphPolicyBase = {
-  rules: { default: "deny" };
+  rules: { default: "deny"; warningApprovalsByService?: Partial<Record<Service, boolean>> };
   services: GraphPolicyServices;
 };
 export type GraphPolicy = GraphPolicyBase & { version: 2 };
@@ -64,7 +64,7 @@ const GraphPolicyServicesSchema = Type.Object({
 
 export const GraphPolicySchema = Type.Object({
   version: Type.Literal(2),
-  rules: Type.Object({ default: Type.Literal("deny") }, { additionalProperties: false }),
+  rules: Type.Object({ default: Type.Literal("deny"), warningApprovalsByService: Type.Optional(Type.Object({ onedrive: Type.Optional(Type.Boolean()), calendar: Type.Optional(Type.Boolean()), mail: Type.Optional(Type.Boolean()), todo: Type.Optional(Type.Boolean()) }, { additionalProperties: false })) }, { additionalProperties: false }),
   services: GraphPolicyServicesSchema,
 }, { additionalProperties: false });
 

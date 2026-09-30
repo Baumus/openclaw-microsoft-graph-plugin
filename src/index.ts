@@ -6,6 +6,7 @@ import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 import { downloadOneDriveFile, downloadOutlookFileAttachment, publishPrivateMediaBytes } from "./attachment-download.js";
 import { exchangeRefreshToken, readCredential, selectScope, tokenForAuthorizedOperation } from "./credential.js";
 import { registerCredentialCli, registerCredentialGatewayMethods } from "./credential-cli.js";
+import { registerConfigurationUiMethods } from "./config-ui-rpc.js";
 import { ContinuationStore, normalizedCriteria, type ContinuationBinding } from "./continuation.js";
 import { authorizeOperation, authorizeRoot, GraphPolicySchema, normalizeRelativePath, validatePolicy, type AllowedRoot, type GraphPolicy, type OneDriveOperation } from "./policy.js";
 import { base64DecodedByteLengthStrict, base64JsonResponseLimit, canonicalGraphContinuation, contentTypeAllowed, decodeBase64Strict, DIRECT_ATTACHMENT_MAX_BYTES, driveCreateFolder, driveDelete, driveList, driveListContinuation, driveMetadataUpdate, drivePath, driveRead, driveReadInstructionsCandidate, driveSearchPath, driveSearchScoped, driveWriteSource, graphOperationSignal, graphRequest, normalizeDriveSearch, ONEDRIVE_READ_MAX_BYTES, ONEDRIVE_WRITE_MAX_BYTES, OUTLOOK_ATTACHMENT_MAX_BYTES, safeId, TODO_ATTACHMENT_MAX_BYTES, uploadAttachmentSession, validateDriveFolderInput, validateDriveMetadataInput, validateDriveWriteBytes, type DriveUploadSource } from "./graph.js";
@@ -2826,7 +2827,9 @@ export async function beforeMicrosoftGraphToolCall(
   let scope: WarningApprovalScope;
   try { scope = warningApprovalScope(ctx.agentId, event.toolName, params); }
   catch (error) { return { block: true, blockReason: errorCode(error) }; }
-  const warningApprovalBypassed = runtimeConfig.warningApprovalsRequired === false || warningApprovalTrustStore.has(scope);
+  const service = event.toolName.startsWith("onedrive_") ? "onedrive" : event.toolName.startsWith("outlook_calendar_") ? "calendar" : event.toolName.startsWith("outlook_mail_") ? "mail" : "todo";
+  const warningRequired = runtimeConfig.policy?.rules.warningApprovalsByService?.[service] ?? runtimeConfig.warningApprovalsRequired ?? true;
+  const warningApprovalBypassed = warningRequired === false || warningApprovalTrustStore.has(scope);
   if (warningApprovalBypassed) {
     bindExecutionSnapshot();
     return { params };
@@ -2868,6 +2871,7 @@ plugin.register = (api) => {
     registerCredentialCli(api as unknown as Parameters<typeof registerCredentialCli>[0]);
   }
   if (typeof (api as unknown as { registerGatewayMethod?: unknown }).registerGatewayMethod === "function" && stateResolver) {
+    registerConfigurationUiMethods(api as unknown as Parameters<typeof registerConfigurationUiMethods>[0], runtimeConfig, () => stateResolver(process.env));
     registerCredentialGatewayMethods(
       api as unknown as Parameters<typeof registerCredentialGatewayMethods>[0],
       runtimeConfig,

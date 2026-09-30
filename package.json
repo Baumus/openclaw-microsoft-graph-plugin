@@ -1,6 +1,6 @@
 {
   "name": "@baumus/openclaw-microsoft-graph",
-  "version": "3.1.0",
+  "version": "3.4.0",
   "description": "Bounded OpenClaw tools for Microsoft Graph OneDrive, Outlook Calendar, Outlook Mail, and Microsoft To Do.",
   "type": "module",
   "main": "./dist/index.js",
@@ -23,7 +23,11 @@
     "README.md",
     "SECURITY.md",
     "openclaw.plugin.json",
-    "scripts/bounded-json.mjs"
+    "scripts/bounded-json.mjs",
+    "dist/control-ui/",
+    "src/control-ui.ts",
+    "src/control-ui-i18n.ts",
+    "src/control-ui.css"
   ],
   "scripts": {
     "test": "vitest run --config ./vitest.config.ts",
@@ -61,7 +65,7 @@
     "node": ">=24.16.0 <25 || >=26.1.0"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.9.5"
+    "openclaw": ">=2026.9.6"
   },
   "dependencies": {
     "@openclaw/fs-safe": "0.18.2",
@@ -70,7 +74,7 @@
   "devDependencies": {
     "clawhub": "0.23.3",
     "esbuild": "^0.25.9",
-    "openclaw": "2026.9.5",
+    "openclaw": "2026.9.6",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   },
@@ -82,18 +86,19 @@
       "./dist/index.js"
     ],
     "compat": {
-      "pluginApi": ">=2026.9.5",
-      "minGatewayVersion": ">=2026.9.5"
+      "pluginApi": ">=2026.9.6",
+      "minGatewayVersion": ">=2026.9.6"
     },
     "build": {
-      "openclawVersion": "2026.9.5",
-      "pluginSdkVersion": "2026.9.5"
+      "openclawVersion": "2026.9.6",
+      "pluginSdkVersion": "2026.9.6"
     },
     "install": {
       "clawhubSpec": "clawhub:@baumus/openclaw-microsoft-graph",
-      "npmSpec": "@baumus/openclaw-microsoft-graph@3.1.0",
+      "npmSpec": "@baumus/openclaw-microsoft-graph@3.4.0",
       "defaultChoice": "npm",
-      "minHostVersion": ">=2026.9.5"
-    }
+      "minHostVersion": ">=2026.9.6"
+    },
+    "controlUi": "./src/control-ui.ts"
   }
 }
