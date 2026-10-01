@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.5.3 - 2026-10-01
+
+- Accept Microsoft's `https://login.microsoft.com/device` device-code verification page while keeping the browser destination on an exact allowlist.
+- Accept the required `offline_access` scope in CLI sign-in start and completion results.
+- Accept equivalent Microsoft Graph `mailFolders('id')` continuation paths only when they resolve to the exact expected mail collection; preserve origin and traversal checks.
+- Add synthetic regression tests for sign-in validation and multi-page mail reads.
+
 ## 3.5.2 — Guided setup status
 
 - Show a setup checklist and the next required step for the vault key, agent grant, applied policy, and Microsoft connection.

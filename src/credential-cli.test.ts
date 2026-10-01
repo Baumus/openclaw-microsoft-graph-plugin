@@ -138,6 +138,41 @@ describe("single credential operator surfaces", () => {
     for (let index = 0; index < confirm.mock.invocationCallOrder.length; index += 1) expect(confirm.mock.invocationCallOrder[index]).toBeLessThan(spawnProcess.mock.invocationCallOrder[index + 1]);
   });
 
+  it("accepts the real device-start and completion scopes through the CLI validators", async () => {
+    const start = { ok: true, value: {
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      userCode: "ABCD-EFGH",
+      verificationUri: "https://login.microsoft.com/device",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      scopes: ["Files.Read", "offline_access"],
+    } };
+    const status = { ok: true, value: { state: "created", scopes: ["Files.Read", "offline_access"] } };
+    const replies = [start, status];
+    const spawnProcess = vi.fn(() => fakeChild(JSON.stringify(replies.shift())));
+    const { commands } = credentialCommands(spawnProcess);
+    const inputDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    const errorDescriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+    Object.defineProperty(process.stderr, "isTTY", { configurable: true, value: true });
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.useFakeTimers();
+    try {
+      const pending = commands.children.get("sign-in")!.actionHandler!({ clientId: "client", tenant: "tenant" });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await pending;
+      expect(write.mock.calls.some(([value]) => String(value).includes("https://login.microsoft.com/device") && String(value).includes("offline_access"))).toBe(true);
+      expect(output.mock.calls.some(([value]) => String(value).includes('"result":"created"') && String(value).includes("offline_access"))).toBe(true);
+      expect(spawnProcess).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+      if (inputDescriptor) Object.defineProperty(process.stdin, "isTTY", inputDescriptor);
+      else Reflect.deleteProperty(process.stdin, "isTTY");
+      if (errorDescriptor) Object.defineProperty(process.stderr, "isTTY", errorDescriptor);
+      else Reflect.deleteProperty(process.stderr, "isTTY");
+    }
+  });
+
   it("chooses the current OpenClaw Node entrypoint only when it is valid", async () => {
     const directory = await stateDir();
     const entry = join(directory, "openclaw.mjs");

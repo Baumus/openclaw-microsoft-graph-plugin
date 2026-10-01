@@ -506,6 +506,15 @@ describe("microsoft-graph plugin contract", () => {
     }
   });
 
+  it("accepts OData-key mail continuation while retaining the canonical folder path", () => {
+    const prefix = mailMessageCollectionPath("inbox");
+    const provider = "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages?$skiptoken=next";
+    expect(boundedCollectionPage({ value: [{ id: "one" }], "@odata.nextLink": provider }, ["id"], 1, prefix))
+      .toMatchObject({ truncated: true, providerNextLink: prefix + "?$skiptoken=next" });
+    expect(() => boundedCollectionPage({ value: [{ id: "one" }], "@odata.nextLink": provider }, ["id"], 1, mailMessageCollectionPath("sentitems")))
+      .toThrow("invalid_provider_response");
+  });
+
   it("applies documented recurrence defaults without relaxing required fields", () => {
     const weekly = calendarEventPayload({ startDateTime: "2026-09-08T09:00:00", recurrence: { pattern: { type: "weekly", interval: 1, daysOfWeek: ["tuesday"] }, range: { type: "noEnd", startDate: "2026-09-08" } } });
     expect((weekly.recurrence as any).pattern.firstDayOfWeek).toBe("sunday");

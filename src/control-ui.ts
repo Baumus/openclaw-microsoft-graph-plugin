@@ -1,6 +1,7 @@
 import { defineControlUiPlugin, type ControlUiHost } from "openclaw/plugin-sdk/control-ui";
 import "./control-ui.css";
 import { localize, format, setLocale, isRtl } from "./control-ui-i18n.js";
+import { isMicrosoftDeviceVerificationUri } from "./device-verification.js";
 
 type Grant = { operations: string[]; resources?: string[] };
 type Root = { label: string; path: string; drive_id: string; item_id: string; include_descendants: true; agents_instructions?: "trusted"; permissions: Record<"read" | "write" | "delete", boolean>; agents: Record<string, { permissions: Partial<Record<"read" | "write" | "delete", boolean>> }> };
@@ -255,6 +256,7 @@ class ConfigurationPage {
     try {
       const started = await this.credentialCall<DeviceStart>("microsoft-graph.credentials.device-start", { clientId: this.authClientId.trim(), tenant: this.authTenant.trim() });
       if (this.disposed || this.signal.aborted) return;
+      if (!isMicrosoftDeviceVerificationUri(started.verificationUri)) throw new Error("device_authorization_failed");
       this.device = started; this.authState = "pending"; this.scheduleAuthCheck();
     } catch (error) { this.authState = "failed"; this.authError = this.signInError(error instanceof Error ? error.message : ""); }
     finally { this.authBusy = false; this.render(); }

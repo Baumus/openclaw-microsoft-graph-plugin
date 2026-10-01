@@ -7,6 +7,7 @@ import { readCredential, selectScope, type CredentialBackendConfig } from "./cre
 import { acquireVaultLock, clearVaultQuarantine, decodeVaultKey, inspectVaultCredential, readVaultCredential, vaultRecordBinding, type VaultCredential, type VaultRecord } from "./credential-vault.js";
 import { validatePolicy, type GraphPolicy } from "./policy.js";
 import { DeviceCodeSignIn } from "./device-code.js";
+import { isMicrosoftDeviceVerificationUri } from "./device-verification.js";
 
 type CliConfig = CredentialBackendConfig & { policy?: GraphPolicy };
 type Receipt = { result: string; generation?: number; keyId?: string; digest?: string; binding?: string; timestamp: string };
@@ -252,9 +253,9 @@ function deviceStartResult(value: unknown): unknown {
   const parsed = exactResult(value, ["sessionId", "userCode", "verificationUri", "expiresAt", "scopes"]);
   if (typeof parsed.sessionId !== "string" || !/^[0-9a-fA-F-]{36}$/.test(parsed.sessionId)
     || typeof parsed.userCode !== "string" || !/^[A-Za-z0-9-]{4,32}$/.test(parsed.userCode)
-    || !["https://microsoft.com/devicelogin", "https://www.microsoft.com/devicelogin"].includes(parsed.verificationUri as string)
+    || !isMicrosoftDeviceVerificationUri(parsed.verificationUri)
     || typeof parsed.expiresAt !== "string" || !Number.isFinite(Date.parse(parsed.expiresAt))
-    || !Array.isArray(parsed.scopes) || parsed.scopes.length === 0 || parsed.scopes.some((scope) => typeof scope !== "string" || !/^[A-Za-z.]+$/.test(scope))) throw new Error("internal_error");
+    || !Array.isArray(parsed.scopes) || parsed.scopes.length === 0 || parsed.scopes.some((scope) => typeof scope !== "string" || !/^[A-Za-z][A-Za-z0-9._]*$/.test(scope))) throw new Error("internal_error");
   return value;
 }
 function deviceStatusResult(value: unknown): unknown {
@@ -262,7 +263,7 @@ function deviceStatusResult(value: unknown): unknown {
   if (!["pending", "created", "failed"].includes(parsed.state as string)
     || (parsed.error !== undefined && (parsed.state !== "failed" || typeof parsed.error !== "string" || !SAFE_OPERATION_ERRORS.has(parsed.error)))
     || (parsed.state === "created" && parsed.scopes === undefined)
-    || (parsed.scopes !== undefined && (parsed.state !== "created" || !Array.isArray(parsed.scopes) || parsed.scopes.length === 0 || parsed.scopes.some((scope) => typeof scope !== "string" || !/^[A-Za-z.]+$/.test(scope))))) throw new Error("internal_error");
+    || (parsed.scopes !== undefined && (parsed.state !== "created" || !Array.isArray(parsed.scopes) || parsed.scopes.length === 0 || parsed.scopes.some((scope) => typeof scope !== "string" || !/^[A-Za-z][A-Za-z0-9._]*$/.test(scope))))) throw new Error("internal_error");
   return value;
 }
 async function hostGatewayCall(method: string, params: Record<string, unknown>, invocation: HostCliInvocation, spawnProcess: typeof spawn): Promise<unknown> {
