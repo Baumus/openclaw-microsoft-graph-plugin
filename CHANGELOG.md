@@ -4,7 +4,11 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
-## 3.5.0 - unreleased
+## 3.5.1 - 2026-10-01
+
+- Refresh public positioning, installation guidance, and package metadata for Microsoft 365 for OpenClaw; no runtime permission or API changes.
+
+## 3.5.0 - 2026-10-01
 
 - Add a guided, four-language Control UI sign-in that opens Microsoft in the browser, displays the one-time code, tracks completion, and supports cancellation. Keep the terminal helper as an alternative.
 - Remove the legacy `migrate-from-pass` command and Gateway method; preserve optional `restore-pass` emergency backup.
