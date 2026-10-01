@@ -31,7 +31,7 @@ Installation alone does not sign you in, grant an agent access, or make an incom
 
 ### 2. Choose access and connect Microsoft
 
-Create the vault-key SecretRef and a default-deny policy for named agents. Begin with one read-only grant. OneDrive access requires immutable drive and item IDs, not just a folder name. Configure and enable the plugin, then connect the approved Microsoft account from **Plugins → Microsoft 365 for OpenClaw** in an administrator Control UI session. Review the Microsoft permissions shown during sign-in.
+Create the vault-key SecretRef and a default-deny policy for named agents. Begin with one read-only grant. OneDrive access requires immutable drive and item IDs, not just a folder name. Configure and enable the plugin, then follow the setup checklist in **Plugins → Microsoft 365 for OpenClaw**. It shows the next actionable prerequisite before sign-in. Connect the approved Microsoft account only after the policy is saved and applied. Review the Microsoft permissions shown during sign-in.
 
 The [detailed configuration guide](#configuration-reference) has the exact key command, policy example, host configuration, and sign-in steps. This plugin uses delegated access for one signed-in user; it does not support application permissions, client secrets, or unattended service-principal access.
 
@@ -55,7 +55,7 @@ See [architecture](docs/ARCHITECTURE.md), [OAuth access matrix](docs/OAUTH_ACCES
 
 ## Configuration reference
 
-Version 3.5.1 uses one Microsoft delegated OAuth credential and one encrypted local vault. The policy contains authorization rules only; it never contains credential locations or credential material.
+Version 3.5.2 uses one Microsoft delegated OAuth credential and one encrypted local vault. The policy contains authorization rules only; it never contains credential locations or credential material.
 
 ### Detailed prerequisites
 
@@ -64,7 +64,7 @@ You need:
 - Node.js `>=24.16.0 <25` or `>=26.1.0`.
 - OpenClaw `>=2026.9.6` running as the OS account that will own the plugin state.
 - A Microsoft Entra app registration and one delegated user grant for the account the plugin will use. Application permissions, client secrets, certificates, and daemon/service-principal flows are not supported.
-- GNU `pass` and GPG only if you choose the optional emergency `restore-pass` backup. Normal setup and tool calls do not use `pass`.
+- GNU `pass` and GPG only if you choose the optional emergency `restore-pass` backup. Do not invoke that export when credentials must remain exclusively in the local encrypted vault. Normal setup and tool calls do not use `pass`.
 - Permission to edit the OpenClaw configuration and to review the third-party plugin's declared capabilities.
 
 Check the local versions before continuing:
@@ -77,7 +77,7 @@ openclaw --version
 ### Prepare the Microsoft delegated credential
 
 1. Register an application in Microsoft Entra and record its **Application (client) ID**. Select the tenant/account audience appropriate for your organization.
-2. Enable public-client/device-code support for that application in accordance with tenant policy. No client secret is needed or accepted. An administrator may need to grant delegated consent first; tenant conditional-access and consent rules remain authoritative.
+2. In **Authentication**, enable **Allow public client flows** for your own app registration. This device-code flow needs no redirect URI, HTTPS callback, public endpoint, or client secret. An administrator may need to grant delegated consent first; tenant conditional-access and consent rules remain authoritative.
 3. Configure the policy and vault-key SecretRef below. Then open the Microsoft 365 for OpenClaw plugin page in the OpenClaw Control UI and follow **Connect to Microsoft** below. The Gateway derives requested delegated scopes from the configured policy and stores the refresh token directly in the encrypted vault. No token is copied into a file or command argument.
 
 ### Create the vault-key SecretRef
@@ -183,7 +183,7 @@ openclaw plugins enable microsoft-graph
 
 Open **Plugins → Microsoft 365 for OpenClaw** in an administrator Control UI session. Save the access rules and wait until the page confirms that the Gateway has applied them. Under **Connect to Microsoft**, enter the approved public application's client ID and tenant ID/domain, then select **Start sign-in**. Open the Microsoft link, enter the one-time code shown on this page, and approve the displayed delegated permissions. The page detects completion automatically; you can cancel before authorization finishes.
 
-The Gateway, not the browser, polls Microsoft's token endpoint, verifies the granted scopes against the applied policy, and writes the refresh token directly to an **empty encrypted vault**. The UI only receives a one-time code, scoped status, and sanitized errors. It never receives OAuth tokens or the vault key. The code expires within 15 minutes. A CLI alternative remains available from an interactive host terminal:
+The Gateway, not the browser, polls Microsoft's token endpoint, verifies the granted scopes against the applied policy, and writes the refresh token directly to an **empty encrypted local vault**. The device-code flow makes outbound requests to Microsoft; it does not operate or require an inbound OAuth callback service. The UI only receives a one-time code, scoped status, and sanitized errors. It never receives OAuth tokens or the vault key. The code expires within 15 minutes. A CLI alternative remains available from an interactive host terminal:
 
 ```text
 openclaw microsoft-graph credentials status

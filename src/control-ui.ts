@@ -152,7 +152,7 @@ class ConfigurationPage {
     if (!this.host.connection.connected) { append(main, el("p", "mg-message", "Verbinde dich mit dem Gateway, um die Regeln zu bearbeiten.")); this.container.replaceChildren(main); return; }
     if (!this.host.connection.canAdmin) { append(main, el("p", "mg-message", "Zum Anzeigen und Ändern dieser Regeln brauchst du Administratorrechte.")); this.container.replaceChildren(main); return; }
     if (!this.snapshot) { append(main, el("p", "mg-message", this.error || "Regeln werden geladen…")); this.container.replaceChildren(main); return; }
-    this.renderSignIn(main);
+    this.renderSetup(main);
     const rail = el("nav", "mg-steps"); rail.setAttribute("aria-label", localize("Konfigurationsschritte"));
     ["OneDrive", "Dienste", "Freigaben", "Prüfen"].forEach((name, index) => { const tab = button(`${index + 1}  ${localize(name)}`, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost"); tab.disabled = this.busy; tab.setAttribute("aria-current", index === this.step ? "step" : "false"); append(rail, tab); }); append(main, rail);
     if (this.included) append(main, el("p", "mg-banner", format("Policy-Quelle: {name}. Änderungen werden beim Speichern in diese Datei geschrieben.", { name: this.includeName })));
@@ -171,7 +171,39 @@ class ConfigurationPage {
     if (this.step > 0) append(footer, button("Zurück", () => { this.step--; this.render(); }));
     if (this.step < 3) append(footer, button("Weiter", () => { this.step++; this.render(); if (this.step === 3) void this.validate(); }, "primary"));
     if (this.step === 3 && this.dirty) append(footer, button("Änderungen speichern", () => { void this.save(); }, "primary"));
-    append(main, footer); this.container.replaceChildren(main);
+    append(main, footer); this.renderSignIn(main); this.container.replaceChildren(main);
+  }
+  private renderSetup(main: HTMLElement) {
+    const card = el("section", "mg-section mg-setup");
+    append(card, el("h2", "", "Einrichtung"));
+    const configured = this.snapshot?.config?.plugins?.entries?.[id]?.config?.credentialVaultKey !== undefined;
+    const grants = this.policy.services.onedrive.allowed_roots.some(root => Object.values(root.agents).some(agent => Object.values(agent.permissions).some(Boolean)))
+      || (["calendar", "mail", "todo"] as const).some(service => Object.keys(this.policy.services[service].agents).length > 0);
+    const connected = this.credential?.result === "valid";
+    const steps = [
+      ["Vault-SecretRef vorhanden", configured],
+      ["Mindestens ein Agentenzugriff gespeichert", grants && !this.dirty],
+      ["Regeln im Gateway angewendet", grants && this.applicationStatus === "applied" && !this.dirty],
+      ["Microsoft-Konto verbunden", connected],
+    ] as const;
+    const list = el("ol", "mg-setup-list");
+    for (const [label, done] of steps) append(list, el("li", done ? "mg-setup-done" : "", `${done ? "✓" : "○"} ${localize(label)}`));
+    append(card, list);
+    let next: string;
+    if (!configured) next = "Nächster Schritt: Vault-Schlüssel als SecretRef hinterlegen. Die Anleitung zeigt den Befehl.";
+    else if (!grants) next = "Nächster Schritt: Einen Agentenzugriff auswählen und die Regeln speichern.";
+    else if (this.dirty) next = "Nächster Schritt: Änderungen unter Prüfen speichern.";
+    else if (this.applicationStatus !== "applied") next = "Nächster Schritt: Warten, bis das Gateway die gespeicherten Regeln angewendet hat.";
+    else if (this.credential?.result === "quarantined") next = "Der Zugang ist gesperrt. Stelle ihn über die Administrator-Wiederherstellung wieder her.";
+    else if (this.credential?.result === "unavailable") next = "Der Zugangsstatus ist nicht verfügbar. Prüfe SecretRef und Gateway-Verbindung.";
+    else if (!connected) next = "Nächster Schritt: Unten mit Microsoft verbinden.";
+    else next = "Konto verbunden. Prüfe mit einem berechtigten Agenten einen Lesezugriff; erst dann ist der Ablauf einsatzbereit.";
+    append(card, el("p", connected ? "mg-status" : "mg-hint", next));
+    if (!configured) { const link = el("a", "mg-button secondary", "Vault-Anleitung öffnen"); link.href = "https://clawhub.ai/packages/@baumus/openclaw-microsoft-graph"; link.target = "_blank"; link.rel = "noopener noreferrer"; append(card, link); }
+    else if (!grants) append(card, button("Zugriff festlegen", () => { this.step = 1; this.render(); }, "primary"));
+    else if (this.dirty) append(card, button("Zum Prüfen", () => { this.step = 3; this.render(); void this.validate(); }, "primary"));
+    else if (grants && this.applicationStatus === "applied" && !connected && this.credential?.result === "missing") append(card, button("Mit Microsoft verbinden", () => { this.container.querySelector("#microsoft-connect")?.scrollIntoView({ behavior: "smooth", block: "start" }); }, "primary"));
+    append(main, card);
   }
   private async credentialCall<T>(method: string, params: Record<string, unknown>): Promise<T> {
     const reply = await this.host.request<CredentialReply<T>>(method, params);
@@ -235,10 +267,10 @@ class ConfigurationPage {
     finally { this.authBusy = false; if (this.authTimer) clearTimeout(this.authTimer); this.authTimer = undefined; if (this.authState === "pending") this.scheduleAuthCheck(); this.render(); }
   }
   private renderSignIn(main: HTMLElement) {
-    const card = el("section", "mg-section mg-auth");
+    const card = el("section", "mg-section mg-auth"); card.id = "microsoft-connect";
     append(card, el("h2", "", "Mit Microsoft verbinden"));
     const result = this.credential?.result;
-    if (result === "valid" || this.authState === "created") { append(card, el("p", "mg-success", "Microsoft-Zugang ist sicher gespeichert. Du kannst die freigegebenen Dienste nutzen.")); append(main, card); return; }
+    if (result === "valid" || this.authState === "created") { append(card, el("p", "mg-success", "Microsoft-Zugang sicher gespeichert. Agentenzugriffe gelten erst nach angewendeten Regeln; teste einen erlaubten Lesezugriff.")); append(main, card); return; }
     if (result === "quarantined") { append(card, el("p", "mg-warning", "Der vorhandene Zugang ist gesperrt und muss separat wiederhergestellt werden. Dieser Assistent überschreibt ihn nicht.")); append(main, card); return; }
     if (result === "unavailable") { append(card, el("p", "mg-warning", "Zugangsstatus nicht verfügbar. Prüfe Vault-Schlüssel und Gateway-Verbindung.")); append(main, card); return; }
     if (!result) { append(card, el("p", "", "Zugangsstatus wird geladen…")); append(main, card); return; }
