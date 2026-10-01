@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.5.2 — Guided setup status
+
+- Show a setup checklist and the next required step for the vault key, agent grant, applied policy, and Microsoft connection.
+- Keep account connection distinct from verified agent access; the first read still requires an explicit authorized test.
+- Present access rules before the sign-in card so the UI follows the actual setup dependency order.
+
 ## 3.5.1 - 2026-10-01
 
 - Refresh public positioning, installation guidance, and package metadata for Microsoft 365 for OpenClaw; no runtime permission or API changes.

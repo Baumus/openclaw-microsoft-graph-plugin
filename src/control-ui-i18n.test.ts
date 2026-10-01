@@ -5,6 +5,9 @@ describe("Microsoft Graph Control UI localization", () => {
   it("uses the host locale and English fallback for untranslated host locales", () => {
     setLocale("de-DE");
     expect(localize("Dienste")).toBe("Dienste");
+    expect(localize("Vault-SecretRef vorhanden")).toBe("Vault-SecretRef vorhanden");
+    setLocale("en");
+    expect(localize("Vault-SecretRef vorhanden")).toBe("Vault SecretRef present");
     setLocale("es");
     expect(localize("Dienste")).toBe("Servicios");
     setLocale("fr");

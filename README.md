@@ -31,7 +31,7 @@ Installation alone does not sign you in, grant an agent access, or make an incom
 
 ### 2. Choose access and connect Microsoft
 
-Create the vault-key SecretRef and a default-deny policy for named agents. Begin with one read-only grant. OneDrive access requires immutable drive and item IDs, not just a folder name. Configure and enable the plugin, then connect the approved Microsoft account from **Plugins → Microsoft 365 for OpenClaw** in an administrator Control UI session. Review the Microsoft permissions shown during sign-in.
+Create the vault-key SecretRef and a default-deny policy for named agents. Begin with one read-only grant. OneDrive access requires immutable drive and item IDs, not just a folder name. Configure and enable the plugin, then follow the setup checklist in **Plugins → Microsoft 365 for OpenClaw**. It shows the next actionable prerequisite before sign-in. Connect the approved Microsoft account only after the policy is saved and applied. Review the Microsoft permissions shown during sign-in.
 
 The [detailed configuration guide](#configuration-reference) has the exact key command, policy example, host configuration, and sign-in steps. This plugin uses delegated access for one signed-in user; it does not support application permissions, client secrets, or unattended service-principal access.
 
@@ -55,7 +55,7 @@ See [architecture](docs/ARCHITECTURE.md), [OAuth access matrix](docs/OAUTH_ACCES
 
 ## Configuration reference
 
-Version 3.5.1 uses one Microsoft delegated OAuth credential and one encrypted local vault. The policy contains authorization rules only; it never contains credential locations or credential material.
+Version 3.5.2 uses one Microsoft delegated OAuth credential and one encrypted local vault. The policy contains authorization rules only; it never contains credential locations or credential material.
 
 ### Detailed prerequisites
 
