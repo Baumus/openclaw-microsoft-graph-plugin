@@ -6,7 +6,7 @@ const catalogs: Record<string, Record<string, string>> = {
   "en": {
     "Kalender": "Calendar",
     "E-Mail": "Email",
-    "Plugins / Microsoft Graph": "Plugins / Microsoft Graph",
+    "Plugins / Microsoft 365 for OpenClaw": "Plugins / Microsoft 365 for OpenClaw",
     "Microsoft Graph Zugriff": "Microsoft Graph Access",
     "Lege fest, welcher Agent auf welche Microsoft-Daten zugreifen darf und wann eine Freigabe nötig ist.": "Determine which agent is allowed to access which Microsoft data and when it needs to be shared.",
     "Verbinde dich mit dem Gateway, um die Regeln zu bearbeiten.": "Connect to the gateway to edit the rules.",
@@ -118,7 +118,7 @@ const catalogs: Record<string, Record<string, string>> = {
   "de": {
     "Kalender": "Kalender",
     "E-Mail": "E-Mail",
-    "Plugins / Microsoft Graph": "Plugins / Microsoft Graph",
+    "Plugins / Microsoft 365 for OpenClaw": "Plugins / Microsoft 365 for OpenClaw",
     "Microsoft Graph Zugriff": "Microsoft Graph Zugriff",
     "Lege fest, welcher Agent auf welche Microsoft-Daten zugreifen darf und wann eine Freigabe nötig ist.": "Lege fest, welcher Agent auf welche Microsoft-Daten zugreifen darf und wann eine Freigabe nötig ist.",
     "Verbinde dich mit dem Gateway, um die Regeln zu bearbeiten.": "Verbinde dich mit dem Gateway, um die Regeln zu bearbeiten.",
@@ -230,7 +230,7 @@ const catalogs: Record<string, Record<string, string>> = {
   "es": {
     "Kalender": "Calendario",
     "E-Mail": "Correo electrónico",
-    "Plugins / Microsoft Graph": "Plugins / Microsoft Graph",
+    "Plugins / Microsoft 365 for OpenClaw": "Plugins / Microsoft 365 for OpenClaw",
     "Microsoft Graph Zugriff": "Acceso a Microsoft Graph",
     "Lege fest, welcher Agent auf welche Microsoft-Daten zugreifen darf und wann eine Freigabe nötig ist.": "Determina qué agente puede acceder a qué datos de Microsoft y cuándo es necesaria una autorización.",
     "Verbinde dich mit dem Gateway, um die Regeln zu bearbeiten.": "Conéctate a la pasarela para editar las reglas.",
@@ -342,7 +342,7 @@ const catalogs: Record<string, Record<string, string>> = {
   "ar": {
     "Kalender": "التقويم",
     "E-Mail": "البريد الإلكتروني",
-    "Plugins / Microsoft Graph": "الإضافات /الرسم البياني لمايكروسوفت",
+    "Plugins / Microsoft 365 for OpenClaw": "الإضافات / Microsoft 365 for OpenClaw",
     "Microsoft Graph Zugriff": "Microsoft Graph Access",
     "Lege fest, welcher Agent auf welche Microsoft-Daten zugreifen darf und wann eine Freigabe nötig ist.": "حدد الوكيل المسموح له بالوصول إلى بيانات Microsoft ومتى يجب مشاركتها.",
     "Verbinde dich mit dem Gateway, um die Regeln zu bearbeiten.": "اتصل بالبوابة لتحرير القواعد.",

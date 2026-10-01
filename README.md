@@ -1,6 +1,43 @@
-# Microsoft Graph for OpenClaw
+# Microsoft 365 for OpenClaw
 
-`@baumus/openclaw-microsoft-graph` is a community-maintained OpenClaw tool plugin for bounded Microsoft Graph v1.0 access to OneDrive, Outlook Calendar, Outlook Mail, and Microsoft To Do. It is not an official Microsoft or OpenClaw product and carries no enterprise, compliance, or security certification.
+Your Outlook messages, calendar, OneDrive files, and Microsoft To Do tasks are part of your day. Bring the parts you choose into OpenClaw so your agents can help you find information and work with it—under access rules you control.
+
+**Microsoft 365 for OpenClaw** is a community-maintained plugin for one signed-in Microsoft user. Grant named agents specific access to Outlook Mail, Outlook Calendar, OneDrive, and Microsoft To Do. Access is denied by default. Changes require OpenClaw approval by default; sending, deleting, and responding always require call-bound approval. An administrator can turn off warning-level approval, so review that setting before granting write access.
+
+For example, an authorized agent can find a file in an approved OneDrive folder, check an upcoming event, find an Outlook message, or review permitted tasks. The plugin does not provide Teams, SharePoint, arbitrary Microsoft Graph access, or a service-principal connection.
+
+**Start here:** [Check requirements and install from ClawHub](#1-check-requirements-and-install), then [choose access](#2-choose-access-and-connect-microsoft), then [verify a read-only request](#3-verify-your-first-request).
+
+This is not an official Microsoft or OpenClaw product. It carries no enterprise, compliance, or security certification. [Review supported behavior and limits](docs/SUPPORT.md) before using it with important data.
+
+## Get started in three steps
+
+### 1. Check requirements and install
+
+You need a supported OpenClaw host (`>=2026.9.6`), Node.js (`>=24.16.0 <25` or `>=26.1.0`), permission to edit its configuration, and an approved Microsoft Entra public-client app registration for the account you will connect. Check your local versions:
+
+```bash
+node --version
+openclaw --version
+```
+
+Review the [ClawHub listing](https://clawhub.ai/packages/@baumus/openclaw-microsoft-graph), [source](https://github.com/Baumus/openclaw-microsoft-graph-plugin), and declared capabilities. Then install the published package:
+
+```bash
+openclaw plugins install clawhub:@baumus/openclaw-microsoft-graph
+```
+
+Installation alone does not sign you in, grant an agent access, or make an incomplete configuration usable. Existing installations should review changes before updating; this guide does not silently upgrade them.
+
+### 2. Choose access and connect Microsoft
+
+Create the vault-key SecretRef and a default-deny policy for named agents. Begin with one read-only grant. OneDrive access requires immutable drive and item IDs, not just a folder name. Configure and enable the plugin, then connect the approved Microsoft account from **Plugins → Microsoft 365 for OpenClaw** in an administrator Control UI session. Review the Microsoft permissions shown during sign-in.
+
+The [detailed configuration guide](#configuration-reference) has the exact key command, policy example, host configuration, and sign-in steps. This plugin uses delegated access for one signed-in user; it does not support application permissions, client secrets, or unattended service-principal access.
+
+### 3. Verify your first request
+
+Wait until the Control UI confirms that the Gateway has applied your rules. Run the [local checks](#validate-the-setup), then ask an explicitly allowed agent for one read-only item within its grant. Confirm that an ungranted agent or resource is denied. A visible installed-plugin entry alone does not prove the running Gateway can serve the request.
 
 ## Security model
 
@@ -16,11 +53,11 @@ This simpler shared-credential model has an explicit tradeoff: compromise of the
 
 See [architecture](docs/ARCHITECTURE.md), [OAuth access matrix](docs/OAUTH_ACCESS_MATRIX.md), [vault design](docs/CREDENTIAL_VAULT_DESIGN.md), and [support](docs/SUPPORT.md).
 
-## Setup guide
+## Configuration reference
 
 Version 3.5.0 uses one Microsoft delegated OAuth credential and one encrypted local vault. The policy contains authorization rules only; it never contains credential locations or credential material.
 
-### 1. Check prerequisites
+### Detailed prerequisites
 
 You need:
 
@@ -37,23 +74,13 @@ node --version
 openclaw --version
 ```
 
-### 2. Prepare the Microsoft delegated credential
+### Prepare the Microsoft delegated credential
 
 1. Register an application in Microsoft Entra and record its **Application (client) ID**. Select the tenant/account audience appropriate for your organization.
 2. Enable public-client/device-code support for that application in accordance with tenant policy. No client secret is needed or accepted. An administrator may need to grant delegated consent first; tenant conditional-access and consent rules remain authoritative.
-3. Configure the policy and vault-key SecretRef below. Then open the Microsoft Graph plugin page in the OpenClaw Control UI and follow **Connect to Microsoft** in section 7. The Gateway derives requested delegated scopes from the configured policy and stores the refresh token directly in the encrypted vault. No token is copied into a file or command argument.
+3. Configure the policy and vault-key SecretRef below. Then open the Microsoft 365 for OpenClaw plugin page in the OpenClaw Control UI and follow **Connect to Microsoft** below. The Gateway derives requested delegated scopes from the configured policy and stores the refresh token directly in the encrypted vault. No token is copied into a file or command argument.
 
-### 3. Install version 3.5.0
-
-Version 3.5.0 is not yet available from npm. After publication, install the exact reviewed package and version:
-
-```bash
-openclaw plugins install npm:@baumus/openclaw-microsoft-graph@3.5.0 --pin
-```
-
-Review the package source, integrity, and declared capabilities before accepting the interactive consent prompt. Installation does not create credentials, consent Microsoft permissions, grant tool access, or make an incomplete configuration usable. OpenClaw may leave the plugin disabled until its required configuration is present.
-
-### 4. Create the vault-key SecretRef
+### Create the vault-key SecretRef
 
 `credentialVaultKey` accepts a structured OpenClaw SecretRef only. A plaintext string in `openclaw.json` is rejected. The resolved value must be exactly 32 random bytes encoded as canonical, unpadded base64url (43 characters).
 
@@ -76,7 +103,7 @@ credentialVaultKey: {
 
 You may instead use an `env`, `file`, or `exec` SecretRef backed by a correctly configured OpenClaw secret provider. Do not replace the object with the resolved value. Back up the SecretRef provider independently from the encrypted vault; losing or changing this key makes the existing vault unreadable.
 
-### 5. Create a version-2 default-deny policy
+### Create a version-2 default-deny policy
 
 Copy [the shipped v2 example](examples/microsoft-graph-policy-v2.json5) to `microsoft-graph-policy.json5` beside `openclaw.json`, then replace every placeholder. `$include` paths are resolved relative to the file that contains them and normally must remain inside the top-level config directory.
 
@@ -117,7 +144,7 @@ Use agent IDs from the OpenClaw host configuration; the plugin does not infer po
 
 Keep `rules.default: "deny"`. `include_descendants` must be literal `true`; remove a root entirely if descendants must not be available. Leave `agents_instructions` absent unless trusted administrators control every writer to that root and you intentionally set `agents_instructions: "trusted"`. This optional plugin feature applies OpenClaw's standard `AGENTS.md` instruction format to policy-pinned OneDrive content; it does not read, copy, or modify the host agent's local workspace `AGENTS.md`.
 
-### 6. Configure and enable the plugin
+### Configure and enable the plugin
 
 Add the following shape to `openclaw.json`. If you already use `tools.allow`, merge `microsoft-graph` into that existing allowlist instead of replacing unrelated entries.
 
@@ -152,9 +179,9 @@ Add the following shape to `openclaw.json`. If you already use `tools.allow`, me
 openclaw plugins enable microsoft-graph
 ```
 
-### 7. Sign in from the browser UI
+### Sign in from the browser UI
 
-Open **Plugins → Microsoft Graph** in an administrator Control UI session. Save the access rules and wait until the page confirms that the Gateway has applied them. Under **Connect to Microsoft**, enter the approved public application's client ID and tenant ID/domain, then select **Start sign-in**. Open the Microsoft link, enter the one-time code shown on this page, and approve the displayed delegated permissions. The page detects completion automatically; you can cancel before authorization finishes.
+Open **Plugins → Microsoft 365 for OpenClaw** in an administrator Control UI session. Save the access rules and wait until the page confirms that the Gateway has applied them. Under **Connect to Microsoft**, enter the approved public application's client ID and tenant ID/domain, then select **Start sign-in**. Open the Microsoft link, enter the one-time code shown on this page, and approve the displayed delegated permissions. The page detects completion automatically; you can cancel before authorization finishes.
 
 The Gateway, not the browser, polls Microsoft's token endpoint, verifies the granted scopes against the applied policy, and writes the refresh token directly to an **empty encrypted vault**. The UI only receives a one-time code, scoped status, and sanitized errors. It never receives OAuth tokens or the vault key. The code expires within 15 minutes. A CLI alternative remains available from an interactive host terminal:
 
@@ -165,7 +192,7 @@ openclaw microsoft-graph credentials sign-in --client-id <approved-app-id> --ten
 
 Tenant consent and conditional-access rules remain authoritative. Sign-in will not overwrite an existing or quarantined vault; use a separately reviewed recovery or reauthorization procedure in that case. `status` requires `operator.read`; sign-in, cancellation, recovery, and optional `restore-pass` require `operator.admin`. Gateway RPC parameters and responses have closed validated shapes and do not include OAuth tokens, the vault key, `pass` contents, or raw errors.
 
-### 8. Validate the setup
+### Validate the setup
 
 Run the local checks in this order:
 
@@ -179,7 +206,7 @@ openclaw microsoft-graph credentials status
 
 Expected credential status is `result: "valid"` with secret-free metadata. Then, from an agent explicitly granted in policy, make one read-only request against an allowlisted resource and confirm that an ungranted agent or resource is denied. Do not start validation with a write or destructive action. `plugins list` or a cold manifest inspection alone does not prove that the running Gateway registered the plugin.
 
-### 9. Understand approvals
+### Understand approvals
 
 | Class | Examples | Required user action |
 | --- | --- | --- |
@@ -233,7 +260,7 @@ Apply requires `RESTORE MICROSOFT GRAPH CREDENTIAL`. A `complete` receipt means 
 
 ## Configuration UI (OpenClaw 2026.9.6+)
 
-Administrators can enable **Settings → Labs → Custom plugin UI**, then open **Microsoft Graph** in the Control UI. Version 3.5.0 offers English, German, Spanish, and Arabic; other host locales fall back to English. The page edits OneDrive folder/agent rights, per-agent Calendar/Mail/To Do access, and warning-level approval choices for each service. New OneDrive paths are resolved to immutable drive/item IDs by an admin-only Gateway method. Critical delete, send, and respond actions always retain call-bound approval.
+Administrators can enable **Settings → Labs → Custom plugin UI**, then open **Microsoft 365 for OpenClaw** in the Control UI. Version 3.5.0 offers English, German, Spanish, and Arabic; other host locales fall back to English. The page edits OneDrive folder/agent rights, per-agent Calendar/Mail/To Do access, and warning-level approval choices for each service. New OneDrive paths are resolved to immutable drive/item IDs by an admin-only Gateway method. Critical delete, send, and respond actions always retain call-bound approval.
 
 The page validates the policy and submits a revision-checked, policy-only `config.patch`. A supported single-file object-key `$include` is written through by OpenClaw; an unsupported include layout or concurrent change fails closed. The page re-reads the effective policy after saving and shows whether the saved configuration revision has been applied by the Gateway, is still pending, or cannot be confirmed. Pending application is checked automatically for up to one minute, with a manual recheck available. Do not treat “saved” as proof that the Gateway is using the new rules.
 

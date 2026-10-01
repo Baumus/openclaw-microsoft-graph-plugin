@@ -147,7 +147,7 @@ class ConfigurationPage {
     if (this.disposed || this.signal.aborted) return;
     setLocale(this.host.locale);
     const main = el("main", "mg-ui"); main.dir = isRtl() ? "rtl" : "ltr"; const header = el("header", "mg-header");
-    append(header, el("div", "mg-eyebrow", "Plugins / Microsoft Graph"), el("h1", "", "Microsoft Graph"), el("p", "mg-lead", "Lege fest, welcher Agent auf welche Microsoft-Daten zugreifen darf und wann eine Freigabe nötig ist."));
+    append(header, el("div", "mg-eyebrow", "Plugins / Microsoft 365 for OpenClaw"), el("h1", "", "Microsoft 365 for OpenClaw"), el("p", "mg-lead", "Lege fest, welcher Agent auf welche Microsoft-Daten zugreifen darf und wann eine Freigabe nötig ist."));
     append(main, header);
     if (!this.host.connection.connected) { append(main, el("p", "mg-message", "Verbinde dich mit dem Gateway, um die Regeln zu bearbeiten.")); this.container.replaceChildren(main); return; }
     if (!this.host.connection.canAdmin) { append(main, el("p", "mg-message", "Zum Anzeigen und Ändern dieser Regeln brauchst du Administratorrechte.")); this.container.replaceChildren(main); return; }
@@ -404,8 +404,8 @@ export default defineControlUiPlugin({ id, activate(host) {
   setLocale(host.locale);
   const pageId = "configure";
   const disposers = [
-    host.ui.registerPage({ id: pageId, label: "Microsoft Graph", mount(container, context) { const view = new ConfigurationPage(container, context.host, context.signal); return { dispose: () => view.dispose() }; } }),
-    host.ui.registerNavigation({ id: "configure", label: "Microsoft Graph", page: { id: pageId }, icon: "settings", order: 80 }),
+    host.ui.registerPage({ id: pageId, label: "Microsoft 365 for OpenClaw", mount(container, context) { const view = new ConfigurationPage(container, context.host, context.signal); return { dispose: () => view.dispose() }; } }),
+    host.ui.registerNavigation({ id: "configure", label: "Microsoft 365 for OpenClaw", page: { id: pageId }, icon: "settings", order: 80 }),
   ];
   return () => { for (const dispose of disposers.reverse()) dispose(); };
 } });

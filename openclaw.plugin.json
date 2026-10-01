@@ -1,7 +1,7 @@
 {
   "id": "microsoft-graph",
-  "name": "Microsoft Graph",
-  "description": "Gateway-owned bounded Microsoft Graph v1.0 core-resource tools for OneDrive, Outlook Calendar, Outlook Mail, and Microsoft To Do.",
+  "name": "Microsoft 365 for OpenClaw",
+  "description": "Bring Outlook mail and calendar, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.",
   "version": "3.5.0",
   "categories": [
     "productivity"
@@ -427,9 +427,9 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/1813d2f73245a35fa15db6f8efb386a3f22cd9a9af591d612e386dafc72807d8/index.js",
+    "entry": "dist/control-ui/068a3fc3b06011fefc6c69a1119c88ffa03d818a6506ac8a6534dd4b82b6773a/index.js",
     "styles": [
-      "dist/control-ui/1813d2f73245a35fa15db6f8efb386a3f22cd9a9af591d612e386dafc72807d8/index.css"
+      "dist/control-ui/068a3fc3b06011fefc6c69a1119c88ffa03d818a6506ac8a6534dd4b82b6773a/index.css"
     ]
   },
   "contracts": {

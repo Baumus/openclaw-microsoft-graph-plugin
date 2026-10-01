@@ -1353,7 +1353,7 @@ export async function approvalInventory(policyInput: unknown) {
 }
 
 const plugin = defineToolPlugin({
-  id: "microsoft-graph", name: "Microsoft Graph", description: "Gateway-owned bounded Microsoft Graph v1.0 core-resource tools for OneDrive, Outlook Calendar, Outlook Mail, and Microsoft To Do.", activation: { onStartup: true }, configSchema: Config,
+  id: "microsoft-graph", name: "Microsoft 365 for OpenClaw", description: "Bring Outlook mail and calendar, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.", activation: { onStartup: true }, configSchema: Config,
   tools: (tool) => {
     const searchSchema = Type.Object({
       rootLabel,
