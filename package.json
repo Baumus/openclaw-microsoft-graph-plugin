@@ -100,5 +100,10 @@
       "minHostVersion": ">=2026.9.6"
     },
     "controlUi": "./src/control-ui.ts"
+  },
+  "overrides": {
+    "clawhub": {
+      "undici": "7.29.1"
+    }
   }
 }
