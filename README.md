@@ -55,7 +55,7 @@ See [architecture](docs/ARCHITECTURE.md), [OAuth access matrix](docs/OAUTH_ACCES
 
 ## Configuration reference
 
-Version 3.5.0 uses one Microsoft delegated OAuth credential and one encrypted local vault. The policy contains authorization rules only; it never contains credential locations or credential material.
+Version 3.5.1 uses one Microsoft delegated OAuth credential and one encrypted local vault. The policy contains authorization rules only; it never contains credential locations or credential material.
 
 ### Detailed prerequisites
 
@@ -260,7 +260,7 @@ Apply requires `RESTORE MICROSOFT GRAPH CREDENTIAL`. A `complete` receipt means 
 
 ## Configuration UI (OpenClaw 2026.9.6+)
 
-Administrators can enable **Settings → Labs → Custom plugin UI**, then open **Microsoft 365 for OpenClaw** in the Control UI. Version 3.5.0 offers English, German, Spanish, and Arabic; other host locales fall back to English. The page edits OneDrive folder/agent rights, per-agent Calendar/Mail/To Do access, and warning-level approval choices for each service. New OneDrive paths are resolved to immutable drive/item IDs by an admin-only Gateway method. Critical delete, send, and respond actions always retain call-bound approval.
+Administrators can enable **Settings → Labs → Custom plugin UI**, then open **Microsoft 365 for OpenClaw** in the Control UI. Version 3.5.1 offers English, German, Spanish, and Arabic; other host locales fall back to English. The page edits OneDrive folder/agent rights, per-agent Calendar/Mail/To Do access, and warning-level approval choices for each service. New OneDrive paths are resolved to immutable drive/item IDs by an admin-only Gateway method. Critical delete, send, and respond actions always retain call-bound approval.
 
 The page validates the policy and submits a revision-checked, policy-only `config.patch`. A supported single-file object-key `$include` is written through by OpenClaw; an unsupported include layout or concurrent change fails closed. The page re-reads the effective policy after saving and shows whether the saved configuration revision has been applied by the Gateway, is still pending, or cannot be confirmed. Pending application is checked automatically for up to one minute, with a manual recheck available. Do not treat “saved” as proof that the Gateway is using the new rules.
 
