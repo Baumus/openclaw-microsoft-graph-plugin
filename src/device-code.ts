@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { acquireVaultLock, createVaultCredential, decodeVaultKey, inspectVaultCredential } from "./credential-vault.js";
 import { requiredPolicyScopes } from "./credential-cli.js";
 import { selectScope } from "./credential.js";
+import { isMicrosoftDeviceVerificationUri } from "./device-verification.js";
 import { validatePolicy, type GraphPolicy } from "./policy.js";
 
 const MAX_LIFETIME_MS = 15 * 60_000;
@@ -52,7 +53,7 @@ export class DeviceCodeSignIn {
       const value = result.value;
       if (result.status !== 200 || typeof value.device_code !== "string" || !value.device_code || value.device_code.length > 4096
         || typeof value.user_code !== "string" || !/^[A-Za-z0-9-]{4,32}$/.test(value.user_code)
-        || typeof value.verification_uri !== "string" || !["https://microsoft.com/devicelogin", "https://www.microsoft.com/devicelogin"].includes(value.verification_uri)
+        || !isMicrosoftDeviceVerificationUri(value.verification_uri)
         || !Number.isSafeInteger(value.expires_in) || Number(value.expires_in) < 30 || Number(value.expires_in) > 3600
         || !Number.isSafeInteger(value.interval) || Number(value.interval) < 1 || Number(value.interval) > 60) throw new Error("device_authorization_failed");
       const now = Date.now();

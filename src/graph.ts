@@ -116,7 +116,11 @@ export function canonicalGraphContinuation(value: unknown, expectedPathname: str
     decodedRaw = decodeURIComponent(rawPathname);
     decodedUrl = decodeURIComponent(url.pathname);
   } catch { invalidContinuation(message); }
-  if (decodedRaw !== decodedExpected || decodedUrl !== decodedExpected) invalidContinuation(message);
+  // Graph can express a mail folder key as mailFolders('id') instead of
+  // mailFolders/id. Accept only that equivalent form, still bound to the
+  // exact expected collection after all traversal and origin checks.
+  const canonicalMailFolderKey = (path: string) => path.replace(/\/mailFolders\('([^'/]+)'\)(?=\/|$)/g, "/mailFolders/$1");
+  if (canonicalMailFolderKey(decodedRaw) !== decodedExpected || canonicalMailFolderKey(decodedUrl) !== decodedExpected) invalidContinuation(message);
   return `${expectedPathname}${url.search}`;
 }
 

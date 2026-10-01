@@ -48,6 +48,22 @@ describe("gateway-side device-code sign-in", () => {
     expect(JSON.stringify(started)).not.toContain("synthetic-refresh");
   });
 
+  it("accepts Microsoft's alternate device page but rejects arbitrary browser destinations", async () => {
+    for (const uri of ["https://login.microsoft.com/device", "https://microsoft.com/devicelogin", "https://www.microsoft.com/devicelogin"]) {
+      const { state, config } = await setup();
+      const fetchFn = vi.fn().mockResolvedValue(response({ ...deviceResponse, verification_uri: uri })) as unknown as typeof fetch;
+      const signIn = new DeviceCodeSignIn(config, () => state, fetchFn, () => new Promise<void>(() => undefined));
+      expect((await signIn.start(clientId, tenant)).verificationUri).toBe(uri);
+    }
+    for (const uri of ["https://login.microsoft.com.evil.invalid/device", "https://login.microsoft.com/other", "http://login.microsoft.com/device"]) {
+      const { state, config } = await setup();
+      const fetchFn = vi.fn().mockResolvedValue(response({ ...deviceResponse, verification_uri: uri })) as unknown as typeof fetch;
+      const signIn = new DeviceCodeSignIn(config, () => state, fetchFn);
+      await expect(signIn.start(clientId, tenant)).rejects.toThrow("device_authorization_failed");
+      expect(await inspectVaultCredential(state)).toEqual({ result: "missing" });
+    }
+  });
+
   it("never creates a vault on missing grant, consent denial, or malformed response", async () => {
     for (const tokenResponse of [
       response({ refresh_token: "synthetic-refresh", scope: "Files.Read offline_access" }),

@@ -245,6 +245,18 @@ describe("pinned OneDrive addressing", () => {
     await expect(driveListContinuation(root, "SYNTHETIC_FOLDER", "token", 1, "https://evil.invalid/v1.0/drives/drive-id/items/stable-root-id:/SYNTHETIC_FOLDER:/children?$skiptoken=x", undefined, fetchFn as typeof fetch)).rejects.toThrow("invalid_continuation");
   });
 
+  it("accepts Graph OData mail-folder keys only for the exact expected collection", () => {
+    const expected = "/v1.0/me/mailFolders/inbox/messages";
+    const provider = "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages?$skiptoken=opaque%2Bpage";
+    expect(canonicalGraphContinuation(provider, expected, "invalid_provider_response")).toBe(expected + "?$skiptoken=opaque%2Bpage");
+    for (const rejected of [
+      "https://graph.microsoft.com/v1.0/me/mailFolders('other')/messages?$skiptoken=x",
+      "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/childFolders?$skiptoken=x",
+      "https://evil.invalid/v1.0/me/mailFolders('inbox')/messages?$skiptoken=x",
+      "https://graph.microsoft.com/v1.0/me/mailFolders('%2e%2e')/messages?$skiptoken=x",
+    ]) expect(() => canonicalGraphContinuation(rejected, expected, "invalid_provider_response")).toThrow("invalid_provider_response");
+  });
+
   it("binds list and search continuations to the exact root, endpoint, and query pathname", async () => {
     const listPath = "/drives/drive-id/items/stable-root-id:/SYNTHETIC_FOLDER:/children";
     expect(canonicalGraphContinuation(`${listPath}?$skiptoken=x`, listPath)).toBe(`${listPath}?$skiptoken=x`);
