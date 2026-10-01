@@ -4,7 +4,7 @@
 
 This is a community-maintained plugin. Support is best-effort through the repository's GitHub issue tracker. Use [SECURITY.md](../SECURITY.md) for vulnerabilities and never attach credentials or private Microsoft data.
 
-Version 3.1.0 declares OpenClaw host and plugin API compatibility from `2026.9.5` and is built/validated for that version. OpenClaw plugin APIs are experimental; future host versions may require changes.
+Version 3.5.0 declares OpenClaw host and plugin API compatibility from `2026.9.6` and is built/validated for that version. OpenClaw plugin APIs are experimental; future host versions may require changes.
 
 ## Intentional limitations
 
