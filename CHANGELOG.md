@@ -9,6 +9,7 @@ All notable changes to this project are documented here.
 - Show a setup checklist and the next required step for the vault key, agent grant, applied policy, and Microsoft connection.
 - Keep account connection distinct from verified agent access; the first read still requires an explicit authorized test.
 - Present access rules before the sign-in card so the UI follows the actual setup dependency order.
+- Clarify that a user-owned public-client Entra app with device-code sign-in needs no callback service or redirect URI; tokens remain in the local encrypted vault.
 
 ## 3.5.1 - 2026-10-01
 

@@ -16,7 +16,7 @@ Security fixes are expected on the latest released version only. Until a public 
 
 ## Security boundaries
 
-- One shared delegated OAuth credential is stored in one AES-256-GCM vault record under the resolved OpenClaw state directory. The key is one structured OpenClaw SecretRef. Credentials and keys are not tool parameters.
+- The supported sign-in path uses a user-owned Microsoft Entra public-client app and device code, with no inbound OAuth callback or centrally hosted token service. One shared delegated OAuth credential is stored in one AES-256-GCM vault record under the resolved OpenClaw state directory. The key is one structured OpenClaw SecretRef. Credentials and keys are not tool parameters.
 - OpenClaw may materialize the declared SecretInput while loading config; plugin-side key selection and use remain authorization-gated. Refresh-token rotation must be durably published before cache admission or use.
 - An uncertain dispatched OAuth refresh, including an unusable HTTP-200 response, durably quarantines the credential until explicit bound recovery or reauthorization. Vault generation has no external monotonic anchor, so replay of an older valid encrypted backup with its matching key remains an operator-managed risk.
 - There is no provider-side read/write credential isolation. Credential or plugin compromise has the union of granted Microsoft scopes; default-deny policy and write approvals constrain normal plugin behavior.
