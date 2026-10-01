@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CREDENTIAL_GATEWAY_METHODS, credentialVaultStatus, migrateFromPass, recoverCredential, registerCredentialCli, registerCredentialGatewayMethods, requiredPolicyScopes, resolveHostCliInvocation, restorePass } from "./credential-cli.js";
+import { CREDENTIAL_GATEWAY_METHODS, credentialVaultStatus, recoverCredential, registerCredentialCli, registerCredentialGatewayMethods, requiredPolicyScopes, resolveHostCliInvocation, restorePass } from "./credential-cli.js";
 import { createVaultCredential, inspectVaultCredential, refreshVaultCredential, vaultQuarantinePath } from "./credential-vault.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 
@@ -62,18 +62,6 @@ describe("single credential operator surfaces", () => {
     expect(requiredPolicyScopes(graphPolicyFixture())).toEqual(["Calendars.Read", "Calendars.ReadWrite", "Files.Read", "Files.ReadWrite", "Mail.Read", "Mail.ReadWrite", "Mail.Send", "Tasks.Read", "Tasks.ReadWrite"]);
   });
 
-  it("requires one explicit all-scope source and supports dry-run/apply with secret-free receipts", async () => {
-    const state = await stateDir(); const active = key(); const config = { policy: graphPolicyFixture(), credentialVaultKey: active }; const readPass = vi.fn(async () => credential);
-    await expect(migrateFromPass(config, state, "", false, { readPass })).rejects.toThrow("invalid_secret_reference");
-    await expect(migrateFromPass(config, state, "selected/source", false, { readPass: async () => ({ ...credential, scopes: ["Files.ReadWrite", "offline_access"] }) })).rejects.toThrow("credential_scope_missing");
-    expect(await migrateFromPass(config, state, "selected/source", false, { readPass })).toMatchObject({ result: "ready" });
-    expect(await inspectVaultCredential(state)).toEqual({ result: "missing" });
-    await expect(access(join(state, "plugin-data"))).rejects.toThrow();
-    const applied = await migrateFromPass(config, state, "selected/source", true, { readPass }); expect(applied).toMatchObject({ result: "created", generation: 1 });
-    const serialized = JSON.stringify(applied); for (const secret of [credential.clientId, credential.refreshToken, active, "selected/source"]) expect(serialized).not.toContain(secret);
-    await expect(migrateFromPass(config, state, "selected/source", true, { readPass })).rejects.toThrow("credential_vault_conflict");
-  });
-
   it("restores the one current credential to one explicit destination with an uncertainty receipt", async () => {
     const state = await stateDir(); const active = key(); const config = { policy: graphPolicyFixture(), credentialVaultKey: active }; await createVaultCredential(state, { ...credential, refreshToken: "rotated" }, active);
     const stored = new Map<string, typeof credential>();
@@ -95,72 +83,55 @@ describe("single credential operator surfaces", () => {
 
   it("registers strict scoped Gateway methods and sanitizes all failures", async () => {
     const registrations = new Map<string, { handler: (context: any) => Promise<void>; options: { scope: string } }>();
-    const migrate = vi.fn(async () => ({ result: "ready", timestamp }));
     const api = { registerGatewayMethod: vi.fn((method: string, handler: (context: any) => Promise<void>, options: { scope: string }) => registrations.set(method, { handler, options })) };
-    registerCredentialGatewayMethods(api as any, { enabled: false, policy: graphPolicyFixture(), credentialVaultKey: key() } as any, () => "/gateway/state", { migrate });
+    registerCredentialGatewayMethods(api as any, { enabled: false, policy: graphPolicyFixture(), credentialVaultKey: key() } as any, () => "/gateway/state");
     expect(Object.fromEntries([...registrations].map(([method, value]) => [method, value.options.scope]))).toEqual({
       [CREDENTIAL_GATEWAY_METHODS.status]: "operator.read",
-      [CREDENTIAL_GATEWAY_METHODS.migrate]: "operator.admin",
       [CREDENTIAL_GATEWAY_METHODS.restore]: "operator.admin",
       [CREDENTIAL_GATEWAY_METHODS.recover]: "operator.admin",
+      [CREDENTIAL_GATEWAY_METHODS.deviceStart]: "operator.admin",
+      [CREDENTIAL_GATEWAY_METHODS.deviceStatus]: "operator.admin",
+      [CREDENTIAL_GATEWAY_METHODS.deviceCancel]: "operator.admin",
     });
 
     const invoke = async (method: string, params: unknown) => {
       const respond = vi.fn(); await registrations.get(method)!.handler({ params, respond }); return respond.mock.calls[0];
     };
-    expect(await invoke(CREDENTIAL_GATEWAY_METHODS.migrate, { source: "selected/source", apply: false })).toEqual([true, { ok: true, value: { result: "ready", timestamp } }]);
-    expect(migrate).toHaveBeenCalledWith(expect.objectContaining({ enabled: false }), "/gateway/state", "selected/source", false);
-
     for (const [method, params] of [
       [CREDENTIAL_GATEWAY_METHODS.status, { unknown: true }],
-      [CREDENTIAL_GATEWAY_METHODS.migrate, { source: "selected/source", apply: false, unknown: true }],
-      [CREDENTIAL_GATEWAY_METHODS.migrate, { source: "bad secret", apply: false }],
       [CREDENTIAL_GATEWAY_METHODS.restore, { destination: "rollback/destination", apply: "false" }],
       [CREDENTIAL_GATEWAY_METHODS.recover, { expectedBinding: "short", apply: false }],
     ] as const) expect(await invoke(method, params)).toEqual([true, { ok: false, error: "invalid_rpc_parameters" }]);
 
-    const secret = "synthetic-refresh-token-must-not-cross-rpc";
-    migrate.mockRejectedValueOnce(new Error(`pass failed with ${secret}`));
-    const failed = await invoke(CREDENTIAL_GATEWAY_METHODS.migrate, { source: "selected/source", apply: true });
-    expect(failed).toEqual([true, { ok: false, error: "internal_error" }]);
-    expect(JSON.stringify(failed)).not.toContain(secret);
-    migrate.mockResolvedValueOnce({ result: "ready", timestamp, refreshToken: secret } as any);
-    const rejectedResult = await invoke(CREDENTIAL_GATEWAY_METHODS.migrate, { source: "selected/source", apply: false });
-    expect(rejectedResult).toEqual([true, { ok: false, error: "internal_error" }]);
-    expect(JSON.stringify(rejectedResult)).not.toContain(secret);
   });
 
   it("routes the external-plugin CLI through the host gateway command with exact confirmations", async () => {
     const outputs = [
       { ok: true, value: { policyVersion: 2, credential: { result: "missing" } } },
-      { ok: true, value: { result: "created", ...metadata, timestamp } },
       { ok: true, value: { result: "complete", ...metadata, timestamp } },
       { ok: true, value: { result: "recovered", ...metadata, timestamp } },
     ];
     const spawnProcess = vi.fn(() => fakeChild(`${JSON.stringify(outputs.shift())}\n`));
     const { commands, confirm, forbiddenRequest } = credentialCommands(spawnProcess);
+    expect(commands.children.has("migrate-from-pass")).toBe(false);
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     await commands.children.get("status")!.actionHandler!();
-    await commands.children.get("migrate-from-pass")!.actionHandler!({ source: "selected/source", apply: true });
     await commands.children.get("restore-pass")!.actionHandler!({ destination: "rollback/destination", apply: true });
     await commands.children.get("recover-refresh")!.actionHandler!({ expectedBinding: "b".repeat(43), apply: true });
 
     expect(confirm.mock.calls.map(([value]) => value)).toEqual([
-      "MIGRATE MICROSOFT GRAPH CREDENTIAL",
       "RESTORE MICROSOFT GRAPH CREDENTIAL",
       "RECOVER MICROSOFT GRAPH REFRESH",
     ]);
     expect(spawnProcess.mock.calls).toEqual([
       ["/runtime/node", ["/host/openclaw.mjs", "gateway", "call", CREDENTIAL_GATEWAY_METHODS.status, "--json", "--params", "{}", "--timeout", "30000"], { shell: false, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }],
-      ["/runtime/node", ["/host/openclaw.mjs", "gateway", "call", CREDENTIAL_GATEWAY_METHODS.migrate, "--json", "--params", JSON.stringify({ source: "selected/source", apply: true }), "--timeout", "30000"], { shell: false, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }],
       ["/runtime/node", ["/host/openclaw.mjs", "gateway", "call", CREDENTIAL_GATEWAY_METHODS.restore, "--json", "--params", JSON.stringify({ destination: "rollback/destination", apply: true }), "--timeout", "30000"], { shell: false, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }],
       ["/runtime/node", ["/host/openclaw.mjs", "gateway", "call", CREDENTIAL_GATEWAY_METHODS.recover, "--json", "--params", JSON.stringify({ expectedBinding: "b".repeat(43), apply: true }), "--timeout", "30000"], { shell: false, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }],
     ]);
     expect(forbiddenRequest).not.toHaveBeenCalled();
     expect(write.mock.calls.map(([value]) => value)).toEqual([
       `${JSON.stringify({ policyVersion: 2, credential: { result: "missing" } })}\n`,
-      `${JSON.stringify({ result: "created", ...metadata, timestamp })}\n`,
       `${JSON.stringify({ result: "complete", ...metadata, timestamp })}\n`,
       `${JSON.stringify({ result: "recovered", ...metadata, timestamp })}\n`,
     ]);
@@ -181,7 +152,6 @@ describe("single credential operator surfaces", () => {
   it("rejects non-reference CLI parameters before placing them in child arguments", async () => {
     const spawnProcess = vi.fn();
     const { commands, confirm } = credentialCommands(spawnProcess);
-    await expect(commands.children.get("migrate-from-pass")!.actionHandler!({ source: "not a pass reference", apply: true })).rejects.toThrow("invalid_rpc_parameters");
     await expect(commands.children.get("restore-pass")!.actionHandler!({ destination: "refresh token contents", apply: true })).rejects.toThrow("invalid_rpc_parameters");
     await expect(commands.children.get("recover-refresh")!.actionHandler!({ expectedBinding: "short", apply: true })).rejects.toThrow("invalid_rpc_parameters");
     expect(confirm).not.toHaveBeenCalled();

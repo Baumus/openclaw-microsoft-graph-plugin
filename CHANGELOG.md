@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.5.0 - unreleased
+
+- Add a guided, four-language Control UI sign-in that opens Microsoft in the browser, displays the one-time code, tracks completion, and supports cancellation. Keep the terminal helper as an alternative.
+- Remove the legacy `migrate-from-pass` command and Gateway method; preserve optional `restore-pass` emergency backup.
+
 ## 3.4.0 - 2026-09-30
 
 - Localize the Microsoft Graph configuration UI for English, German, Spanish, and Arabic, with English fallback for other host locales.

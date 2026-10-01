@@ -64,3 +64,6 @@
 
 .mg-status-detail { margin: 5px 0 10px; color: var(--mg-muted); line-height: 1.45; }
 .mg-warning > .mg-button { margin-top: 2px; }
+.mg-auth { margin-block: 20px; }
+.mg-auth .mg-button { margin-inline-end: 8px; margin-block: 5px; }
+.mg-auth-code { display: inline-block; padding: 10px 16px; border: 1px dashed var(--mg-border); border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 1.25rem; font-weight: 700; letter-spacing: .12em; user-select: all; direction: ltr; }

@@ -4,12 +4,13 @@ import { statSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { readCredential, selectScope, type CredentialBackendConfig } from "./credential.js";
-import { acquireVaultLock, clearVaultQuarantine, createVaultCredential, decodeVaultKey, inspectVaultCredential, readVaultCredential, vaultRecordBinding, type VaultCredential, type VaultRecord } from "./credential-vault.js";
+import { acquireVaultLock, clearVaultQuarantine, decodeVaultKey, inspectVaultCredential, readVaultCredential, vaultRecordBinding, type VaultCredential, type VaultRecord } from "./credential-vault.js";
 import { validatePolicy, type GraphPolicy } from "./policy.js";
+import { DeviceCodeSignIn } from "./device-code.js";
 
 type CliConfig = CredentialBackendConfig & { policy?: GraphPolicy };
 type Receipt = { result: string; generation?: number; keyId?: string; digest?: string; binding?: string; timestamp: string };
-type Dependencies = { readPass?: typeof readCredential; createCredential?: typeof createVaultCredential; writePass?: typeof writePassCredential };
+type Dependencies = { readPass?: typeof readCredential; writePass?: typeof writePassCredential };
 type CliApi = {
   registerCli(registrar: (context: { program: any }) => void | Promise<void>, options?: Record<string, unknown>): void;
 };
@@ -17,7 +18,6 @@ type GatewayHandlerContext = { params: unknown; respond(ok: boolean, payload?: u
 type GatewayApi = { registerGatewayMethod(method: string, handler: (context: GatewayHandlerContext) => void | Promise<void>, options: { scope: "operator.read" | "operator.admin" }): void };
 type GatewayOperations = {
   status?: typeof credentialVaultStatus;
-  migrate?: (config: CliConfig, stateDir: string, sourceRef: string, apply: boolean) => Promise<Receipt>;
   restore?: (config: CliConfig, stateDir: string, destinationRef: string, apply: boolean) => Promise<Receipt>;
   recover?: typeof recoverCredential;
 };
@@ -30,9 +30,11 @@ type CliDependencies = {
 
 export const CREDENTIAL_GATEWAY_METHODS = {
   status: "microsoft-graph.credentials.status",
-  migrate: "microsoft-graph.credentials.migrate-from-pass",
   restore: "microsoft-graph.credentials.restore-pass",
   recover: "microsoft-graph.credentials.recover-refresh",
+  deviceStart: "microsoft-graph.credentials.device-start",
+  deviceStatus: "microsoft-graph.credentials.device-status",
+  deviceCancel: "microsoft-graph.credentials.device-cancel",
 } as const;
 
 const PASS_REF = /^[A-Za-z0-9._/@+-]+$/;
@@ -52,6 +54,12 @@ const SAFE_OPERATION_ERRORS = new Set([
   "invalid_policy",
   "invalid_rpc_parameters",
   "invalid_secret_reference",
+  "device_authorization_failed",
+  "device_authorization_declined",
+  "device_authorization_expired",
+  "device_authorization_in_progress",
+  "device_session_unavailable",
+  "device_authorization_cancelled",
 ]);
 function policyFor(config: CliConfig): GraphPolicy { return validatePolicy(config.policy); }
 function keyFor(config: CliConfig): string {
@@ -98,30 +106,6 @@ export function requiredPolicyScopes(policy: GraphPolicy): string[] {
 
 export async function credentialVaultStatus(config: CliConfig, stateDir: string) {
   return { policyVersion: policyFor(config).version, credential: await inspectVaultCredential(stateDir, typeof config.credentialVaultKey === "string" ? config.credentialVaultKey : undefined) };
-}
-
-export async function migrateFromPass(config: CliConfig, stateDir: string, sourceRef: string, apply: boolean, dependencies: Dependencies = {}): Promise<Receipt> {
-  const policy = policyFor(config); const key = keyFor(config);
-  if (!validPassRef(sourceRef)) throw new Error("invalid_secret_reference");
-  const validateSource = async () => {
-    const credential = await (dependencies.readPass ?? readCredential)(sourceRef);
-    for (const scope of requiredPolicyScopes(policy)) selectScope(credential, [scope]);
-    return credential;
-  };
-  if (!apply) {
-    const existing = await inspectVaultCredential(stateDir, key);
-    if (existing.result !== "missing") throw new Error("credential_vault_conflict");
-    await validateSource();
-    return receipt("ready");
-  }
-  const lock = await acquireVaultLock(stateDir, "migrate-from-pass");
-  try {
-    const existing = await inspectVaultCredential(stateDir, key);
-    if (existing.result !== "missing") throw new Error("credential_vault_conflict");
-    const credential = await validateSource();
-    if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked");
-    return receipt("created", await (dependencies.createCredential ?? createVaultCredential)(stateDir, credential, key));
-  } finally { await lock.release().catch(() => undefined); }
 }
 
 async function writePassCredential(secretRef: string, credential: VaultCredential): Promise<void> {
@@ -205,11 +189,6 @@ export function registerCredentialGatewayMethods(api: GatewayApi, config: CliCon
     exactParams(input, []);
     return (operations.status ?? credentialVaultStatus)(config, stateDir());
   }, credentialStatusResult), { scope: "operator.read" });
-  api.registerGatewayMethod(CREDENTIAL_GATEWAY_METHODS.migrate, gatewayHandler(async (input) => {
-    const params = exactParams(input, ["source", "apply"]);
-    if (!validPassRef(params.source)) throw new Error("invalid_rpc_parameters");
-    return (operations.migrate ?? migrateFromPass)(config, stateDir(), params.source, applyParam(params.apply));
-  }, (value) => receiptResult(value, ["ready", "created"], (result) => result === "created")), { scope: "operator.admin" });
   api.registerGatewayMethod(CREDENTIAL_GATEWAY_METHODS.restore, gatewayHandler(async (input) => {
     const params = exactParams(input, ["destination", "apply"]);
     if (!validPassRef(params.destination)) throw new Error("invalid_rpc_parameters");
@@ -220,6 +199,22 @@ export function registerCredentialGatewayMethods(api: GatewayApi, config: CliCon
     if (typeof params.expectedBinding !== "string" || !BINDING.test(params.expectedBinding)) throw new Error("invalid_rpc_parameters");
     return (operations.recover ?? recoverCredential)(config, stateDir(), params.expectedBinding, applyParam(params.apply));
   }, (value) => receiptResult(value, ["quarantined", "recovered"], true)), { scope: "operator.admin" });
+  const device = new DeviceCodeSignIn(config, stateDir);
+  api.registerGatewayMethod(CREDENTIAL_GATEWAY_METHODS.deviceStart, gatewayHandler(async (input) => {
+    const params = exactParams(input, ["clientId", "tenant"]);
+    if (typeof params.clientId !== "string" || typeof params.tenant !== "string") throw new Error("invalid_rpc_parameters");
+    return device.start(params.clientId, params.tenant);
+  }, deviceStartResult), { scope: "operator.admin" });
+  api.registerGatewayMethod(CREDENTIAL_GATEWAY_METHODS.deviceStatus, gatewayHandler(async (input) => {
+    const params = exactParams(input, ["sessionId"]);
+    if (typeof params.sessionId !== "string") throw new Error("invalid_rpc_parameters");
+    return device.status(params.sessionId);
+  }, deviceStatusResult), { scope: "operator.admin" });
+  api.registerGatewayMethod(CREDENTIAL_GATEWAY_METHODS.deviceCancel, gatewayHandler(async (input) => {
+    const params = exactParams(input, ["sessionId"]);
+    if (typeof params.sessionId !== "string") throw new Error("invalid_rpc_parameters");
+    return device.cancel(params.sessionId);
+  }, deviceStatusResult), { scope: "operator.admin" });
 }
 
 function exactResult(value: unknown, required: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
@@ -251,6 +246,23 @@ function receiptResult(value: unknown, allowed: readonly string[], metadataRequi
   const required = typeof metadataRequired === "function" ? metadataRequired(parsed.result) : metadataRequired;
   if (required) validateMetadata(parsed);
   else if (Object.keys(parsed).some((key) => ["generation", "keyId", "digest", "binding"].includes(key))) throw new Error("internal_error");
+  return value;
+}
+function deviceStartResult(value: unknown): unknown {
+  const parsed = exactResult(value, ["sessionId", "userCode", "verificationUri", "expiresAt", "scopes"]);
+  if (typeof parsed.sessionId !== "string" || !/^[0-9a-fA-F-]{36}$/.test(parsed.sessionId)
+    || typeof parsed.userCode !== "string" || !/^[A-Za-z0-9-]{4,32}$/.test(parsed.userCode)
+    || !["https://microsoft.com/devicelogin", "https://www.microsoft.com/devicelogin"].includes(parsed.verificationUri as string)
+    || typeof parsed.expiresAt !== "string" || !Number.isFinite(Date.parse(parsed.expiresAt))
+    || !Array.isArray(parsed.scopes) || parsed.scopes.length === 0 || parsed.scopes.some((scope) => typeof scope !== "string" || !/^[A-Za-z.]+$/.test(scope))) throw new Error("internal_error");
+  return value;
+}
+function deviceStatusResult(value: unknown): unknown {
+  const parsed = exactResult(value, ["state"], ["error", "scopes"]);
+  if (!["pending", "created", "failed"].includes(parsed.state as string)
+    || (parsed.error !== undefined && (parsed.state !== "failed" || typeof parsed.error !== "string" || !SAFE_OPERATION_ERRORS.has(parsed.error)))
+    || (parsed.state === "created" && parsed.scopes === undefined)
+    || (parsed.scopes !== undefined && (parsed.state !== "created" || !Array.isArray(parsed.scopes) || parsed.scopes.length === 0 || parsed.scopes.some((scope) => typeof scope !== "string" || !/^[A-Za-z.]+$/.test(scope))))) throw new Error("internal_error");
   return value;
 }
 async function hostGatewayCall(method: string, params: Record<string, unknown>, invocation: HostCliInvocation, spawnProcess: typeof spawn): Promise<unknown> {
@@ -323,8 +335,19 @@ export function registerCredentialCli(api: CliApi, dependencies: CliDependencies
   const spawnProcess = dependencies.spawn ?? spawn;
   api.registerCli(({ program }) => {
     const credentials = program.command("microsoft-graph").description("Microsoft Graph operator commands").command("credentials").description("Manage the encrypted Microsoft Graph credential");
+    credentials.command("sign-in").description("Sign in with Microsoft device code and create the encrypted vault").requiredOption("--client-id <app-id>").requiredOption("--tenant <tenant-id>").action(async (options: { clientId: string; tenant: string }) => {
+      if (!process.stdin.isTTY || !process.stderr.isTTY) throw new Error("interactive_confirmation_required");
+      const started = await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.deviceStart, { clientId: options.clientId, tenant: options.tenant }, deviceStartResult, invocation, spawnProcess) as { sessionId: string; userCode: string; verificationUri: string; expiresAt: string; scopes: string[] };
+      process.stderr.write(`Requested scopes: ${started.scopes.join(" ")}\nOpen ${started.verificationUri} and enter code ${started.userCode}. Complete sign-in with the approved client.\n`);
+      while (Date.now() < Date.parse(started.expiresAt) + 5000) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 5000));
+        const status = await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.deviceStatus, { sessionId: started.sessionId }, deviceStatusResult, invocation, spawnProcess) as { state: string; error?: string; scopes?: string[] };
+        if (status.state === "created") { printSanitized({ result: "created", scopes: status.scopes }); return; }
+        if (status.state === "failed") throw new Error(status.error ?? "device_authorization_failed");
+      }
+      throw new Error("device_authorization_expired");
+    });
     credentials.command("status").description("Show sanitized credential status").action(async () => printSanitized(await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.status, {}, credentialStatusResult, invocation, spawnProcess)));
-    credentials.command("migrate-from-pass").requiredOption("--source <pass-ref>").option("--dry-run").option("--apply").action(async (options: { source: string; dryRun?: boolean; apply?: boolean }) => { const source = cliPassRef(options.source); const apply = mode(options); if (apply) await confirm("MIGRATE MICROSOFT GRAPH CREDENTIAL"); printSanitized(await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.migrate, { source, apply }, (value) => receiptResult(value, ["ready", "created"], (result) => result === "created"), invocation, spawnProcess)); });
     credentials.command("restore-pass").requiredOption("--destination <pass-ref>").option("--dry-run").option("--apply").action(async (options: { destination: string; dryRun?: boolean; apply?: boolean }) => { const destination = cliPassRef(options.destination); const apply = mode(options); if (apply) await confirm("RESTORE MICROSOFT GRAPH CREDENTIAL"); printSanitized(await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.restore, { destination, apply }, (value) => receiptResult(value, ["ready", "complete", "unknown"], true), invocation, spawnProcess)); });
     credentials.command("recover-refresh").requiredOption("--expected-binding <binding>").option("--dry-run").option("--apply").action(async (options: { expectedBinding: string; dryRun?: boolean; apply?: boolean }) => { const expectedBinding = cliBinding(options.expectedBinding); const apply = mode(options); if (apply) await confirm("RECOVER MICROSOFT GRAPH REFRESH"); printSanitized(await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.recover, { expectedBinding, apply }, (value) => receiptResult(value, ["quarantined", "recovered"], true), invocation, spawnProcess)); });
   }, { commands: ["microsoft-graph"], descriptors: [{ name: "microsoft-graph", description: "Microsoft Graph operator commands", hasSubcommands: true, machineOutput: () => true }] });
