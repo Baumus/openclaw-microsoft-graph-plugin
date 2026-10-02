@@ -4,6 +4,8 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Redesign OneDrive access as responsive folder cards showing every authorized agent and read/write/delete permissions, with in-card editing and adding agents while preserving the review-and-save workflow.
+
 ## 3.5.4 - 2026-10-02
 
 - Collapse the completed setup checklist to a compact connection status only when the vault SecretRef, saved agent grant, applied rules, and valid Microsoft credential are confirmed. This does not claim that an agent read has been tested.
