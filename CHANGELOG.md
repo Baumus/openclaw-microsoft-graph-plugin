@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.6.0 - 2026-10-02
+
+- Redesign OneDrive access as responsive folder cards showing every authorized agent. Read/write/delete bubbles now toggle permissions directly; each card also exposes adding agents and a confirmed folder-removal action while preserving the review-and-save workflow.
+
 ## 3.5.4 - 2026-10-02
 
 - Collapse the completed setup checklist to a compact connection status only when the vault SecretRef, saved agent grant, applied rules, and valid Microsoft credential are confirmed. This does not claim that an agent read has been tested.

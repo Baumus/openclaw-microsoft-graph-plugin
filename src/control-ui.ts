@@ -67,6 +67,7 @@ class ConfigurationPage {
   private initialScopes: string[] = [];
   private pluginEnabled = false;
   private newFolderPath = "";
+  private editingAccess?: { rootLabel: string; agentId: string; permissions: Record<"read" | "write" | "delete", boolean> };
   private removedServiceGrants: Record<string, Grant> = {};
   private busy = false;
   private error = "";
@@ -321,7 +322,7 @@ class ConfigurationPage {
     try {
       const resolved = await this.host.request<{ path: string; drive_id: string; item_id: string }>("microsoft-graph.configuration.resolveFolder", { path });
       const roots = this.policy.services.onedrive.allowed_roots;
-      if (roots.some(root => root.drive_id === resolved.drive_id && root.item_id === resolved.item_id)) { this.error = "Dieser Ordner ist bereits freigegeben. Wähle unten die Rechte für den Agenten."; return; }
+      if (roots.some(root => root.drive_id === resolved.drive_id && root.item_id === resolved.item_id)) { this.error = "Dieser Ordner ist bereits freigegeben. Wähle in der Ordnerkachel die Rechte für den Agenten."; return; }
       let label = "folder_" + (roots.length + 1); let suffix = roots.length + 1;
       while (roots.some(root => root.label === label)) label = "folder_" + ++suffix;
       roots.push({ label, path: resolved.path, drive_id: resolved.drive_id, item_id: resolved.item_id, include_descendants: true, permissions: { read: false, write: false, delete: false }, agents: {} });
@@ -330,30 +331,93 @@ class ConfigurationPage {
     finally { this.busy = false; this.render(); }
   }
   private renderOneDrive(body: HTMLElement) {
-    append(body, el("h2", "", "OneDrive-Ordner"), el("p", "", "Wähle einen Agenten und seine Rechte je Ordner. Die Freigabe gilt immer auch für alle Unterordner. Ohne Häkchen hat der Agent keinen Zugriff."));
-    const agentId = this.renderAgentPicker(body);
-    if (!agentId) { append(body, el("p", "mg-message", "Keine Agenten gefunden.")); return; }
     const roots = this.policy.services.onedrive.allowed_roots;
-    if (!roots.length) append(body, el("p", "mg-message", "Noch kein OneDrive-Ordner freigegeben."));
-    for (const [index, root] of roots.entries()) {
-      const card = el("fieldset", "mg-section"); append(card, el("legend", "", root.path));
-      append(card, el("p", "mg-hint", "Gilt auch für alle Unterordner"));
-      const row = el("div", "mg-check-grid");
-      for (const [op, label] of [["read", "Lesen"], ["write", "Schreiben"], ["delete", "Löschen"]] as const) checkbox(row, label, root.agents[agentId]?.permissions[op] === true, checked => {
-        const grant = root.agents[agentId] ?? { permissions: {} };
-        if (checked) { grant.permissions[op] = true; root.agents[agentId] = grant; }
-        else { delete grant.permissions[op]; if (Object.values(grant.permissions).some(Boolean)) root.agents[agentId] = grant; else delete root.agents[agentId]; }
-        root.permissions[op] = Object.values(root.agents).some(a => a.permissions[op] === true);
-        this.render();
-      });
-      append(card, row, button("Ordner für alle Agenten entfernen", () => { if (window.confirm(format("Den Ordner {path} für alle Agenten entfernen?", { path: root.path }))) { roots.splice(index, 1); this.render(); } }, "danger")); append(body, card);
-    }
-    const add = el("section", "mg-section"); append(add, el("h3", "", "Ordner hinzufügen"));
-    append(add, el("p", "mg-hint", "Pfad in deinem OneDrive, zum Beispiel /Projects/Clients. Der Ordner wird vor dem Hinzufügen geprüft; technische IDs werden automatisch ermittelt."));
+    const assignments = roots.reduce((total, root) => total + Object.values(root.agents).filter(grant => Object.values(grant.permissions).some(Boolean)).length, 0);
+    const heading = el("div", "mg-onedrive-heading");
+    const title = el("div");
+    append(title, el("p", "mg-kicker", "OneDrive-Zugriff"), el("h2", "", "Wer darf auf welche OneDrive-Bereiche zugreifen?"), el("p", "mg-hint", "Klicke auf ein Recht, um es zu ändern. Ohne aktives Recht wird der Agent entfernt. Änderungen werden erst nach Prüfen und Speichern wirksam."));
+    append(heading, title, el("span", "mg-count", format("{count} Zuweisungen", { count: assignments })));
+    append(body, heading);
+    const add = el("section", "mg-add-folder");
+    append(add, el("h3", "", "Ordner hinzufügen"), el("p", "mg-hint", "Pfad in deinem OneDrive. Der Ordner wird vor dem Hinzufügen geprüft."));
     const input = field(add, "Ordnerpfad", this.newFolderPath, value => { this.newFolderPath = value; });
     input.placeholder = "/Projects/Clients";
     input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); this.newFolderPath = input.value.trim(); void this.addFolder(); } });
-    append(add, button("Ordner prüfen und hinzufügen", () => { void this.addFolder(); }, "primary")); append(body, add);
+    const addButton = button("Ordner prüfen und hinzufügen", () => { this.newFolderPath = input.value.trim(); void this.addFolder(); }, "primary"); addButton.disabled = this.busy;
+    append(add, addButton); append(body, add);
+    if (!roots.length) { append(body, el("p", "mg-message", "Noch kein OneDrive-Ordner freigegeben.")); return; }
+    const grid = el("div", "mg-root-grid");
+    for (const [index, root] of roots.entries()) {
+      const card = el("article", "mg-root-card");
+      const header = el("div", "mg-root-header");
+      const name = root.path.split("/").filter(Boolean).at(-1) || root.path;
+      const identity = el("div", "mg-root-identity"); append(identity, el("h3", "", name), el("p", "mg-root-path", root.path));
+      append(header, identity, el("span", "mg-descendants", "Inkl. Unterordner")); append(card, header);
+      const agents = Object.entries(root.agents).filter(([, grant]) => Object.values(grant.permissions).some(Boolean));
+      if (!agents.length) append(card, el("p", "mg-empty-grants", "Noch kein Agent berechtigt."));
+      for (const [agentId, grant] of agents) {
+        const row = el("div", "mg-agent-row");
+        const agentName = this.host.agents.rows.find(agent => agent.id === agentId)?.name || agentId;
+        const agentLabel = el("strong", "mg-agent-name", agentName);
+        const rights = el("div", "mg-rights");
+        for (const [op, label] of [["read", "Lesen"], ["write", "Schreiben"], ["delete", "Löschen"]] as const) {
+          const enabled = grant.permissions[op] === true;
+          const badge = button(`${enabled ? "✓" : "–"} ${localize(label)}`, () => {
+            grant.permissions[op] = !enabled;
+            if (!Object.values(grant.permissions).some(Boolean)) delete root.agents[agentId];
+            for (const right of ["read", "write", "delete"] as const)
+              root.permissions[right] = Object.values(root.agents).some(agent => agent.permissions[right] === true);
+            this.render();
+            const replacement = [...this.container.querySelectorAll<HTMLButtonElement>(".mg-right")]
+              .find(control => control.dataset.root === root.label && control.dataset.agent === agentId && control.dataset.right === op);
+            (replacement ?? [...this.container.querySelectorAll<HTMLButtonElement>(".mg-add-agent")]
+              .find(control => control.dataset.root === root.label))?.focus();
+          }, `mg-right ${enabled ? "is-allowed" : "is-denied"}`);
+          badge.setAttribute("aria-label", format("{right} für {agent} auf {path}", { right: localize(label), agent: agentName, path: root.path }));
+          badge.setAttribute("aria-pressed", String(enabled));
+          badge.dataset.root = root.label; badge.dataset.agent = agentId; badge.dataset.right = op;
+          append(rights, badge);
+        }
+        append(row, agentLabel, rights); append(card, row);
+      }
+      if (this.editingAccess?.rootLabel === root.label) this.renderAccessEditor(card, root);
+      else {
+        const available = this.host.agents.rows.filter(agent => !agents.some(([agentId]) => agentId === agent.id));
+        if (available.length) {
+          const addAgent = button("+ Agent hinzufügen", () => { this.editingAccess = { rootLabel: root.label, agentId: available[0]!.id, permissions: { read: false, write: false, delete: false } }; this.render(); }, "ghost mg-add-agent");
+          addAgent.dataset.root = root.label; append(card, addAgent);
+        }
+        else if (!this.host.agents.rows.length) append(card, el("p", "mg-hint", "Keine Agenten gefunden."));
+      }
+      const actions = el("div", "mg-root-actions");
+      append(actions, button("Ordner für alle Agenten entfernen", () => { if (window.confirm(format("Den Ordner {path} für alle Agenten entfernen?", { path: root.path }))) { roots.splice(index, 1); if (this.editingAccess?.rootLabel === root.label) this.editingAccess = undefined; this.render(); } }, "danger"));
+      append(card, actions); append(grid, card);
+    }
+    append(body, grid);
+  }
+  private renderAccessEditor(card: HTMLElement, root: Root) {
+    const editing = this.editingAccess!;
+    const panel = el("div", "mg-access-editor");
+    append(panel, el("h4", "", "Agent hinzufügen"));
+    const label = el("label", "mg-field"); append(label, el("span", "mg-label", "Agent"));
+    const select = el("select");
+    for (const agent of this.host.agents.rows.filter(agent => !Object.values(root.agents[agent.id]?.permissions ?? {}).some(Boolean))) {
+      const option = el("option", "", agent.name || agent.id); option.value = agent.id; option.selected = agent.id === editing.agentId; append(select, option);
+    }
+    select.addEventListener("change", () => { editing.agentId = select.value; }); append(label, select); append(panel, label);
+    const rights = el("div", "mg-editor-rights");
+    for (const [op, label] of [["read", "Lesen"], ["write", "Schreiben"], ["delete", "Löschen"]] as const)
+      checkbox(rights, label, editing.permissions[op], value => { editing.permissions[op] = value; });
+    append(panel, rights, el("p", "mg-hint", "Ohne ausgewähltes Recht wird der Agent aus diesem Bereich entfernt."));
+    const actions = el("div", "mg-editor-actions");
+    append(actions, button("Abbrechen", () => { this.editingAccess = undefined; this.render(); }, "ghost"));
+    append(actions, button("In Entwurf übernehmen", () => {
+      if (Object.values(editing.permissions).some(Boolean)) root.agents[editing.agentId] = { permissions: { ...editing.permissions } };
+      else delete root.agents[editing.agentId];
+      for (const op of ["read", "write", "delete"] as const) root.permissions[op] = Object.values(root.agents).some(agent => agent.permissions[op] === true);
+      this.editingAccess = undefined; this.render();
+    }, "primary"));
+    append(panel, actions); append(card, panel);
   }
   private renderServices(body: HTMLElement) {
     append(body, el("h2", "", "Microsoft-Dienste"), el("p", "", "Wähle, welche Dienste der Agent nutzen darf. Ein neuer Zugang umfasst alle Funktionen des Dienstes. Bestehende eingeschränkte Zugänge bleiben unverändert."));
