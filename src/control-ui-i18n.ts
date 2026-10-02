@@ -4,6 +4,8 @@ export const hostLocales = ["en", "ar", "de", "es", "fa", "fr", "hi", "id", "it"
 export type HostLocale = typeof hostLocales[number];
 const catalogs: Record<string, Record<string, string>> = {
   "en": {
+    "Klicke auf ein Recht, um es zu ändern. Ohne aktives Recht wird der Agent entfernt. Änderungen werden erst nach Prüfen und Speichern wirksam.": "Click a permission to change it. With no active permissions, the agent is removed. Changes take effect only after review and saving.",
+    "{right} für {agent} auf {path}": "{right} for {agent} on {path}",
     "OneDrive-Zugriff": "OneDrive access",
     "Wer darf auf welche OneDrive-Bereiche zugreifen?": "Who can access each OneDrive folder?",
     "Jeder Bereich zeigt die berechtigten Agenten und ihre Rechte. Änderungen werden erst nach Prüfen und Speichern wirksam.": "Each folder shows authorized agents and their permissions. Changes take effect only after review and saving.",
@@ -154,6 +156,8 @@ const catalogs: Record<string, Record<string, string>> = {
     "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Status check interrupted. Check the connection; this page will retry."
   },
   "de": {
+    "Klicke auf ein Recht, um es zu ändern. Ohne aktives Recht wird der Agent entfernt. Änderungen werden erst nach Prüfen und Speichern wirksam.": "Klicke auf ein Recht, um es zu ändern. Ohne aktives Recht wird der Agent entfernt. Änderungen werden erst nach Prüfen und Speichern wirksam.",
+    "{right} für {agent} auf {path}": "{right} für {agent} auf {path}",
     "OneDrive-Zugriff": "OneDrive-Zugriff",
     "Wer darf auf welche OneDrive-Bereiche zugreifen?": "Wer darf auf welche OneDrive-Bereiche zugreifen?",
     "Jeder Bereich zeigt die berechtigten Agenten und ihre Rechte. Änderungen werden erst nach Prüfen und Speichern wirksam.": "Jeder Bereich zeigt die berechtigten Agenten und ihre Rechte. Änderungen werden erst nach Prüfen und Speichern wirksam.",
@@ -304,6 +308,8 @@ const catalogs: Record<string, Record<string, string>> = {
     "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut."
   },
   "es": {
+    "Klicke auf ein Recht, um es zu ändern. Ohne aktives Recht wird der Agent entfernt. Änderungen werden erst nach Prüfen und Speichern wirksam.": "Pulsa un permiso para cambiarlo. Sin permisos activos, se elimina al agente. Los cambios solo entran en vigor después de revisarlos y guardarlos.",
+    "{right} für {agent} auf {path}": "{right} para {agent} en {path}",
     "OneDrive-Zugriff": "Acceso a OneDrive",
     "Wer darf auf welche OneDrive-Bereiche zugreifen?": "¿Quién puede acceder a cada carpeta de OneDrive?",
     "Jeder Bereich zeigt die berechtigten Agenten und ihre Rechte. Änderungen werden erst nach Prüfen und Speichern wirksam.": "Cada carpeta muestra los agentes autorizados y sus permisos. Los cambios solo entran en vigor después de revisarlos y guardarlos.",
@@ -437,6 +443,8 @@ const catalogs: Record<string, Record<string, string>> = {
     "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Se interrumpió la comprobación del estado. Comprueba la conexión; esta página volverá a intentarlo."
   },
   "ar": {
+    "Klicke auf ein Recht, um es zu ändern. Ohne aktives Recht wird der Agent entfernt. Änderungen werden erst nach Prüfen und Speichern wirksam.": "اضغط على إذن لتغييره. إذا لم يبق أي إذن، يُزال الوكيل. لا تسري التغييرات إلا بعد مراجعتها وحفظها.",
+    "{right} für {agent} auf {path}": "{right} لـ{agent} في {path}",
     "OneDrive-Zugriff": "الوصول إلى OneDrive",
     "Wer darf auf welche OneDrive-Bereiche zugreifen?": "من يمكنه الوصول إلى كل مجلد في OneDrive؟",
     "Jeder Bereich zeigt die berechtigten Agenten und ihre Rechte. Änderungen werden erst nach Prüfen und Speichern wirksam.": "تعرض كل بطاقة الوكلاء المصرح لهم وأذوناتهم. لا تسري التغييرات إلا بعد مراجعتها وحفظها.",

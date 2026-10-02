@@ -91,15 +91,14 @@
 .mg-agent-row { display: grid; grid-template-columns: minmax(75px, 1fr) auto; align-items: center; gap: 6px 10px; padding: 11px 0; border-top: 1px solid var(--mg-border); }
 .mg-agent-name { font-size: .82rem; overflow-wrap: anywhere; }
 .mg-rights { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
-.mg-right { display: inline-block; border: 1px solid var(--mg-border); border-radius: 999px; padding: 3px 6px; font-size: .68rem; font-weight: 650; white-space: nowrap; }
-.mg-right.is-allowed { border-color: #a7d8c0; background: #e7f5ed; color: #176345; }
-.mg-right.is-denied { background: var(--mg-bg); color: var(--mg-muted); }
-.mg-ui .mg-edit-rights { grid-column: 1 / -1; justify-self: start; min-height: 28px; padding: 2px 0; border: 0; color: #0b6b70; font-size: .75rem; }
+.mg-ui .mg-button.mg-right { min-height: 34px; border: 1px solid var(--mg-border); border-radius: 999px; padding: 6px 10px; font-size: .73rem; font-weight: 700; white-space: nowrap; transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease; }
+.mg-ui .mg-button.mg-right.is-allowed { border-color: #8fcaaa; background: #e7f5ed; color: #145b3f; }
+.mg-ui .mg-button.mg-right.is-denied { background: var(--mg-bg); color: var(--mg-muted); }
+.mg-ui .mg-button.mg-right:hover:not(:disabled) { border-color: #0b6b70; box-shadow: 0 0 0 2px rgb(11 107 112 / .12); }
 .mg-ui .mg-add-agent { width: 100%; justify-content: flex-start; min-height: 36px; padding: 7px 0; border: 0; color: #0b6b70; font-size: .82rem; }
 .mg-empty-grants { color: var(--mg-muted); font-size: .82rem; margin: 0; padding: 10px 0; border-top: 1px solid var(--mg-border); }
-.mg-root-menu { margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--mg-border); color: var(--mg-muted); font-size: .75rem; }
-.mg-root-menu summary { cursor: pointer; width: fit-content; }
-.mg-root-menu .mg-button { margin-top: 5px; font-size: .75rem; }
+.mg-root-actions { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--mg-border); }
+.mg-root-actions .mg-button { min-height: 34px; max-width: 100%; justify-content: flex-start; text-align: start; font-size: .75rem; white-space: normal; }
 .mg-access-editor { margin: 9px 0 12px; padding: 14px; border: 1px solid var(--mg-border); border-radius: 10px; background: var(--mg-bg); }
 .mg-access-editor h4 { margin: 0 0 8px; font-size: .91rem; }
 .mg-access-editor .mg-field { margin: 8px 0; }
@@ -115,4 +114,5 @@
   .mg-root-header { flex-wrap: wrap; }
   .mg-agent-row { grid-template-columns: minmax(0, 1fr); }
   .mg-rights { justify-content: flex-start; }
+  .mg-ui .mg-button.mg-right { min-height: 40px; }
 }

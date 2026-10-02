@@ -67,7 +67,7 @@ class ConfigurationPage {
   private initialScopes: string[] = [];
   private pluginEnabled = false;
   private newFolderPath = "";
-  private editingAccess?: { rootLabel: string; agentId: string; isNew: boolean; permissions: Record<"read" | "write" | "delete", boolean> };
+  private editingAccess?: { rootLabel: string; agentId: string; permissions: Record<"read" | "write" | "delete", boolean> };
   private removedServiceGrants: Record<string, Grant> = {};
   private busy = false;
   private error = "";
@@ -335,7 +335,7 @@ class ConfigurationPage {
     const assignments = roots.reduce((total, root) => total + Object.values(root.agents).filter(grant => Object.values(grant.permissions).some(Boolean)).length, 0);
     const heading = el("div", "mg-onedrive-heading");
     const title = el("div");
-    append(title, el("p", "mg-kicker", "OneDrive-Zugriff"), el("h2", "", "Wer darf auf welche OneDrive-Bereiche zugreifen?"), el("p", "mg-hint", "Jeder Bereich zeigt die berechtigten Agenten und ihre Rechte. Änderungen werden erst nach Prüfen und Speichern wirksam."));
+    append(title, el("p", "mg-kicker", "OneDrive-Zugriff"), el("h2", "", "Wer darf auf welche OneDrive-Bereiche zugreifen?"), el("p", "mg-hint", "Klicke auf ein Recht, um es zu ändern. Ohne aktives Recht wird der Agent entfernt. Änderungen werden erst nach Prüfen und Speichern wirksam."));
     append(heading, title, el("span", "mg-count", format("{count} Zuweisungen", { count: assignments })));
     append(body, heading);
     const add = el("section", "mg-add-folder");
@@ -362,39 +362,49 @@ class ConfigurationPage {
         const rights = el("div", "mg-rights");
         for (const [op, label] of [["read", "Lesen"], ["write", "Schreiben"], ["delete", "Löschen"]] as const) {
           const enabled = grant.permissions[op] === true;
-          const badge = el("span", `mg-right ${enabled ? "is-allowed" : "is-denied"}`, `${enabled ? "✓" : "–"} ${localize(label)}`);
-          badge.setAttribute("aria-label", `${localize(label)}: ${localize(enabled ? "erlaubt" : "nicht erlaubt")}`);
+          const badge = button(`${enabled ? "✓" : "–"} ${localize(label)}`, () => {
+            grant.permissions[op] = !enabled;
+            if (!Object.values(grant.permissions).some(Boolean)) delete root.agents[agentId];
+            for (const right of ["read", "write", "delete"] as const)
+              root.permissions[right] = Object.values(root.agents).some(agent => agent.permissions[right] === true);
+            this.render();
+            const replacement = [...this.container.querySelectorAll<HTMLButtonElement>(".mg-right")]
+              .find(control => control.dataset.root === root.label && control.dataset.agent === agentId && control.dataset.right === op);
+            (replacement ?? [...this.container.querySelectorAll<HTMLButtonElement>(".mg-add-agent")]
+              .find(control => control.dataset.root === root.label))?.focus();
+          }, `mg-right ${enabled ? "is-allowed" : "is-denied"}`);
+          badge.setAttribute("aria-label", format("{right} für {agent} auf {path}", { right: localize(label), agent: agentName, path: root.path }));
+          badge.setAttribute("aria-pressed", String(enabled));
+          badge.dataset.root = root.label; badge.dataset.agent = agentId; badge.dataset.right = op;
           append(rights, badge);
         }
-        const edit = button("Rechte ändern", () => { this.editingAccess = { rootLabel: root.label, agentId, isNew: false, permissions: { read: grant.permissions.read === true, write: grant.permissions.write === true, delete: grant.permissions.delete === true } }; this.render(); }, "ghost mg-edit-rights");
-        edit.setAttribute("aria-label", format("Rechte für {agent} auf {path} ändern", { agent: agentName, path: root.path }));
-        append(row, agentLabel, rights, edit); append(card, row);
+        append(row, agentLabel, rights); append(card, row);
       }
       if (this.editingAccess?.rootLabel === root.label) this.renderAccessEditor(card, root);
       else {
         const available = this.host.agents.rows.filter(agent => !agents.some(([agentId]) => agentId === agent.id));
-        if (available.length) append(card, button("+ Agent hinzufügen", () => { this.editingAccess = { rootLabel: root.label, agentId: available[0]!.id, isNew: true, permissions: { read: false, write: false, delete: false } }; this.render(); }, "ghost mg-add-agent"));
+        if (available.length) {
+          const addAgent = button("+ Agent hinzufügen", () => { this.editingAccess = { rootLabel: root.label, agentId: available[0]!.id, permissions: { read: false, write: false, delete: false } }; this.render(); }, "ghost mg-add-agent");
+          addAgent.dataset.root = root.label; append(card, addAgent);
+        }
         else if (!this.host.agents.rows.length) append(card, el("p", "mg-hint", "Keine Agenten gefunden."));
       }
-      const menu = el("details", "mg-root-menu");
-      append(menu, el("summary", "", "Weitere Aktionen"));
-      append(menu, button("Ordner für alle Agenten entfernen", () => { if (window.confirm(format("Den Ordner {path} für alle Agenten entfernen?", { path: root.path }))) { roots.splice(index, 1); if (this.editingAccess?.rootLabel === root.label) this.editingAccess = undefined; this.render(); } }, "danger"));
-      append(card, menu); append(grid, card);
+      const actions = el("div", "mg-root-actions");
+      append(actions, button("Ordner für alle Agenten entfernen", () => { if (window.confirm(format("Den Ordner {path} für alle Agenten entfernen?", { path: root.path }))) { roots.splice(index, 1); if (this.editingAccess?.rootLabel === root.label) this.editingAccess = undefined; this.render(); } }, "danger"));
+      append(card, actions); append(grid, card);
     }
     append(body, grid);
   }
   private renderAccessEditor(card: HTMLElement, root: Root) {
     const editing = this.editingAccess!;
     const panel = el("div", "mg-access-editor");
-    append(panel, el("h4", "", editing.isNew ? "Agent hinzufügen" : "Rechte konfigurieren"));
-    if (editing.isNew) {
-      const label = el("label", "mg-field"); append(label, el("span", "mg-label", "Agent"));
-      const select = el("select");
-      for (const agent of this.host.agents.rows.filter(agent => !Object.values(root.agents[agent.id]?.permissions ?? {}).some(Boolean))) {
-        const option = el("option", "", agent.name || agent.id); option.value = agent.id; option.selected = agent.id === editing.agentId; append(select, option);
-      }
-      select.addEventListener("change", () => { editing.agentId = select.value; }); append(label, select); append(panel, label);
-    } else append(panel, el("p", "mg-hint", this.host.agents.rows.find(agent => agent.id === editing.agentId)?.name || editing.agentId));
+    append(panel, el("h4", "", "Agent hinzufügen"));
+    const label = el("label", "mg-field"); append(label, el("span", "mg-label", "Agent"));
+    const select = el("select");
+    for (const agent of this.host.agents.rows.filter(agent => !Object.values(root.agents[agent.id]?.permissions ?? {}).some(Boolean))) {
+      const option = el("option", "", agent.name || agent.id); option.value = agent.id; option.selected = agent.id === editing.agentId; append(select, option);
+    }
+    select.addEventListener("change", () => { editing.agentId = select.value; }); append(label, select); append(panel, label);
     const rights = el("div", "mg-editor-rights");
     for (const [op, label] of [["read", "Lesen"], ["write", "Schreiben"], ["delete", "Löschen"]] as const)
       checkbox(rights, label, editing.permissions[op], value => { editing.permissions[op] = value; });

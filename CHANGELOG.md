@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
-- Redesign OneDrive access as responsive folder cards showing every authorized agent and read/write/delete permissions, with in-card editing and adding agents while preserving the review-and-save workflow.
+- Redesign OneDrive access as responsive folder cards showing every authorized agent. Read/write/delete bubbles now toggle permissions directly; each card also exposes adding agents and a confirmed folder-removal action while preserving the review-and-save workflow.
 
 ## 3.5.4 - 2026-10-02
 
