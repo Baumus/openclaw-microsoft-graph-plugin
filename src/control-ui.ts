@@ -2,6 +2,7 @@ import { defineControlUiPlugin, type ControlUiHost } from "openclaw/plugin-sdk/c
 import "./control-ui.css";
 import { localize, format, setLocale, isRtl } from "./control-ui-i18n.js";
 import { isMicrosoftDeviceVerificationUri } from "./device-verification.js";
+import { isConnectionEstablished } from "./control-ui-status.js";
 
 type Grant = { operations: string[]; resources?: string[] };
 type Root = { label: string; path: string; drive_id: string; item_id: string; include_descendants: true; agents_instructions?: "trusted"; permissions: Record<"read" | "write" | "delete", boolean>; agents: Record<string, { permissions: Partial<Record<"read" | "write" | "delete", boolean>> }> };
@@ -156,15 +157,17 @@ class ConfigurationPage {
     this.renderSetup(main);
     const rail = el("nav", "mg-steps"); rail.setAttribute("aria-label", localize("Konfigurationsschritte"));
     ["OneDrive", "Dienste", "Freigaben", "Prüfen"].forEach((name, index) => { const tab = button(`${index + 1}  ${localize(name)}`, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost"); tab.disabled = this.busy; tab.setAttribute("aria-current", index === this.step ? "step" : "false"); append(rail, tab); }); append(main, rail);
-    if (this.included) append(main, el("p", "mg-banner", format("Policy-Quelle: {name}. Änderungen werden beim Speichern in diese Datei geschrieben.", { name: this.includeName })));
+    if (this.included && (this.dirty || !!this.error)) append(main, el("p", "mg-banner", format("Policy-Quelle: {name}. Änderungen werden beim Speichern in diese Datei geschrieben.", { name: this.includeName })));
     const application = this.statusError === "Die Regeln wurden außerhalb dieser Seite geändert. Bitte neu laden, um den aktuellen Stand zu sehen." ? "unknown" : this.applicationStatus;
-    const status = el("div", application === "applied" ? "mg-success" : "mg-warning");
-    status.setAttribute("role", "status");
-    append(status, el("strong", "", application === "applied" ? "Gespeicherte Regeln im Gateway angewendet" : application === "pending" ? "Regeln gespeichert – Anwendung noch ausstehend" : "Anwendung der Regeln nicht bestätigt"));
-    append(status, el("p", "mg-status-detail", application === "applied" ? "Gespeicherte und angewendete Konfigurationsversion stimmen überein." : application === "pending" ? (this.statusChecksRemaining > 0 ? "Der Gateway hat die gespeicherte Version noch nicht übernommen. Diese Seite prüft den Status automatisch; bis dahin können die bisherigen Regeln gelten." : "Die Anwendung ist weiterhin nicht bestätigt. Die bisherigen Regeln können noch gelten; prüfe den Status erneut.") : "Der Gateway liefert derzeit keinen eindeutigen Anwendungsstatus. Die gespeicherten Regeln können bereits gelten, sind hier aber nicht bestätigt."));
-    if (this.statusError) append(status, el("p", "mg-status-detail", this.statusError));
-    if (application !== "applied") { const recheck = button("Anwendung erneut prüfen", () => { void this.checkApplication(); }, "secondary"); recheck.disabled = this.busy; append(status, recheck); }
-    append(main, status);
+    if (application !== "applied" || this.statusError) {
+      const status = el("div", "mg-warning");
+      status.setAttribute("role", "status");
+      append(status, el("strong", "", application === "pending" ? "Regeln gespeichert – Anwendung noch ausstehend" : "Anwendung der Regeln nicht bestätigt"));
+      append(status, el("p", "mg-status-detail", application === "pending" ? (this.statusChecksRemaining > 0 ? "Der Gateway hat die gespeicherte Version noch nicht übernommen. Diese Seite prüft den Status automatisch; bis dahin können die bisherigen Regeln gelten." : "Die Anwendung ist weiterhin nicht bestätigt. Die bisherigen Regeln können noch gelten; prüfe den Status erneut.") : "Der Gateway liefert derzeit keinen eindeutigen Anwendungsstatus. Die gespeicherten Regeln können bereits gelten, sind hier aber nicht bestätigt."));
+      if (this.statusError) append(status, el("p", "mg-status-detail", this.statusError));
+      const recheck = button("Anwendung erneut prüfen", () => { void this.checkApplication(); }, "secondary"); recheck.disabled = this.busy; append(status, recheck);
+      append(main, status);
+    }
     const body = el("section", "mg-body"); if (this.step === 0) this.renderOneDrive(body); else if (this.step === 1) this.renderServices(body); else if (this.step === 2) this.renderApprovals(body); else this.renderReview(body); append(main, body);
     if (this.error) append(main, el("p", "mg-error", this.error)); if (this.success) append(main, el("p", "mg-success", this.success));
     const footer = el("footer", "mg-footer"); append(footer, el("span", "mg-dirty", this.dirty ? "Ungespeicherte Änderungen" : "Keine ungespeicherten Änderungen"));
@@ -175,16 +178,24 @@ class ConfigurationPage {
     append(main, footer); this.renderSignIn(main); this.container.replaceChildren(main);
   }
   private renderSetup(main: HTMLElement) {
+    const configured = this.snapshot?.config?.plugins?.entries?.[id]?.config?.credentialVaultKey !== undefined;
+    const savedPolicy = this.initial ?? blankPolicy();
+    const grants = savedPolicy.services.onedrive.allowed_roots.some(root => Object.values(root.agents).some(agent => Object.values(agent.permissions).some(Boolean)))
+      || (["calendar", "mail", "todo"] as const).some(service => Object.keys(savedPolicy.services[service].agents).length > 0);
+    const connected = this.credential?.result === "valid";
+    if (isConnectionEstablished({ secretRefConfigured: configured, savedGrantPresent: grants, applicationStatus: this.applicationStatus, credentialResult: this.credential?.result, statusError: !!this.statusError })) {
+      const status = el("p", "mg-success mg-connected", "Verbindung hergestellt");
+      status.setAttribute("role", "status");
+      status.setAttribute("aria-label", localize("Verbindung hergestellt. Ein Lesezugriff durch einen berechtigten Agenten wurde nicht geprüft."));
+      append(main, status);
+      return;
+    }
     const card = el("section", "mg-section mg-setup");
     append(card, el("h2", "", "Einrichtung"));
-    const configured = this.snapshot?.config?.plugins?.entries?.[id]?.config?.credentialVaultKey !== undefined;
-    const grants = this.policy.services.onedrive.allowed_roots.some(root => Object.values(root.agents).some(agent => Object.values(agent.permissions).some(Boolean)))
-      || (["calendar", "mail", "todo"] as const).some(service => Object.keys(this.policy.services[service].agents).length > 0);
-    const connected = this.credential?.result === "valid";
     const steps = [
       ["Vault-SecretRef vorhanden", configured],
-      ["Mindestens ein Agentenzugriff gespeichert", grants && !this.dirty],
-      ["Regeln im Gateway angewendet", grants && this.applicationStatus === "applied" && !this.dirty],
+      ["Mindestens ein Agentenzugriff gespeichert", grants],
+      ["Regeln im Gateway angewendet", grants && this.applicationStatus === "applied" && !this.statusError],
       ["Microsoft-Konto verbunden", connected],
     ] as const;
     const list = el("ol", "mg-setup-list");
@@ -192,7 +203,7 @@ class ConfigurationPage {
     append(card, list);
     let next: string;
     if (!configured) next = "Nächster Schritt: Vault-Schlüssel als SecretRef hinterlegen. Die Anleitung zeigt den Befehl.";
-    else if (!grants) next = "Nächster Schritt: Einen Agentenzugriff auswählen und die Regeln speichern.";
+    else if (!grants && !this.dirty) next = "Nächster Schritt: Einen Agentenzugriff auswählen und die Regeln speichern.";
     else if (this.dirty) next = "Nächster Schritt: Änderungen unter Prüfen speichern.";
     else if (this.applicationStatus !== "applied") next = "Nächster Schritt: Warten, bis das Gateway die gespeicherten Regeln angewendet hat.";
     else if (this.credential?.result === "quarantined") next = "Der Zugang ist gesperrt. Stelle ihn über die Administrator-Wiederherstellung wieder her.";
@@ -201,7 +212,7 @@ class ConfigurationPage {
     else next = "Konto verbunden. Prüfe mit einem berechtigten Agenten einen Lesezugriff; erst dann ist der Ablauf einsatzbereit.";
     append(card, el("p", connected ? "mg-status" : "mg-hint", next));
     if (!configured) { const link = el("a", "mg-button secondary", "Vault-Anleitung öffnen"); link.href = "https://clawhub.ai/packages/@baumus/openclaw-microsoft-graph"; link.target = "_blank"; link.rel = "noopener noreferrer"; append(card, link); }
-    else if (!grants) append(card, button("Zugriff festlegen", () => { this.step = 1; this.render(); }, "primary"));
+    else if (!grants && !this.dirty) append(card, button("Zugriff festlegen", () => { this.step = 1; this.render(); }, "primary"));
     else if (this.dirty) append(card, button("Zum Prüfen", () => { this.step = 3; this.render(); void this.validate(); }, "primary"));
     else if (grants && this.applicationStatus === "applied" && !connected && this.credential?.result === "missing") append(card, button("Mit Microsoft verbinden", () => { this.container.querySelector("#microsoft-connect")?.scrollIntoView({ behavior: "smooth", block: "start" }); }, "primary"));
     append(main, card);
@@ -269,10 +280,10 @@ class ConfigurationPage {
     finally { this.authBusy = false; if (this.authTimer) clearTimeout(this.authTimer); this.authTimer = undefined; if (this.authState === "pending") this.scheduleAuthCheck(); this.render(); }
   }
   private renderSignIn(main: HTMLElement) {
+    if (this.credential?.result === "valid") return;
     const card = el("section", "mg-section mg-auth"); card.id = "microsoft-connect";
     append(card, el("h2", "", "Mit Microsoft verbinden"));
     const result = this.credential?.result;
-    if (result === "valid" || this.authState === "created") { append(card, el("p", "mg-success", "Microsoft-Zugang sicher gespeichert. Agentenzugriffe gelten erst nach angewendeten Regeln; teste einen erlaubten Lesezugriff.")); append(main, card); return; }
     if (result === "quarantined") { append(card, el("p", "mg-warning", "Der vorhandene Zugang ist gesperrt und muss separat wiederhergestellt werden. Dieser Assistent überschreibt ihn nicht.")); append(main, card); return; }
     if (result === "unavailable") { append(card, el("p", "mg-warning", "Zugangsstatus nicht verfügbar. Prüfe Vault-Schlüssel und Gateway-Verbindung.")); append(main, card); return; }
     if (!result) { append(card, el("p", "", "Zugangsstatus wird geladen…")); append(main, card); return; }
