@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.5.4 - 2026-10-02
+
+- Collapse the completed setup checklist to a compact connection status only when the vault SecretRef, saved agent grant, applied rules, and valid Microsoft credential are confirmed. This does not claim that an agent read has been tested.
+- Keep actionable setup and sign-in states for missing or regressed prerequisites. Hide redundant connected sign-in and applied-version success cards, and show the policy source while editing or handling a save error.
+
 ## 3.5.3 - 2026-10-01
 
 - Accept Microsoft's `https://login.microsoft.com/device` device-code verification page while keeping the browser destination on an exact allowlist.

@@ -25,6 +25,15 @@ describe("Microsoft Graph Control UI localization", () => {
     }
   });
 
+  it("localizes compact connection copy without claiming a tested read", () => {
+    for (const code of ["en", "de", "es", "ar"]) {
+      setLocale(code);
+      expect(localize("Verbindung hergestellt")).not.toBe("");
+      expect(localize("Verbindung hergestellt. Ein Lesezugriff durch einen berechtigten Agenten wurde nicht geprüft.")).not.toBe("");
+      if (code !== "de") expect(localize("Verbindung hergestellt")).not.toBe("Verbindung hergestellt");
+    }
+  });
+
   it("preserves dynamic values and handles RTL locales", () => {
     setLocale("ar");
     expect(isRtl()).toBe(true);

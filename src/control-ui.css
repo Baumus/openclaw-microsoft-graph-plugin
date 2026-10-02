@@ -49,6 +49,7 @@
 .mg-warning { border-inline-start: 4px solid #a77728; }
 .mg-error { border-inline-start: 4px solid #ba3535; }
 .mg-success { border-inline-start: 4px solid #26805e; }
+.mg-connected { display: inline-block; margin: 16px 0 0; padding: 9px 13px; font-weight: 600; }
 .mg-status { font-weight: 600; }
 .mg-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 9px; margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--mg-border); background: transparent; }
 .mg-dirty { margin-inline-end: auto; color: var(--mg-muted); font-size: .88rem; }

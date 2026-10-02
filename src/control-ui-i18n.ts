@@ -14,6 +14,8 @@ const catalogs: Record<string, Record<string, string>> = {
     "Regeln werden geladen…": "Loading rules...",
     "Konfigurationsschritte": "Configuration Steps",
     "Einrichtung": "Setup",
+    "Verbindung hergestellt": "Connected to Microsoft",
+    "Verbindung hergestellt. Ein Lesezugriff durch einen berechtigten Agenten wurde nicht geprüft.": "Connected to Microsoft. An authorized agent read has not been tested.",
     "Vault-SecretRef vorhanden": "Vault SecretRef present",
     "Mindestens ein Agentenzugriff gespeichert": "At least one agent grant saved",
     "Regeln im Gateway angewendet": "Rules applied in the Gateway",
@@ -134,6 +136,8 @@ const catalogs: Record<string, Record<string, string>> = {
   },
   "de": {
     "Einrichtung": "Einrichtung",
+    "Verbindung hergestellt": "Verbindung hergestellt",
+    "Verbindung hergestellt. Ein Lesezugriff durch einen berechtigten Agenten wurde nicht geprüft.": "Verbindung hergestellt. Ein Lesezugriff durch einen berechtigten Agenten wurde nicht geprüft.",
     "Vault-SecretRef vorhanden": "Vault-SecretRef vorhanden",
     "Mindestens ein Agentenzugriff gespeichert": "Mindestens ein Agentenzugriff gespeichert",
     "Regeln im Gateway angewendet": "Regeln im Gateway angewendet",
@@ -262,6 +266,8 @@ const catalogs: Record<string, Record<string, string>> = {
     "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut."
   },
   "es": {
+    "Verbindung hergestellt": "Conexión con Microsoft establecida",
+    "Verbindung hergestellt. Ein Lesezugriff durch einen berechtigten Agenten wurde nicht geprüft.": "Conexión con Microsoft establecida. No se ha probado la lectura con un agente autorizado.",
     "Kalender": "Calendario",
     "E-Mail": "Correo electrónico",
     "Plugins / Microsoft 365 for OpenClaw": "Plugins / Microsoft 365 for OpenClaw",
@@ -374,6 +380,8 @@ const catalogs: Record<string, Record<string, string>> = {
     "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Se interrumpió la comprobación del estado. Comprueba la conexión; esta página volverá a intentarlo."
   },
   "ar": {
+    "Verbindung hergestellt": "تم الاتصال بمايكروسوفت",
+    "Verbindung hergestellt. Ein Lesezugriff durch einen berechtigten Agenten wurde nicht geprüft.": "تم الاتصال بمايكروسوفت. لم يتم اختبار القراءة بواسطة وكيل مخوّل.",
     "Kalender": "التقويم",
     "E-Mail": "البريد الإلكتروني",
     "Plugins / Microsoft 365 for OpenClaw": "الإضافات / Microsoft 365 for OpenClaw",
