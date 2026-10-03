@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.8.0 - 2026-10-03
+
+- Make every agent tool self-describing at runtime and add caller-scoped, read-only `microsoft_graph_capabilities` discovery without credentials or Graph calls.
+- Add bounded `timeoutMs` transport metadata to mutation schemas, strip it before semantic approval and provider execution, and validate mutation syntax/policy before native approval. Critical managed-root deletion now requires cached instruction acknowledgement before prompting.
+- Add additive lifecycle, retry-safety, mutation-certainty, send-acceptance, and pagination guidance to tool results. Legacy chat confirmation fields remain accepted but ignored.
+
 ## 3.7.0 - 2026-10-03
 
 - Let OneDrive upload/update callers omit SHA-256 and byte size: the plugin derives both from protected inbound media before native approval and re-verifies the approved identity before transfer. Supplied values remain strict paired assertions.

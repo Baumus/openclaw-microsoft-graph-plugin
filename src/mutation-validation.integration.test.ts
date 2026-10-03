@@ -96,7 +96,7 @@ describe("pre-service mutation validation", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     try {
       const result = await registeredTools()[tool].execute("malformed", params);
-      expect(result.details).toEqual({ ok: false, error });
+      expect(result.details).toMatchObject({ ok: false, error });
       expect(credential.readCredential).not.toHaveBeenCalled();
       expect(credential.exchangeRefreshToken).not.toHaveBeenCalled();
       expect(fetchSpy).not.toHaveBeenCalled();

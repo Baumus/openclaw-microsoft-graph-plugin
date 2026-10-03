@@ -208,6 +208,12 @@ Expected credential status is `result: "valid"` with secret-free metadata. Then,
 
 ### Understand approvals
 
+Agents can call `microsoft_graph_capabilities` first to see only their effective root labels, service actions/resources, and prerequisites. It never checks sign-in, accesses credentials, or calls Graph; connection and sign-in remain operator-owned. All concrete tools include action, exact-ID discovery, approval, result, and next-step guidance, so no bundled skill is required.
+
+Mutation schemas accept optional `timeoutMs` as **OpenClaw outer transport metadata**, not a Graph parameter or approval. Set at least `180000` for calls that may wait through the native 120-second approval prompt, and include expected execution time up to the host's ordinary 600-second cap. The host default is 90 seconds; `timeoutSeconds` adds 30 seconds but is not part of this plugin's schema. The plugin strips `timeoutMs` before semantic validation, approval snapshot binding, and provider payload construction. Long OneDrive transfers configured for up to 24 hours cannot fit a single ordinary dynamic tool call; if the outer call ends, read back the exact target before retrying. A larger timeout never grants permission or extends an expired approval.
+
+Results retain their previous fields and add `phase`, `code`, `nextAction`, `retrySafety`, and `mutationApplied` (`true`, `false`, or `"unknown"`). A send receipt means Graph accepted the request, **not** recipient delivery; inspect Sent Items before any uncertain retry. Paginated reads set `noResults` only when an empty page is complete; follow `continuation` or narrow a capped query when completeness is partial or unknown. Calendar multiwrite remains non-atomic: inspect each operation and retry only after readback.
+
 | Class | Examples | Required user action |
 | --- | --- | --- |
 | none | Explicitly recognized read actions | No mutation approval; policy authorization still applies. |

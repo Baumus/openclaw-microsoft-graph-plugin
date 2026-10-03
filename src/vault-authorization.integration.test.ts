@@ -50,7 +50,7 @@ describe("vault authorization ordering", () => {
   it("denies before plugin-side key selection, vault access, decryption, or network", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const response = await registeredTools("unauthorized-agent").outlook_calendar_read.execute("denied", { action: "list_calendars" });
-    expect(response.details).toEqual({ ok: false, error: "access_denied" });
+    expect(response.details).toMatchObject({ ok: false, error: "access_denied" });
     expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
@@ -59,7 +59,7 @@ describe("vault authorization ordering", () => {
   it("reaches vault credential access only after the exact operation is authorized", async () => {
     mocks.tokenForAuthorizedOperation.mockRejectedValueOnce(new Error("credential_vault_unavailable"));
     const response = await registeredTools("main").outlook_calendar_read.execute("authorized", { action: "list_calendars" });
-    expect(response.details).toEqual({ ok: false, error: "credential_vault_unavailable" });
+    expect(response.details).toMatchObject({ ok: false, error: "credential_vault_unavailable" });
     expect(mocks.tokenForAuthorizedOperation).toHaveBeenCalledOnce();
     expect(mocks.tokenForAuthorizedOperation.mock.calls[0][0]).toMatchObject({ policy: { version: 2 } });
   });

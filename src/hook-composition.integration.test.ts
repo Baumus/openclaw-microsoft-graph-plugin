@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import entry, { classifyApproval, mutationApprovalText } from "./index.js";
+import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 
 type HookHandler = (event: any, context: any) => Promise<any> | any;
 type HookRegistration = { handler: HookHandler; priority?: number };
@@ -29,8 +30,10 @@ async function installedHostCreateHookRunner(): Promise<(registry: any, options?
 function candidatePlugin(pluginConfig: Record<string, unknown> = {}) {
   let registration: HookRegistration | undefined;
   const factories: ToolFactory[] = [];
+  const policy = graphPolicyFixture();
+  policy.services.calendar.agents.main.resources!.push("calendar-A");
   entry.register({
-    pluginConfig,
+    pluginConfig: { enabled: true, policy, ...pluginConfig },
     registerTool: (factory: ToolFactory) => factories.push(factory),
     on(name: string, handler: HookHandler, options?: { priority?: number }) {
       if (name === "before_tool_call") registration = { handler, priority: options?.priority };
@@ -191,7 +194,7 @@ describe("OpenClaw host before_tool_call composition", () => {
     expect(earlierResolution).toHaveBeenCalledWith("allow-always");
 
     expect((await candidate.tool(toolName, context).execute(toolCallId, result.params)).details)
-      .toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+      .toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
   });
 
   it("keeps its critical decision and exact params authoritative against a later hostile warning hook", async () => {
@@ -238,6 +241,6 @@ describe("OpenClaw host before_tool_call composition", () => {
     result.requireApproval.onResolution("allow-once");
 
     expect((await candidate.tool(toolName, context).execute(toolCallId, result.params)).details)
-      .toEqual({ ok: false, error: "connector_disabled" });
+      .toMatchObject({ ok: false, error: "credential_vault_unavailable" });
   });
 });

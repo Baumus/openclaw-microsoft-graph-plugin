@@ -127,7 +127,7 @@ describe.each([
       })));
       const { tool } = registeredTool(toolName);
       const response = await tool.execute("reject", params);
-      expect(response.details).toEqual({ ok: false, error: "unsupported_attachment_type" });
+      expect(response.details).toMatchObject({ ok: false, error: "unsupported_attachment_type" });
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       fetchSpy.mockRestore();
     }
@@ -212,7 +212,7 @@ describe("Outlook attachment transport boundaries", () => {
     });
     const { tool } = registeredTool("outlook_mail_read", { maxAttachmentDownloadBytes: 1024 });
     const response = await tool.execute("oversized-length", params);
-    expect(response.details).toEqual({ ok: false, error: "file_too_large" });
+    expect(response.details).toMatchObject({ ok: false, error: "file_too_large" });
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 
@@ -232,7 +232,7 @@ describe("Outlook attachment transport boundaries", () => {
     });
     const { tool } = registeredTool("outlook_mail_read", { maxAttachmentDownloadBytes: 1024 });
     const response = await tool.execute("oversized-stream", params);
-    expect(response.details).toEqual({ ok: false, error: "file_too_large" });
+    expect(response.details).toMatchObject({ ok: false, error: "file_too_large" });
   });
 
   it("aborts a stalled response body at the read-idle timeout", async () => {
@@ -245,7 +245,7 @@ describe("Outlook attachment transport boundaries", () => {
     });
     const { tool } = registeredTool("outlook_mail_read", { maxAttachmentDownloadBytes: 1024, requestTimeoutMs: 10 });
     const response = await tool.execute("stalled-stream", params);
-    expect(response.details).toEqual({ ok: false, error: "request_timeout" });
+    expect(response.details).toMatchObject({ ok: false, error: "request_timeout" });
   });
 
   it("rejects a truncated body against an explicit Content-Length", async () => {
@@ -258,7 +258,7 @@ describe("Outlook attachment transport boundaries", () => {
     });
     const { tool } = registeredTool("outlook_mail_read", { maxAttachmentDownloadBytes: 1024 });
     const response = await tool.execute("truncated", params);
-    expect(response.details).toEqual({ ok: false, error: "invalid_provider_response" });
+    expect(response.details).toMatchObject({ ok: false, error: "invalid_provider_response" });
   });
 
   it("rejects path-bearing names and malformed MIME values before the binary request", async () => {

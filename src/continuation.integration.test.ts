@@ -82,11 +82,11 @@ describe("opaque continuation tool integration", () => {
       const credentialCalls = mocks.readCredential.mock.calls.length;
       const networkCalls = fetchSpy.mock.calls.length;
       const modified = await tool.execute("modified", { ...params, query: "Other.pdf", continuation: first.details.continuation });
-      expect(modified.details).toEqual({ ok: false, error: "invalid_continuation" });
+      expect(modified.details).toMatchObject({ ok: false, error: "invalid_continuation" });
       const changedMode = await tool.execute("changed-mode", { ...params, mode: "filename_contains", continuation: first.details.continuation });
-      expect(changedMode.details).toEqual({ ok: false, error: "invalid_continuation" });
+      expect(changedMode.details).toMatchObject({ ok: false, error: "invalid_continuation" });
       const changedExhaustive = await tool.execute("changed-exhaustive", { ...params, exhaustive: false, continuation: first.details.continuation });
-      expect(changedExhaustive.details).toEqual({ ok: false, error: "invalid_continuation" });
+      expect(changedExhaustive.details).toMatchObject({ ok: false, error: "invalid_continuation" });
       expect(mocks.readCredential).toHaveBeenCalledTimes(credentialCalls);
       expect(fetchSpy).toHaveBeenCalledTimes(networkCalls);
       expect(logger.info.mock.calls.flat().join(" ")).not.toMatch(/mgc1_|graph\.microsoft\.com|\$skiptoken/);
@@ -130,7 +130,7 @@ describe("opaque continuation tool integration", () => {
         [tool, { ...params, rootLabel: "other_root", continuation: first.details.continuation }],
         [tool, { ...params, query: "different", continuation: first.details.continuation }],
       ] as const;
-      for (const [attackedTool, attackedParams] of attacks) expect((await attackedTool.execute("attack", attackedParams)).details).toEqual({ ok: false, error: "invalid_continuation" });
+      for (const [attackedTool, attackedParams] of attacks) expect((await attackedTool.execute("attack", attackedParams)).details).toMatchObject({ ok: false, error: "invalid_continuation" });
       expect(mocks.readCredential).toHaveBeenCalledTimes(credentialCalls);
       expect(fetchSpy).toHaveBeenCalledTimes(networkCalls);
 
@@ -155,7 +155,7 @@ describe("opaque continuation tool integration", () => {
       const credentialCalls = mocks.readCredential.mock.calls.length;
       const networkCalls = fetchSpy.mock.calls.length;
       const attacked = await tool.execute("attack", { ...original, startDateTime: "1900-01-01T00:00:00Z", endDateTime: "2100-01-01T00:00:00Z", continuation: first.details.continuation });
-      expect(attacked.details).toEqual({ ok: false, error: "invalid_continuation" });
+      expect(attacked.details).toMatchObject({ ok: false, error: "invalid_continuation" });
       expect(mocks.readCredential).toHaveBeenCalledTimes(credentialCalls);
       expect(fetchSpy).toHaveBeenCalledTimes(networkCalls);
     } finally {
@@ -194,7 +194,7 @@ describe("opaque continuation tool integration", () => {
             if (field === "action" || allowed.includes(field)) continue;
             const response = await tool.execute(`${service}:${action}:${field}`, { action, [field]: values[field] });
             const error = service === "calendar" && field === "calendarId" ? "invalid_calendar_target" : "invalid_read_parameter";
-            expect(response.details, `${service}:${action}:${field}`).toEqual({ ok: false, error });
+            expect(response.details, `${service}:${action}:${field}`).toMatchObject({ ok: false, error });
           }
         }
       }
@@ -247,7 +247,7 @@ describe("opaque continuation tool integration", () => {
       [factories[11]({ agentId: "main" }), { action: "list_messages", orderDirection: "asc" }, "invalid_order"],
       [factories[13]({ agentId: "main" }), { action: "search_tasks", listId: "list-id", searchFields: ["title"], status: "notStarted" }, "invalid_search"],
     ] as const;
-    for (const [tool, params, error] of cases) expect((await tool.execute("dependency", params)).details).toEqual({ ok: false, error });
+    for (const [tool, params, error] of cases) expect((await tool.execute("dependency", params)).details).toMatchObject({ ok: false, error });
     expect(mocks.readCredential).toHaveBeenCalledTimes(credentialCalls);
   });
 });

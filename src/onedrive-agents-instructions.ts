@@ -196,6 +196,22 @@ export class OneDriveAgentsSessionCache {
     return { sessions: sessions.size, roots: this.roots.size, entries, bytes };
   }
 
+  /** Approval preflight: inspect only previously discovered instructions; never fetch. */
+  cachedAcknowledgement(params: { sessionId: string; agentId: string; rootPin: string; relativeDirectories: string[]; acknowledgement?: string; now?: number }): "ready" | "discover" | "invalid" {
+    const root = this.roots.get(rootCacheKey(params.sessionId, params.agentId, params.rootPin));
+    if (!root || root.closed || (params.now ?? Date.now()) - root.lastAccess >= this.limits.ttlMs) return "discover";
+    const paths = candidatePathsForDirectories([...new Set(params.relativeDirectories)]);
+    const entries = paths.map((path) => root.entries.get(path));
+    if (entries.some((entry) => !entry)) return "discover";
+    if (!entries[0]!.present) return "ready";
+    const chain = entries.flatMap((entry) => entry!.present ? [{ relativePath: entry!.relativePath, bytes: entry!.bytes, sha256: entry!.sha256 }] : []);
+    if (params.acknowledgement !== undefined) {
+      const chainHash = createHash("sha256").update(JSON.stringify(chain)).digest("hex");
+      return receiptMatches(receiptForChain(root, chainHash), params.acknowledgement) ? "ready" : "invalid";
+    }
+    return chain.every((entry) => root.acknowledgedEntries.has(`${entry.relativePath}\u0000${entry.sha256}`)) ? "ready" : "discover";
+  }
+
   private prune(now: number): void {
     for (const root of [...this.roots.values()]) {
       if (root.inFlight.size === 0 && now - root.lastAccess >= this.limits.ttlMs) this.dispose(root, "instruction_cache_expired");

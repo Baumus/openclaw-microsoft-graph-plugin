@@ -76,7 +76,7 @@ describe("microsoft-graph plugin contract", () => {
     expect(metadata.tools.map((tool) => tool.name)).toEqual([
       "onedrive_search", "onedrive_list", "onedrive_read", "onedrive_download", "onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete",
       "outlook_calendar_read", "outlook_calendar_write", "outlook_mail_read", "outlook_mail_write", "microsoft_todo_read", "microsoft_todo_write",
-      "onedrive_agents_instructions",
+      "onedrive_agents_instructions", "microsoft_graph_capabilities",
     ]);
     expect(metadata.tools.every((tool) => tool.optional)).toBe(true);
     for (const tool of metadata.tools) expect(JSON.stringify(tool.parameters)).not.toMatch(/agent_?id|access_?token|refresh_?token|secret/i);
@@ -477,7 +477,7 @@ describe("microsoft-graph plugin contract", () => {
       for (const index of [4, 5]) {
         const tool = factories[index]({ agentId: "main" });
         const response = await tool.execute("x", { rootLabel: "synthetic_documents", relativePath: "a.bin", sourceMediaUri: "/tmp/a.bin" });
-        expect(response.details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+        expect(response.details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
       }
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
@@ -494,8 +494,8 @@ describe("microsoft-graph plugin contract", () => {
         const tool = factory({ agentId: "main" });
         return [tool.name, tool];
       }));
-      expect((await tools.onedrive_upload.execute("upload", { rootLabel: "synthetic_documents", relativePath: "large.bin", sourceMediaUri: "media://inbound/large.bin" })).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
-      expect((await tools.onedrive_update.execute("update", { rootLabel: "synthetic_documents", relativePath: "large.bin", sourceMediaUri: "media://inbound/large.bin" })).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+      expect((await tools.onedrive_upload.execute("upload", { rootLabel: "synthetic_documents", relativePath: "large.bin", sourceMediaUri: "media://inbound/large.bin" })).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
+      expect((await tools.onedrive_update.execute("update", { rootLabel: "synthetic_documents", relativePath: "large.bin", sourceMediaUri: "media://inbound/large.bin" })).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       fetchSpy.mockRestore();
@@ -596,7 +596,7 @@ describe("microsoft-graph plugin contract", () => {
       entry.register({ pluginConfig: { enabled: true }, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
       const tool = factories[12]({ agentId: "main" });
       const response = await tool.execute("x", { action: "reply_draft", messageId: "message", bodyText: "Reply", bodyHtml: "<p>Reply</p>" });
-      expect(response.details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+      expect(response.details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       fetchSpy.mockRestore();
@@ -626,12 +626,12 @@ describe("microsoft-graph plugin contract", () => {
     for (const [domain, toolName] of [["calendar", "outlook_calendar_write"], ["mail", "outlook_mail_write"], ["todo", "microsoft_todo_write"]] as const) {
       const schema = metadata.tools.find((tool) => tool.name === toolName)?.parameters as any;
       const schemaFields = Object.keys(schema.properties).sort();
-      const matrixFields = [...new Set([...Object.values(WRITE_ACTION_FIELDS[domain]).flat(), "chatConfirmed", "chatConfirmationToken"])].sort();
+      const matrixFields = [...new Set([...Object.values(WRITE_ACTION_FIELDS[domain]).flat(), "chatConfirmed", "chatConfirmationToken", "timeoutMs"])].sort();
       expect(matrixFields, domain).toEqual(schemaFields);
       for (const [action, allowed] of Object.entries(WRITE_ACTION_FIELDS[domain])) {
         const allowedFields = new Set(allowed);
         for (const field of matrixFields) {
-          if (field === "action" || field === "chatConfirmed" || field === "chatConfirmationToken" || allowedFields.has(field)) continue;
+          if (field === "action" || field === "chatConfirmed" || field === "chatConfirmationToken" || field === "timeoutMs" || allowedFields.has(field)) continue;
           expect(() => assertWriteActionFields({ action, [field]: true }, WRITE_ACTION_FIELDS[domain]), `${domain}:${action}:${field}`).toThrow("invalid_write_parameter");
         }
       }
@@ -640,7 +640,7 @@ describe("microsoft-graph plugin contract", () => {
 
   it("exhaustively classifies only explicit read tools as approval-free", () => {
     const metadata = getToolPluginMetadata(entry)!;
-    const readTools = new Set(["onedrive_search", "onedrive_list", "onedrive_read", "onedrive_download", "onedrive_agents_instructions", "outlook_calendar_read", "outlook_mail_read", "microsoft_todo_read"]);
+    const readTools = new Set(["onedrive_search", "onedrive_list", "onedrive_read", "onedrive_download", "onedrive_agents_instructions", "microsoft_graph_capabilities", "outlook_calendar_read", "outlook_mail_read", "microsoft_todo_read"]);
     const oneDriveWrites = new Set(["onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete"]);
     for (const tool of metadata.tools) {
       const actions = (tool.parameters as any).properties?.action?.anyOf?.map((value: any) => value.const) ?? [undefined];
@@ -687,7 +687,7 @@ describe("microsoft-graph plugin contract", () => {
   it("uses configurable native warning approval and process-scoped allow-always trust", async () => {
     const register = (pluginConfig: Record<string, unknown>) => {
       const hooks: Record<string, (...args: any[]) => Promise<any>> = {};
-      entry.register({ pluginConfig, registerTool: vi.fn(), on: (name: string, handler: any) => { hooks[name] = handler; }, logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+      entry.register({ pluginConfig: { enabled: true, policy: graphPolicyFixture(), ...pluginConfig }, registerTool: vi.fn(), on: (name: string, handler: any) => { hooks[name] = handler; }, logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
       return hooks;
     };
     const context = { agentId: "main", sessionId: "native-approval" };
@@ -715,7 +715,7 @@ describe("microsoft-graph plugin contract", () => {
     expect((await hooks.before_tool_call(warningEvent, context)).requireApproval).toBeTruthy();
     first.requireApproval.onResolution("allow-always");
     expect(await hooks.before_tool_call(warningEvent, context)).toEqual({ params: warningEvent.params });
-    expect((await hooks.before_tool_call({ ...warningEvent, toolCallId: "other-agent-call" }, { ...context, agentId: "other" })).requireApproval).toBeTruthy();
+    expect(await hooks.before_tool_call({ ...warningEvent, toolCallId: "other-agent-call" }, { ...context, agentId: "other" })).toEqual({ block: true, blockReason: "access_denied" });
     expect((await hooks.before_tool_call({ ...warningEvent, toolCallId: "move-call", params: { action: "move", messageId: "message-1", destination: "archive" } }, context)).requireApproval).toBeTruthy();
     expect((await hooks.before_tool_call({ toolName: "microsoft_todo_write", toolCallId: "todo-call", params: { action: "create_list", title: "List" } }, context)).requireApproval).toBeTruthy();
 
@@ -766,7 +766,7 @@ describe("microsoft-graph plugin contract", () => {
     { action: "send_draft", messageId: "draft-1" },
   ])("blocks $action approval when the host omits toolCallId", async (params) => {
     expect(await beforeMicrosoftGraphToolCall(
-      {},
+      { enabled: true, policy: graphPolicyFixture() },
       { toolName: "outlook_mail_write", params },
       { agentId: "main", sessionId: "missing-tool-call-id" },
     )).toEqual({ block: true, blockReason: "approval_context_tool_call_id_required" });
@@ -776,7 +776,7 @@ describe("microsoft-graph plugin contract", () => {
     const hooks: Record<string, (...args: any[]) => Promise<any> | any> = {};
     const factories: Array<(context: any) => any> = [];
     entry.register({
-      pluginConfig: {},
+      pluginConfig: { enabled: true, policy: graphPolicyFixture() },
       registerTool: (factory: any) => factories.push(factory),
       on: (name: string, handler: any) => { hooks[name] = handler; },
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -789,20 +789,20 @@ describe("microsoft-graph plugin contract", () => {
     const params = { action: "mark_read", messageId: "message-1", isRead: true };
     const approval = await hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: "single-use-call", params }, context);
     expect(approval.requireApproval).toMatchObject({ severity: "warning" });
-    expect((await tools.outlook_mail_write.execute("single-use-call", params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+    expect((await tools.outlook_mail_write.execute("single-use-call", params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
     approval.requireApproval.onResolution("allow-once");
 
-    expect((await tools.outlook_mail_write.execute("", params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
-    expect((await tools.outlook_mail_write.execute("wrong-call", params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
-    expect((await tools.outlook_mail_write.execute("single-use-call", params)).details).toEqual({ ok: false, error: "connector_disabled" });
-    expect((await tools.outlook_mail_write.execute("single-use-call", params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+    expect((await tools.outlook_mail_write.execute("", params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
+    expect((await tools.outlook_mail_write.execute("wrong-call", params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
+    expect((await tools.outlook_mail_write.execute("single-use-call", params)).details).toMatchObject({ ok: false, error: "credential_vault_unavailable" });
+    expect((await tools.outlook_mail_write.execute("single-use-call", params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
   });
 
   it.each(["deny", "timeout", "cancelled"] as const)("does not bind execution after native approval resolution %s", async (decision) => {
     const hooks: Record<string, (...args: any[]) => Promise<any> | any> = {};
     const factories: Array<(context: any) => any> = [];
     entry.register({
-      pluginConfig: {},
+      pluginConfig: { enabled: true, policy: graphPolicyFixture() },
       registerTool: (factory: any) => factories.push(factory),
       on: (name: string, handler: any) => { hooks[name] = handler; },
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -814,7 +814,7 @@ describe("microsoft-graph plugin contract", () => {
     const approval = await hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId, params }, context);
     approval.requireApproval.onResolution(decision);
 
-    expect((await tool.execute(toolCallId, params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+    expect((await tool.execute(toolCallId, params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
   });
 
   it.each(["drive_id", "item_id"] as const)("binds approved OneDrive mutations to the canonical %s", async (identityField) => {
@@ -842,12 +842,13 @@ describe("microsoft-graph plugin contract", () => {
     approval.requireApproval.onResolution("allow-once");
 
     root[identityField] = `${root[identityField]}-changed`;
-    expect((await tools.onedrive_metadata_update.execute(toolCallId, params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+    expect((await tools.onedrive_metadata_update.execute(toolCallId, params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
   });
 
   it("renders privacy-minimized action, target, and risk details in native approvals", async () => {
     const policy = graphPolicyFixture();
     const root = policy.services.onedrive.allowed_roots[0];
+    policy.services.calendar.agents.main.resources!.push("calendar-1", ...["a", "b", "c"].map((letter) => `calendar-${letter.repeat(200)}`));
     delete root.agents_instructions;
     root.permissions = { read: true, write: true, delete: true };
     root.agents.main.permissions = { read: true, write: true, delete: true };
@@ -914,7 +915,7 @@ describe("microsoft-graph plugin contract", () => {
     await rm(workspaceDir, { recursive: true, force: true });
   });
 
-  it("offers the required native decisions for every declared mutation action", async () => {
+  it("offers native decisions only after mutation preflight", async () => {
     const policy = graphPolicyFixture();
     const root = policy.services.onedrive.allowed_roots[0];
     delete root.agents_instructions;
@@ -957,6 +958,11 @@ describe("microsoft-graph plugin contract", () => {
         const params = oneDriveParams[tool.name] ?? calendarParams ?? { action };
         const level = classifyApproval(tool.name, params);
         const result = await hooks.before_tool_call({ toolName: tool.name, toolCallId: `all-approvals-${tool.name}-${action ?? "call"}`, params }, context);
+        if (result.block) {
+          expect(result.requireApproval).toBeUndefined();
+          expect(result.blockReason).toMatch(/^(invalid_|unsupported_|access_denied|onedrive_agents_instructions_required)/);
+          continue;
+        }
         expect(result.requireApproval, `${tool.name}:${action ?? "call"}`).toMatchObject(level === "critical"
           ? { severity: "critical", allowedDecisions: ["allow-once", "deny"] }
           : { severity: "warning", allowedDecisions: ["allow-once", "allow-always", "deny"] });
@@ -999,7 +1005,7 @@ describe("microsoft-graph plugin contract", () => {
     credentialReader.mockClear(); tokenExchange.mockClear(); candidateReader.mockClear();
     const criticalParams = { rootLabel: root.label, relativePath: "folder/file.txt" };
     const critical = await beforeMicrosoftGraphToolCall(config, { toolName: "onedrive_delete", toolCallId: "managed-critical", params: criticalParams }, context, { ...dependencies, cache: new OneDriveAgentsSessionCache() });
-    expect(critical).toMatchObject({ requireApproval: { severity: "critical", allowedDecisions: ["allow-once", "deny"] } });
+    expect(critical).toEqual({ block: true, blockReason: "onedrive_agents_instructions_required" });
     expect(credentialReader).not.toHaveBeenCalled();
     expect(tokenExchange).not.toHaveBeenCalled();
     expect(candidateReader).not.toHaveBeenCalled();
@@ -1020,7 +1026,7 @@ describe("microsoft-graph plugin contract", () => {
     })).toThrow("invalid_datetime_timezone");
 
     const hooks: Record<string, (...args: any[]) => Promise<any>> = {};
-    entry.register({ pluginConfig: {}, registerTool: vi.fn(), on: (name: string, handler: any) => { hooks[name] = handler; }, logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+    entry.register({ pluginConfig: { enabled: true, policy: graphPolicyFixture() }, registerTool: vi.fn(), on: (name: string, handler: any) => { hooks[name] = handler; }, logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
     const approvalContext = { agentId: "main", sessionId: "session-timezone-alias", requester: { senderIsOwner: true, channel: "synthetic-channel" } };
     const intended = {
       action: "create",
@@ -1052,7 +1058,7 @@ describe("microsoft-graph plugin contract", () => {
     entry.register({ pluginConfig: { enabled: true, credentialVaultKey: randomBytes(32).toString("base64url"), policy: graphPolicyFixture() }, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
     const tool = factories[9]({ agentId: undefined });
     const response = await tool.execute("x", { action: "list_calendars" });
-    expect(response.details).toEqual({ ok: false, error: "trusted_agent_identity_required" });
+    expect(response.details).toMatchObject({ ok: false, error: "trusted_agent_identity_required" });
   });
 
   it("requires a stable session identity and rejects unauthorized AGENTS.md discovery before credentials or Graph", async () => {
@@ -1259,7 +1265,7 @@ describe("microsoft-graph plugin contract", () => {
     );
     expect(preflightBlocked).toEqual({ block: true, blockReason: "trusted_session_identity_required" });
     const missingSessionTool = factories.get("onedrive_agents_instructions")!({ agentId: "fixture-reader" });
-    expect((await missingSessionTool.execute("call", { rootLabel: "synthetic_documents", relativeDirectory: "" })).details).toEqual({ ok: false, error: "trusted_session_identity_required" });
+    expect((await missingSessionTool.execute("call", { rootLabel: "synthetic_documents", relativeDirectory: "" })).details).toMatchObject({ ok: false, error: "trusted_session_identity_required" });
 
     oneDriveAgentsSessionCache.clear();
     await oneDriveAgentsSessionCache.discover({ agentId: "fixture-reader", sessionId: "ended", rootPin: "pin", rootLabel: "root", relativeDirectory: "", load: async () => new TextEncoder().encode("root") });
@@ -1280,7 +1286,7 @@ describe("microsoft-graph plugin contract", () => {
         [factories[11]({ agentId: "main" }), { action: "list_messages", continuation: raw }],
         [factories[13]({ agentId: "main" }), { action: "list_lists", continuation: raw }],
       ] as const;
-      for (const [tool, params] of calls) expect((await tool.execute("x", params)).details).toEqual({ ok: false, error: "invalid_continuation" });
+      for (const [tool, params] of calls) expect((await tool.execute("x", params)).details).toMatchObject({ ok: false, error: "invalid_continuation" });
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       fetchSpy.mockRestore();
@@ -1292,7 +1298,7 @@ describe("microsoft-graph plugin contract", () => {
     entry.register({ pluginConfig: {}, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
     const tool = factories[9]({ agentId: "main" });
     const response = await tool.execute("x", { action: "list_calendars", calendarId: "fixture-calendar" });
-    expect(response.details).toEqual({ ok: false, error: "invalid_calendar_target" });
+    expect(response.details).toMatchObject({ ok: false, error: "invalid_calendar_target" });
   });
 
   it("rejects invalid calendar read dates and timezones before service or credential access", async () => {
@@ -1309,14 +1315,14 @@ describe("microsoft-graph plugin contract", () => {
         { action: "get_schedule", schedules: ["person@example.invalid"] },
       ];
       for (const base of bases) {
-        expect((await tool.execute("x", { ...base, startDateTime: malformed, endDateTime: valid })).details).toEqual({ ok: false, error: "invalid_datetime" });
-        expect((await tool.execute("x", { ...base, startDateTime: valid, endDateTime: malformed })).details).toEqual({ ok: false, error: "invalid_datetime" });
+        expect((await tool.execute("x", { ...base, startDateTime: malformed, endDateTime: valid })).details).toMatchObject({ ok: false, error: "invalid_datetime" });
+        expect((await tool.execute("x", { ...base, startDateTime: valid, endDateTime: malformed })).details).toMatchObject({ ok: false, error: "invalid_datetime" });
       }
       for (const base of bases.slice(0, 2)) {
-        expect((await tool.execute("x", { ...base, startDateTime: valid, endDateTime: "2026-03-01T11:00:00Z", timeZone: "Unsupported Synthetic Zone" })).details).toEqual({ ok: false, error: "invalid_datetime_timezone" });
+        expect((await tool.execute("x", { ...base, startDateTime: valid, endDateTime: "2026-03-01T11:00:00Z", timeZone: "Unsupported Synthetic Zone" })).details).toMatchObject({ ok: false, error: "invalid_datetime_timezone" });
       }
-      expect((await tool.execute("x", { action: "get_schedule", schedules: ["person@example.invalid"], startDateTime: "2026-03-01T10:00:00", endDateTime: "2026-03-01T11:00:00", timeZone: "Unsupported Synthetic Zone" })).details).toEqual({ ok: false, error: "invalid_datetime_timezone" });
-      expect((await tool.execute("x", { action: "get_event", eventId: "event", timeZone: "Unsupported Synthetic Zone" })).details).toEqual({ ok: false, error: "invalid_datetime_timezone" });
+      expect((await tool.execute("x", { action: "get_schedule", schedules: ["person@example.invalid"], startDateTime: "2026-03-01T10:00:00", endDateTime: "2026-03-01T11:00:00", timeZone: "Unsupported Synthetic Zone" })).details).toMatchObject({ ok: false, error: "invalid_datetime_timezone" });
+      expect((await tool.execute("x", { action: "get_event", eventId: "event", timeZone: "Unsupported Synthetic Zone" })).details).toMatchObject({ ok: false, error: "invalid_datetime_timezone" });
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       fetchSpy.mockRestore();
@@ -1328,7 +1334,7 @@ describe("microsoft-graph plugin contract", () => {
     entry.register({ pluginConfig: {}, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
     const tool = factories[10]({ agentId: "main" });
     const response = await tool.execute("x", { action: "respond", eventId: "event", response: "forward" });
-    expect(response.details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+    expect(response.details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
   });
 
   it("blocks mutations to shared or non-owned To Do lists", () => {

@@ -195,7 +195,7 @@ describe.each([
     };
 
     expect(await hooks.before_tool_call({ toolName, params }, context)).toEqual({ block: true, blockReason: "invalid_source_fingerprint" });
-    expect((await tools[toolName].execute("wrong", params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+    expect((await tools[toolName].execute("wrong", params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
     expect(readCredential).not.toHaveBeenCalled();
     expect(exchangeRefreshToken).not.toHaveBeenCalled();
 
@@ -225,7 +225,7 @@ describe.each([
     await rename(sourcePath, `${sourcePath}.approved`);
     await writeFile(sourcePath, replacementBytes);
 
-    expect((await tools[toolName].execute("replaced", params)).details).toEqual({ ok: false, error: "invalid_source_fingerprint" });
+    expect((await tools[toolName].execute("replaced", params)).details).toMatchObject({ ok: false, error: "invalid_source_fingerprint" });
     expect(readCredential).not.toHaveBeenCalled();
     expect(exchangeRefreshToken).not.toHaveBeenCalled();
   });
