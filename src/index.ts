@@ -553,8 +553,14 @@ export function callerCapabilities(config: RuntimeConfig, agentId: string | unde
   const services = Object.fromEntries((["calendar", "mail", "todo"] as const).map((service) => {
     const grant = policy.services[service].agents[agentId];
     const resources = grant?.resources ?? (grant ? ["me"] : []);
-    const executable = service === "calendar" || resources.includes("me");
-    return [service, { actions: executable ? grant?.operations ?? [] : [], resources: executable ? resources : [], ...(grant && !executable ? { limitation: "This service uses /me; this caller has no executable me grant. Ask the policy owner for a me grant if needed." } : {}) }];
+    const meOnly = service !== "calendar";
+    const executable = !meOnly || resources.includes("me");
+    const unsupportedResources = meOnly && resources.some((resource) => resource !== "me");
+    const advertisedResources = executable ? (meOnly ? ["me"] : resources) : [];
+    const limitation = unsupportedResources
+      ? executable ? "This service uses /me; other resource grants are unsupported." : "This service uses /me; this caller has no executable me grant. Ask the policy owner for a me grant if needed."
+      : undefined;
+    return [service, { actions: executable ? grant?.operations ?? [] : [], resources: advertisedResources, ...(limitation ? { limitation } : {}) }];
   }));
   return { ok: true, roots, services, prerequisites: ["Operator-managed Microsoft sign-in and credential vault must be ready; this read-only tool does not check credentials or connect to Graph.", "Discover exact IDs with read tools before writes.", "Native approval may be required for writes; caller policy remains authoritative."] };
 }

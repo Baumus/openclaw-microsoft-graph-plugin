@@ -114,4 +114,15 @@ describe("agent-facing Microsoft Graph contracts", () => {
     expect(result.services.todo).toMatchObject({ actions: [], resources: [], limitation: expect.stringContaining("me grant") });
     expect(JSON.stringify(result)).not.toMatch(/other-mailbox|other-list/);
   });
+
+  it("projects only executable me resources from mixed Mail and To Do grants without disclosing foreign resources", () => {
+    const policy = graphPolicyFixture();
+    policy.services.mail.agents.main = { operations: ["read", "send"], resources: ["me", "other-mailbox"] };
+    policy.services.todo.agents.main = { operations: ["read", "create"], resources: ["other-list", "me"] };
+    policy.services.mail.agents.foreign = { operations: ["delete"], resources: ["foreign-mailbox"] };
+    const result = callerCapabilities({ enabled: true, policy }, "main") as any;
+    expect(result.services.mail).toMatchObject({ actions: ["read", "send"], resources: ["me"], limitation: expect.stringContaining("other resource grants are unsupported") });
+    expect(result.services.todo).toMatchObject({ actions: ["read", "create"], resources: ["me"], limitation: expect.stringContaining("other resource grants are unsupported") });
+    expect(JSON.stringify(result)).not.toMatch(/other-mailbox|other-list|foreign-mailbox|foreign/);
+  });
 });
