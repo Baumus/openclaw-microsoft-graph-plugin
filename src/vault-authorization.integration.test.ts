@@ -37,7 +37,7 @@ function registeredRuntime(agentId: string, workspaceDir?: string) {
   const hooks: Record<string, (...args: any[]) => Promise<any>> = {};
   entry.register({
     pluginConfig: { enabled: true, credentialVaultKey: key(), policy: vaultPolicy() },
-    runtime: { state: { resolveStateDir: () => "/synthetic-state-never-read-when-denied" } },
+    runtime: { state: { resolveStateDir: () => workspaceDir ?? "/synthetic-state-never-read-when-denied" } },
     registerTool: (factory: any) => factories.push(factory), on: (name: string, handler: any) => { hooks[name] = handler; },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   } as any);
