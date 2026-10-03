@@ -114,7 +114,19 @@ export class NativeApprovalSnapshotStore {
   }
 }
 
-const nativeApprovalSnapshots = new NativeApprovalSnapshotStore();
+/**
+ * The host can import this plugin bundle more than once in a single process, which previously gave
+ * the `before_tool_call` hook and the tool implementation two separate module-scoped stores: the
+ * hook recorded a snapshot into one instance and `consume` read an empty map in the other, so every
+ * approval-bearing mutation failed closed with `approval_context_invalid_or_changed`.
+ *
+ * A registry symbol is shared across module instances within the process, so the snapshot store is
+ * now realm-independent while remaining process-local (it is never persisted or shared between
+ * gateways). The execution-bound identity checks in `consume` are unchanged and still fail closed.
+ */
+const NATIVE_APPROVAL_SNAPSHOT_STORE_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-snapshots");
+const nativeApprovalSnapshots: NativeApprovalSnapshotStore = ((globalThis as Record<symbol, unknown>)[NATIVE_APPROVAL_SNAPSHOT_STORE_KEY] as NativeApprovalSnapshotStore | undefined)
+  ?? ((globalThis as Record<symbol, unknown>)[NATIVE_APPROVAL_SNAPSHOT_STORE_KEY] = new NativeApprovalSnapshotStore()) as NativeApprovalSnapshotStore;
 
 function stagingWorkspaceKey(agentId: string, sessionId: string): string {
   return JSON.stringify([agentId, sessionId]);
