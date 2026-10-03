@@ -1977,7 +1977,18 @@ async function prepareAttachmentWritePlan(p: any, workspaceDir: string | undefin
   return attachmentWritePlan(p, type, maxBytes, content);
 }
 
-function boundedAttachmentSummary(item: unknown, expected: AttachmentWritePlan) {
+/**
+ * Microsoft Graph reports `fileAttachment.size` including attachment overhead, so it is larger
+ * than the content that was uploaded. Requiring exact equality with the raw buffer length made
+ * every successful direct upload raise `invalid_provider_response` after the attachment had
+ * already been created, leaving callers with `mutationApplied: "unknown"` for a mutation that in
+ * fact applied. Measured example: 17273 bytes sent, 17537 reported.
+ *
+ * The bytes that were uploaded are already known locally, so the provider's size is informational.
+ * It is still required to be a safe integer and to be no smaller than what was sent, which keeps
+ * the original intent of rejecting a truncated or mismatched response.
+ */
+export function boundedAttachmentSummary(item: unknown, expected: AttachmentWritePlan) {
   if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("invalid_provider_response");
   const value = item as Record<string, unknown>;
   const text = (field: "id" | "name" | "contentType", maximum: number, fallback?: string) => {
@@ -1985,7 +1996,7 @@ function boundedAttachmentSummary(item: unknown, expected: AttachmentWritePlan) 
     if (typeof raw !== "string" || !raw || raw.length > maximum || /[\u0000-\u001f\u007f]/.test(raw)) throw new Error("invalid_provider_response");
     return raw;
   };
-  if (value.size !== undefined && (!Number.isSafeInteger(value.size) || Number(value.size) !== expected.size)) throw new Error("invalid_provider_response");
+  if (value.size !== undefined && (!Number.isSafeInteger(value.size) || Number(value.size) < expected.size)) throw new Error("invalid_provider_response");
   return { id: text("id", 512), name: text("name", 512, expected.name), contentType: text("contentType", 160, expected.contentType), size: expected.size };
 }
 
