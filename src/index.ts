@@ -67,7 +67,18 @@ type OneDriveApprovalRoot = Pick<AllowedRoot, "label" | "drive_id" | "item_id">;
 type Logger = { info: (message: string) => void };
 let activeRequests = 0;
 const continuationStore = new ContinuationStore();
-let resolvePluginStateDir: (() => string) | undefined;
+/**
+ * Shared for the same reason as the approval snapshot store: the host may import this bundle more
+ * than once per process, so a module-scoped resolver can be set in one instance and read as
+ * undefined in another.
+ */
+const PLUGIN_STATE_DIR_RESOLVER_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/plugin-state-dir-resolver");
+function getResolvePluginStateDir(): (() => string) | undefined {
+  return (globalThis as Record<symbol, unknown>)[PLUGIN_STATE_DIR_RESOLVER_KEY] as (() => string) | undefined;
+}
+function setResolvePluginStateDir(resolver: () => string): void {
+  (globalThis as Record<symbol, unknown>)[PLUGIN_STATE_DIR_RESOLVER_KEY] = resolver;
+}
 type OneDriveStagingWorkspaceContext = { agentId?: string; sessionId?: string; workspaceDir?: string };
 const oneDriveStagingWorkspaceContexts = new Map<string, { agentId: string; sessionId: string; workspaceDir: string }>();
 export type NativeApprovalSnapshot = { agentId?: string; sessionId?: string; toolName: string; params: string; oneDriveRoot?: OneDriveApprovalRoot };
@@ -159,7 +170,7 @@ function clearStagingWorkspaceSession(sessionId: string): void {
   for (const [key, entry] of oneDriveStagingWorkspaceContexts) if (entry.sessionId === sessionId) oneDriveStagingWorkspaceContexts.delete(key);
 }
 
-function stateDirForVault(): string | undefined { return resolvePluginStateDir?.(); }
+function stateDirForVault(): string | undefined { return getResolvePluginStateDir()?.(); }
 
 export type WarningApprovalScope = {
   agentId: string;
@@ -456,21 +467,43 @@ export function validateProtectedMediaUri(sourceMediaUri: unknown): string {
   return relativePath;
 }
 
+/**
+ * OpenClaw stores inbound media under the gateway STATE directory
+ * (`<stateDir>/media/inbound`), not under the agent workspace. Resolving the staging root from
+ * `workspaceDir` alone therefore pointed at a directory that does not exist, so every protected
+ * media read failed with `invalid_source_media_uri` and no attachment or upload could ever be
+ * sourced.
+ *
+ * Both candidates are returned, state directory first, so hosts that do place media under the
+ * workspace keep working. Each candidate is still opened through a confined root, so the
+ * traversal, symlink and hardlink protections are unchanged.
+ */
+function protectedMediaStagingRoots(workspaceDir: string | undefined): string[] {
+  const roots: string[] = [];
+  const stateDir = getResolvePluginStateDir()?.();
+  if (typeof stateDir === "string" && stateDir) roots.push(resolve(stateDir, "media/inbound"));
+  if (typeof workspaceDir === "string" && workspaceDir) roots.push(resolve(workspaceDir, "media/inbound"));
+  return roots;
+}
+
 export async function readProtectedMediaSource(sourceMediaUri: string, workspaceDir: string | undefined, maxBytes = ONEDRIVE_WRITE_MAX_BYTES): Promise<Buffer> {
-  if (typeof workspaceDir !== "string" || !workspaceDir || !Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("invalid_source_media_uri");
-  const stagingRoot = resolve(workspaceDir, "media/inbound");
-  const candidate = resolve(stagingRoot, validateProtectedMediaUri(sourceMediaUri));
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("invalid_source_media_uri");
+  const relativePath = validateProtectedMediaUri(sourceMediaUri);
+  const stagingRoots = protectedMediaStagingRoots(workspaceDir);
+  if (!stagingRoots.length) throw new Error("invalid_source_media_uri");
   try {
-    const opened = await readLocalFileFromRoots({
-      filePath: candidate,
-      roots: [stagingRoot],
-      label: "OneDrive upload staging",
-      hardlinks: "reject",
-      symlinks: "reject",
-      maxBytes,
-    });
-    if (!opened) throw new Error("invalid_source_media_uri");
-    return opened.buffer;
+    for (const stagingRoot of stagingRoots) {
+      const opened = await readLocalFileFromRoots({
+        filePath: resolve(stagingRoot, relativePath),
+        roots: [stagingRoot],
+        label: "OneDrive upload staging",
+        hardlinks: "reject",
+        symlinks: "reject",
+        maxBytes,
+      }).catch(() => undefined);
+      if (opened) return opened.buffer;
+    }
+    throw new Error("invalid_source_media_uri");
   } catch {
     throw new Error("invalid_source_media_uri");
   }
@@ -479,12 +512,19 @@ export async function readProtectedMediaSource(sourceMediaUri: string, workspace
 type ProtectedMediaUploadSource = DriveUploadSource & { close(): Promise<void> };
 
 async function openProtectedMediaUploadSource(sourceMediaUri: string, workspaceDir: string | undefined): Promise<ProtectedMediaUploadSource> {
-  if (typeof workspaceDir !== "string" || !workspaceDir) throw new Error("invalid_source_media_uri");
   const relativePath = validateProtectedMediaUri(sourceMediaUri);
+  const stagingRoots = protectedMediaStagingRoots(workspaceDir);
+  if (!stagingRoots.length) throw new Error("invalid_source_media_uri");
   let opened: OpenResult | undefined;
   try {
-    const staging = await secureRoot(resolve(workspaceDir, "media/inbound"), { hardlinks: "reject", symlinks: "reject" });
-    opened = await staging.open(relativePath, { hardlinks: "reject", symlinks: "reject" });
+    for (const stagingRoot of stagingRoots) {
+      try {
+        const staging = await secureRoot(stagingRoot, { hardlinks: "reject", symlinks: "reject" });
+        opened = await staging.open(relativePath, { hardlinks: "reject", symlinks: "reject" });
+        break;
+      } catch { opened = undefined; }
+    }
+    if (!opened) throw new Error("invalid_source_media_uri");
     const initial = opened.stat;
     if (!initial.isFile() || !Number.isSafeInteger(initial.size) || initial.size < 0) throw new Error("invalid_source_media_uri");
     if (initial.size > ONEDRIVE_WRITE_MAX_BYTES) throw new Error("provider_file_too_large");
@@ -3005,7 +3045,7 @@ plugin.register = (api) => {
     const policy = validatePolicy(runtimeConfig.policy);
   }
   const stateResolver = (api as unknown as { runtime?: { state?: { resolveStateDir?: (env?: NodeJS.ProcessEnv) => string } } }).runtime?.state?.resolveStateDir;
-  if (stateResolver) resolvePluginStateDir = () => stateResolver(process.env);
+  if (stateResolver) setResolvePluginStateDir(() => stateResolver(process.env));
   originalRegister(api);
   if (typeof (api as unknown as { registerCli?: unknown }).registerCli === "function" && stateResolver) {
     registerCredentialCli(api as unknown as Parameters<typeof registerCredentialCli>[0]);
