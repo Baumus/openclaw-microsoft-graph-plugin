@@ -83,7 +83,7 @@ describe("protected media write inputs", () => {
       sourceMediaUri: "media://inbound/missing.mp4",
       contentType: "video/mp4",
     });
-    expect(response.details).toEqual({ ok: false, error: "access_denied" });
+    expect(response.details).toMatchObject({ ok: false, error: "access_denied" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -108,7 +108,7 @@ describe("protected media write inputs", () => {
       sourceSha256: digest(fixtureBytes),
       sourceByteSize: fixtureBytes.byteLength,
     });
-    expect(response.details).toEqual({ ok: false, error: "invalid_source_media_uri" });
+    expect(response.details).toMatchObject({ ok: false, error: "invalid_source_media_uri" });
     expect(readCredential).not.toHaveBeenCalled();
     expect(exchangeRefreshToken).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -121,7 +121,7 @@ describe("protected media write inputs", () => {
   ])("authorizes %s before opening protected media", async (toolName, params) => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const response = await registeredTools("unauthorized-agent")[toolName].execute("unauthorized", params);
-    expect(response.details).toEqual({ ok: false, error: "access_denied" });
+    expect(response.details).toMatchObject({ ok: false, error: "access_denied" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -257,7 +257,7 @@ describe("protected media write inputs", () => {
       sourceByteSize: mp4Bytes.byteLength,
       contentType: "video/webm",
     });
-    expect(response.details).toEqual({ ok: false, error: "invalid_write_input" });
+    expect(response.details).toMatchObject({ ok: false, error: "invalid_write_input" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

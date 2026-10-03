@@ -14,6 +14,7 @@ This is not provider-side read/write isolation. A shared-credential compromise o
 
 | Tool / actions | Delegated scope requested | Policy operation | Approval class |
 | --- | --- | --- | --- |
+| `microsoft_graph_capabilities` | none; local policy projection only | effective caller grants | none |
 | `onedrive_search`, `onedrive_list`, `onedrive_read`, `onedrive_download`, `onedrive_agents_instructions` | `Files.Read` | OneDrive `read` | none |
 | `onedrive_upload`, `onedrive_update`, `onedrive_metadata_update`, `onedrive_create_folder` | `Files.ReadWrite` | OneDrive `write` | warning |
 | `onedrive_delete` | `Files.ReadWrite` | OneDrive `delete` | critical |

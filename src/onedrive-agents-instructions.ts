@@ -7,6 +7,8 @@ export const ONEDRIVE_AGENTS_MAX_FILE_BYTES = 32 * 1024;
 export const ONEDRIVE_AGENTS_MAX_OUTPUT_BYTES = 32 * 1024;
 export const ONEDRIVE_AGENTS_MAX_SERIALIZED_OUTPUT_BYTES = 40 * 1024;
 export const ONEDRIVE_AGENTS_MAX_PARALLEL = 4;
+/** Absolute age of discovered content, independent of the 12-hour idle cache TTL. */
+export const ONEDRIVE_AGENTS_CONTENT_MAX_AGE_MS = 60 * 60 * 1_000;
 
 export type OneDriveAgentsCacheLimits = {
   maxSessions: number;
@@ -47,6 +49,7 @@ type RootCache = {
   inFlight: Map<string, InFlightCandidate>;
   bytes: number;
   lastAccess: number;
+  firstContentLoadAt?: number;
   closed: boolean;
   abortController: AbortController;
   expiryTimer?: ReturnType<typeof setTimeout>;
@@ -196,6 +199,23 @@ export class OneDriveAgentsSessionCache {
     return { sessions: sessions.size, roots: this.roots.size, entries, bytes };
   }
 
+  /** Approval preflight: inspect only previously discovered instructions; never fetch. */
+  cachedAcknowledgement(params: { sessionId: string; agentId: string; rootPin: string; relativeDirectories: string[]; acknowledgement?: string; now?: number }): "ready" | "discover" | "invalid" {
+    const root = this.roots.get(rootCacheKey(params.sessionId, params.agentId, params.rootPin));
+    const now = params.now ?? Date.now();
+    if (!root || root.closed || now - root.lastAccess >= this.limits.ttlMs || (root.firstContentLoadAt !== undefined && now - root.firstContentLoadAt >= ONEDRIVE_AGENTS_CONTENT_MAX_AGE_MS)) return "discover";
+    const paths = candidatePathsForDirectories([...new Set(params.relativeDirectories)]);
+    const entries = paths.map((path) => root.entries.get(path));
+    if (entries.some((entry) => !entry)) return "discover";
+    if (!entries[0]!.present) return "ready";
+    const chain = entries.flatMap((entry) => entry!.present ? [{ relativePath: entry!.relativePath, bytes: entry!.bytes, sha256: entry!.sha256 }] : []);
+    if (params.acknowledgement !== undefined) {
+      const chainHash = createHash("sha256").update(JSON.stringify(chain)).digest("hex");
+      return receiptMatches(receiptForChain(root, chainHash), params.acknowledgement) ? "ready" : "invalid";
+    }
+    return chain.every((entry) => root.acknowledgedEntries.has(`${entry.relativePath}\u0000${entry.sha256}`)) ? "ready" : "discover";
+  }
+
   private prune(now: number): void {
     for (const root of [...this.roots.values()]) {
       if (root.inFlight.size === 0 && now - root.lastAccess >= this.limits.ttlMs) this.dispose(root, "instruction_cache_expired");
@@ -251,7 +271,9 @@ export class OneDriveAgentsSessionCache {
     this.prune(now);
     const key = rootCacheKey(sessionId, agentId, rootPin);
     const existing = this.roots.get(key);
-    if (existing) {
+    if (existing && existing.firstContentLoadAt !== undefined && now - existing.firstContentLoadAt >= ONEDRIVE_AGENTS_CONTENT_MAX_AGE_MS) {
+      this.dispose(existing, "instruction_content_expired");
+    } else if (existing) {
       this.touch(existing, now);
       return existing;
     }
@@ -280,6 +302,7 @@ export class OneDriveAgentsSessionCache {
     const pending = (async () => {
       const entry = decodeInstruction(relativePath, await load(relativePath, controller.signal));
       if (root.closed) throw new Error("instruction_session_ended");
+      if (root.firstContentLoadAt === undefined) root.firstContentLoadAt = root.lastAccess;
       root.entries.set(relativePath, entry);
       if (entry.present) root.bytes += entry.bytes;
       try { this.enforceLimits(-1); }

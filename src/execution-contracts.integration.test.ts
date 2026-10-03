@@ -103,7 +103,7 @@ describe("execution contracts", () => {
     });
     try {
       const response = await registeredTools().outlook_mail_write.execute("draft", params);
-      expect(response.details).toEqual({ ok: true, action, item: { id: `${action}-draft` } });
+      expect(response.details).toMatchObject({ ok: true, action, item: { id: `${action}-draft` } });
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       expect(String(fetchSpy.mock.calls[0][0])).toContain(`/messages/original/${endpoint}`);
       expect(JSON.parse(String(fetchSpy.mock.calls[0][1]?.body))).toHaveProperty("message.body");

@@ -159,6 +159,26 @@ describe.each([
     expect(graph).not.toHaveBeenCalled();
   });
 
+  it("derives and binds the fingerprint without agent-supplied fields", async () => {
+    const bytes = Buffer.from(`native-fingerprint-${toolName}`);
+    await writeFile(join(workspaceDir, "media", "inbound", "auto.pdf"), bytes);
+    const { hooks, tools, context } = runtime(true);
+    const params = {
+      rootLabel: "synthetic_documents",
+      relativePath: "SYNTHETIC_FOLDER/AUTO.pdf",
+      sourceMediaUri: "media://inbound/auto.pdf",
+      contentType: "application/pdf",
+    };
+    const approval = await hooks.before_tool_call({ toolName, toolCallId: "auto", params }, context);
+    expect(approval.params).toEqual({ ...params, sourceSha256: digest(bytes), sourceByteSize: bytes.byteLength });
+    expect(approval.requireApproval.description).toContain(digest(bytes));
+    expect(readCredential).not.toHaveBeenCalled();
+    approval.requireApproval.onResolution("allow-once");
+    const graph = graphSuccess(bytes, update);
+    expect((await tools[toolName].execute("auto", approval.params)).details).toMatchObject({ ok: true, source_sha256: digest(bytes), source_byte_size: bytes.byteLength });
+    expect(graph).toHaveBeenCalled();
+  });
+
   it("validates protected media and fingerprints before credentials when approvals are disabled", async () => {
     const bytes = Buffer.from(`synthetic-record-${toolName}`);
     await writeFile(join(workspaceDir, "media", "inbound", "wrong.pdf"), Buffer.alloc(bytes.byteLength, 0x7a));
@@ -175,7 +195,7 @@ describe.each([
     };
 
     expect(await hooks.before_tool_call({ toolName, params }, context)).toEqual({ block: true, blockReason: "invalid_source_fingerprint" });
-    expect((await tools[toolName].execute("wrong", params)).details).toEqual({ ok: false, error: "approval_context_invalid_or_changed" });
+    expect((await tools[toolName].execute("wrong", params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
     expect(readCredential).not.toHaveBeenCalled();
     expect(exchangeRefreshToken).not.toHaveBeenCalled();
 
@@ -205,7 +225,7 @@ describe.each([
     await rename(sourcePath, `${sourcePath}.approved`);
     await writeFile(sourcePath, replacementBytes);
 
-    expect((await tools[toolName].execute("replaced", params)).details).toEqual({ ok: false, error: "invalid_source_fingerprint" });
+    expect((await tools[toolName].execute("replaced", params)).details).toMatchObject({ ok: false, error: "invalid_source_fingerprint" });
     expect(readCredential).not.toHaveBeenCalled();
     expect(exchangeRefreshToken).not.toHaveBeenCalled();
   });

@@ -33,7 +33,10 @@ function registeredTools() {
     const tool = factory(context);
     return [tool.name, { ...tool, async execute(toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal) {
       const gate = await hooks.before_tool_call({ toolName: tool.name, toolCallId, params }, context);
-      if (gate?.block) return { details: { ok: false, error: gate.blockReason } };
+      if (gate?.block) {
+        expect(gate.requireApproval).toBeUndefined();
+        return { details: { ok: false, error: gate.blockReason } };
+      }
       gate?.requireApproval?.onResolution("allow-once");
       return tool.execute(toolCallId, gate?.params ?? params, signal);
     } }];
@@ -93,12 +96,14 @@ describe("pre-service mutation validation", () => {
   it.each(malformedMutations)("$tool:$action rejects before credentials, OAuth, or Graph", async ({ tool, params, error }) => {
     credential.readCredential.mockClear();
     credential.exchangeRefreshToken.mockClear();
+    credential.tokenForAuthorizedOperation.mockClear();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     try {
       const result = await registeredTools()[tool].execute("malformed", params);
-      expect(result.details).toEqual({ ok: false, error });
+      expect(result.details).toMatchObject({ ok: false, error });
       expect(credential.readCredential).not.toHaveBeenCalled();
       expect(credential.exchangeRefreshToken).not.toHaveBeenCalled();
+      expect(credential.tokenForAuthorizedOperation).not.toHaveBeenCalled();
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       fetchSpy.mockRestore();
