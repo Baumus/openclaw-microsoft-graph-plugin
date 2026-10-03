@@ -104,4 +104,14 @@ describe("agent-facing Microsoft Graph contracts", () => {
     expect(serialized).not.toMatch(/private-mailbox|foreign|synthetic-drive|synthetic-root|refreshToken|accessToken/);
     expect((await runtime(policy).tools.microsoft_graph_capabilities.execute("readiness", {})).details).toMatchObject({ ok: true, roots: expect.any(Array) });
   });
+
+  it("omits non-me Mail and To Do grants that their handlers cannot execute", () => {
+    const policy = graphPolicyFixture();
+    policy.services.mail.agents.main = { operations: ["send"], resources: ["other-mailbox"] };
+    policy.services.todo.agents.main = { operations: ["create"], resources: ["other-list"] };
+    const result = callerCapabilities({ enabled: true, policy }, "main") as any;
+    expect(result.services.mail).toMatchObject({ actions: [], resources: [], limitation: expect.stringContaining("me grant") });
+    expect(result.services.todo).toMatchObject({ actions: [], resources: [], limitation: expect.stringContaining("me grant") });
+    expect(JSON.stringify(result)).not.toMatch(/other-mailbox|other-list/);
+  });
 });

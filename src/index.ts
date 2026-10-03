@@ -552,7 +552,9 @@ export function callerCapabilities(config: RuntimeConfig, agentId: string | unde
   });
   const services = Object.fromEntries((["calendar", "mail", "todo"] as const).map((service) => {
     const grant = policy.services[service].agents[agentId];
-    return [service, { actions: grant?.operations ?? [], resources: grant?.resources ?? (grant ? ["me"] : []) }];
+    const resources = grant?.resources ?? (grant ? ["me"] : []);
+    const executable = service === "calendar" || resources.includes("me");
+    return [service, { actions: executable ? grant?.operations ?? [] : [], resources: executable ? resources : [], ...(grant && !executable ? { limitation: "This service uses /me; this caller has no executable me grant. Ask the policy owner for a me grant if needed." } : {}) }];
   }));
   return { ok: true, roots, services, prerequisites: ["Operator-managed Microsoft sign-in and credential vault must be ready; this read-only tool does not check credentials or connect to Graph.", "Discover exact IDs with read tools before writes.", "Native approval may be required for writes; caller policy remains authoritative."] };
 }
@@ -2608,12 +2610,11 @@ async function mailRead(config: RuntimeConfig, agentId: string | undefined, p: a
   }, "me", readOperationTimeout(config, p));
 }
 
-async function mailWrite(config: RuntimeConfig, agentId: string | undefined, workspaceDir: string | undefined, p: any, signal?: AbortSignal) {
+function planMailWrite(p: any) {
   assertWriteActionFields(p, WRITE_ACTION_FIELDS.mail);
   const operation = p.action === "send_draft" ? "send" : p.action === "move" ? "move" : p.action === "mark_read" ? "mark" : p.action === "delete" ? "delete" : p.action === "create_draft" || p.action.endsWith("_draft") ? "draft" : "update";
   const scope = p.action === "send_draft" ? "mail_send" : "mail_write";
   const replyForwardPlan = new Set(["reply_draft", "reply_all_draft", "forward_draft"]).has(p.action) ? mailReplyForwardPlan(p) : undefined;
-  let attachmentPlan: AttachmentWritePlan | undefined;
   const id = p.messageId !== undefined ? safeId(p.messageId) : undefined;
   if (p.action !== "create_draft" && !id) throw new Error("invalid_resource_id");
   const messagePlan = p.action === "create_draft" ? mailMessagePayload(p, true, true)
@@ -2625,6 +2626,12 @@ async function mailWrite(config: RuntimeConfig, agentId: string | undefined, wor
     ? ((p.destination === undefined) === (p.destinationFolderId === undefined) ? (() => { throw new Error("invalid_destination"); })() : { destinationId: p.destinationFolderId ?? p.destination })
     : undefined;
   if (p.action === "mark_read" && typeof p.isRead !== "boolean") throw new Error("invalid_read_state");
+  return { operation, scope, replyForwardPlan, id, messagePlan, destinationPlan };
+}
+
+async function mailWrite(config: RuntimeConfig, agentId: string | undefined, workspaceDir: string | undefined, p: any, signal?: AbortSignal) {
+  const { operation, scope, replyForwardPlan, id, messagePlan, destinationPlan } = planMailWrite(p);
+  let attachmentPlan: AttachmentWritePlan | undefined;
   return withService(config, agentId, "mail", operation, scope, signal, async (token, bounded) => {
     if (p.action === "create_draft") {
       return { ok: true, action: p.action, item: await graphRequest(token, "/me/messages", { method: "POST", body: messagePlan, signal: bounded }) };
@@ -2777,10 +2784,9 @@ function linkedResourcePayload(p: any, creating: boolean): Record<string, unknow
   return body;
 }
 
-async function todoWrite(config: RuntimeConfig, agentId: string | undefined, workspaceDir: string | undefined, p: any, signal?: AbortSignal) {
+function planTodoWrite(p: any) {
   assertWriteActionFields(p, WRITE_ACTION_FIELDS.todo);
   const operation = p.action.startsWith("create") || p.action.startsWith("add_") ? "create" : p.action.startsWith("delete") ? "delete" : "update";
-  let attachmentPlan: AttachmentWritePlan | undefined;
   const linkedPlan = p.action === "add_linked_resource" ? linkedResourcePayload(p, true) : p.action === "update_linked_resource" ? linkedResourcePayload(p, false) : undefined;
   const needsList = p.action !== "create_list";
   const needsTask = !new Set(["create_list", "update_list", "delete_list", "create_task"]).has(p.action);
@@ -2801,6 +2807,12 @@ async function todoWrite(config: RuntimeConfig, agentId: string | undefined, wor
   if (p.action === "update_checklist" || p.action === "delete_checklist") safeId(p.checklistItemId);
   if (p.action === "update_linked_resource" || p.action === "delete_linked_resource") safeId(p.linkedResourceId);
   if (p.action === "delete_attachment") safeId(p.attachmentId);
+  return { operation, linkedPlan, listId, taskId, taskPlan, checklistPlan };
+}
+
+async function todoWrite(config: RuntimeConfig, agentId: string | undefined, workspaceDir: string | undefined, p: any, signal?: AbortSignal) {
+  const { operation, linkedPlan, listId, taskId, taskPlan, checklistPlan } = planTodoWrite(p);
+  let attachmentPlan: AttachmentWritePlan | undefined;
   return withService(config, agentId, "todo", operation, "todo_write", signal, async (token, bounded) => {
     if (p.action === "create_list") return { ok: true, action: p.action, item: await graphRequest(token, "/me/todo/lists", { method: "POST", body: { displayName: p.title }, signal: bounded }) };
     const encodedListId = safeId(listId!);
@@ -2859,21 +2871,11 @@ export async function beforeMicrosoftGraphToolCall(
       if (plan.multiwritePlans) for (const operation of plan.multiwritePlans) authorizeOperation(policy, ctx.agentId, "calendar", operation.kind, operation.calendarId ?? "me");
       else authorizeOperation(policy, ctx.agentId, "calendar", plan.operation!, String(params.calendarId ?? "me"));
     } else if (event.toolName === "outlook_mail_write") {
-      assertWriteActionFields(params, WRITE_ACTION_FIELDS.mail);
-      if (params.action !== "create_draft") safeId(typeof params.messageId === "string" ? params.messageId : "");
-      if (params.action === "move" || params.action === "copy") {
-        if ((params.destination === undefined) === (params.destinationFolderId === undefined)) throw new Error("invalid_destination");
-      }
-      const action = String(params.action);
-      const operation = action === "send_draft" ? "send" : action === "move" ? "move" : action === "mark_read" ? "mark" : action === "delete" ? "delete" : action === "create_draft" || action.endsWith("_draft") ? "draft" : "update";
-      authorizeOperation(validatePolicy(runtimeConfig.policy), ctx.agentId, "mail", operation);
+      const plan = planMailWrite(params);
+      authorizeOperation(validatePolicy(runtimeConfig.policy), ctx.agentId, "mail", plan.operation);
     } else if (event.toolName === "microsoft_todo_write") {
-      assertWriteActionFields(params, WRITE_ACTION_FIELDS.todo);
-      const action = String(params.action);
-      if (action !== "create_list") safeId(typeof params.listId === "string" ? params.listId : "");
-      if (!["create_list", "update_list", "delete_list", "create_task"].includes(action)) safeId(typeof params.taskId === "string" ? params.taskId : "");
-      const operation = action.startsWith("create") || action.startsWith("add_") ? "create" : action.startsWith("delete") ? "delete" : "update";
-      authorizeOperation(validatePolicy(runtimeConfig.policy), ctx.agentId, "todo", operation);
+      const plan = planTodoWrite(params);
+      authorizeOperation(validatePolicy(runtimeConfig.policy), ctx.agentId, "todo", plan.operation);
     }
   } catch (error) { return { block: true, blockReason: errorCode(error) }; }
   let authorizedRoot: OneDriveApprovalRoot | undefined;

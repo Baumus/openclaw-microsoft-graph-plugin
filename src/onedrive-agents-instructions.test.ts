@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ONEDRIVE_AGENTS_MAX_DEPTH,
   ONEDRIVE_AGENTS_MAX_FILE_BYTES,
+  ONEDRIVE_AGENTS_CONTENT_MAX_AGE_MS,
   ONEDRIVE_AGENTS_MAX_SERIALIZED_OUTPUT_BYTES,
   OneDriveAgentsSessionCache,
 } from "./onedrive-agents-instructions.js";
@@ -10,6 +11,28 @@ const encoded = (value: string) => new TextEncoder().encode(value);
 const base = { agentId: "agent-a", sessionId: "session-a", rootPin: "drive:item", rootLabel: "workspace" };
 
 describe("OneDrive AGENTS.md session cache", () => {
+  it("does not renew absolute content freshness through frequent discovery", async () => {
+    const cache = new OneDriveAgentsSessionCache();
+    let content = "version-one";
+    let reads = 0;
+    const load = async () => { reads += 1; return encoded(content); };
+    const first = await cache.discover({ ...base, relativeDirectory: "", load, now: 1_000 });
+    const ack = first.acknowledgement!;
+    for (let minute = 10; minute < 60; minute += 10) {
+      await cache.discover({ ...base, relativeDirectory: "", acknowledgement: ack, load, now: 1_000 + minute * 60_000 });
+    }
+    expect(cache.cachedAcknowledgement({ ...base, relativeDirectories: [""], acknowledgement: ack, now: 1_000 + ONEDRIVE_AGENTS_CONTENT_MAX_AGE_MS - 1 })).toBe("ready");
+    expect(cache.cachedAcknowledgement({ ...base, relativeDirectories: [""], acknowledgement: ack, now: 1_000 + ONEDRIVE_AGENTS_CONTENT_MAX_AGE_MS })).toBe("discover");
+    content = "version-two";
+    await expect(cache.discover({ ...base, relativeDirectory: "", acknowledgement: ack, load, now: 1_000 + ONEDRIVE_AGENTS_CONTENT_MAX_AGE_MS }))
+      .rejects.toThrow("instruction_acknowledgement_invalid");
+    const refreshed = await cache.discover({ ...base, relativeDirectory: "", load, now: 1_000 + ONEDRIVE_AGENTS_CONTENT_MAX_AGE_MS + 1 });
+    expect(refreshed.instructions?.[0].content).toBe("version-two");
+    expect(refreshed.acknowledgement).not.toBe(ack);
+    await cache.discover({ ...base, relativeDirectory: "", acknowledgement: refreshed.acknowledgement, load, now: 1_000 + ONEDRIVE_AGENTS_CONTENT_MAX_AGE_MS + 2 });
+    expect(cache.cachedAcknowledgement({ ...base, relativeDirectories: [""], acknowledgement: refreshed.acknowledgement, now: 1_000 + ONEDRIVE_AGENTS_CONTENT_MAX_AGE_MS + 2 })).toBe("ready");
+    expect(reads).toBe(2);
+  });
   it("requires stable session and agent identities", async () => {
     const cache = new OneDriveAgentsSessionCache();
     const load = async () => encoded("root");

@@ -45,6 +45,8 @@ Graph responses, continuation URLs, upload-session URLs, attachment metadata, an
 
 This optional plugin feature applies OpenClaw's standard `AGENTS.md` instruction format to a policy-pinned OneDrive root. It is separate from, and never imports, the host agent's local workspace instructions. Remote content remains untrusted unless an operator explicitly sets `agents_instructions: trusted` after verifying who can write to that root, and it cannot override higher-priority OpenClaw instructions, host policy, or approval requirements.
 
+Discovered instruction content has a one-hour absolute freshness limit, independent of the 12-hour idle cache limit. Repeated reads do not extend content freshness. Once it expires, approval validation makes no Graph request and requires rediscovery; execution rediscovery reloads the chain, invalidates the old receipt, and requires acknowledgement of the fresh content. The receipt remains bound to agent, session, and policy-pinned root.
+
 ## State and data handling
 
 - OAuth access-token, continuation, warning approval trust, and OneDrive instruction caches are process-local and bounded. Warning `allow-always` trust is capped at 1,024 scopes, keyed by authenticated agent ID, exact tool name, and normalized action; it is never persisted and resets on plugin reload or process restart. The token cache is a 128-entry expiry-aware LRU keyed to durable vault identity, capped at one hour of residency with a 60-second expiry skew.
