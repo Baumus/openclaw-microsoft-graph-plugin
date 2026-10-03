@@ -535,8 +535,8 @@ const sensitivity = Type.Optional(Type.Union([Type.Literal("normal"), Type.Liter
 const showAs = Type.Optional(Type.Union([Type.Literal("free"), Type.Literal("tentative"), Type.Literal("busy"), Type.Literal("oof"), Type.Literal("workingElsewhere"), Type.Literal("unknown")]));
 const chatConfirmed = Type.Optional(Type.Boolean({ description: "Deprecated compatibility field. It is ignored and can never authorize execution; OpenClaw-native approval is authoritative." }));
 const chatConfirmationToken = Type.Optional(Type.String({ minLength: 48, maxLength: 48, pattern: "^mgw1_[A-Za-z0-9_-]{43}$", description: "Deprecated compatibility field. It is ignored and can never authorize execution; OpenClaw-native approval is authoritative." }));
-const sourceSha256 = Type.String({ minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$", description: "Required SHA-256 of the exact protected-media bytes approved for upload. Execution fails closed if the artifact no longer matches." });
-const sourceByteSize = Type.Integer({ minimum: 0, maximum: ONEDRIVE_WRITE_MAX_BYTES, description: "Required byte size of the exact protected-media bytes approved for upload. Execution fails closed if the artifact no longer matches." });
+const sourceSha256 = Type.Optional(Type.String({ minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$", description: "Optional SHA-256 assertion for the protected artifact. The plugin calculates the actual digest before approval; if supplied, this value must match." }));
+const sourceByteSize = Type.Optional(Type.Integer({ minimum: 0, maximum: ONEDRIVE_WRITE_MAX_BYTES, description: "Optional byte-size assertion for the protected artifact. The plugin calculates the actual size before approval; if supplied, this value must match." }));
 
 const attendeeInput = Type.Object({
   address: email,
@@ -1129,14 +1129,14 @@ async function openVerifiedProtectedMediaUploadSource(sourceMediaUri: string, wo
   throw new Error("invalid_source_fingerprint");
 }
 
-async function verifyOneDriveWriteApprovalArtifact(toolName: string, params: Record<string, unknown>, context: OneDriveStagingWorkspaceContext): Promise<void> {
-  if (toolName !== "onedrive_upload" && toolName !== "onedrive_update") return;
-  const source = await openVerifiedProtectedMediaUploadSource(
-    String(params.sourceMediaUri ?? ""),
-    stagingWorkspaceFor(context),
-    requiredSourceFingerprint(params),
-  );
-  await source.close();
+async function bindOneDriveWriteArtifact(toolName: string, params: Record<string, unknown>, context: OneDriveStagingWorkspaceContext): Promise<Record<string, unknown>> {
+  if (toolName !== "onedrive_upload" && toolName !== "onedrive_update") return params;
+  const assertion = sourceFingerprint(params);
+  const source = await openProtectedMediaUploadSource(String(params.sourceMediaUri ?? ""), stagingWorkspaceFor(context));
+  try {
+    if (assertion && (assertion.sourceSha256 !== source.sha256 || assertion.sourceByteSize !== source.size)) throw new Error("invalid_source_fingerprint");
+    return { ...params, sourceSha256: source.sha256, sourceByteSize: source.size };
+  } finally { await source.close(); }
 }
 
 /** Canonical semantic effect for content-identity-bound OneDrive writes. */
@@ -1378,7 +1378,7 @@ const plugin = defineToolPlugin({
       agentsInstructionAck,
       chatConfirmed,
       chatConfirmationToken,
-      sourceMediaUri: Type.String({ minLength: MEDIA_INBOUND_URI_PREFIX.length + 1, maxLength: SOURCE_MEDIA_URI_MAX_LENGTH, pattern: "^media://inbound/[^?#\\\\]+$", description: "Canonical protected OpenClaw inbound media artifact URI." }),
+      sourceMediaUri: Type.String({ minLength: MEDIA_INBOUND_URI_PREFIX.length + 1, maxLength: SOURCE_MEDIA_URI_MAX_LENGTH, pattern: "^media://inbound/[^?#\\\\]+$", description: "Required media://inbound/... artifact URI. Stage the file first. The plugin fingerprints the bytes before approval and verifies them again before transfer; host paths are rejected." }),
       sourceSha256,
       sourceByteSize,
       contentType: Type.Optional(Type.String({ maxLength: 160, default: "application/octet-stream" })),
@@ -1423,7 +1423,7 @@ const plugin = defineToolPlugin({
         operation: "download",
         ...await downloadOneDriveFile({ root, relativePath: normalizeRelativePath(relativePath), token, signal: bounded }),
       }), undefined, config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS)) }),
-      tool({ name: "onedrive_upload", label: "OneDrive Upload", optional: true, description: "Create one file without overwrite from protected inbound media, using a Graph upload session above 250 MB.", parameters: uploadSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_upload", uploadSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
+      tool({ name: "onedrive_upload", label: "OneDrive Upload", optional: true, description: "Create one file without overwrite. Pass an authorized rootLabel, relativePath, and existing media://inbound/... sourceMediaUri. The plugin computes SHA-256 and size before native approval and rechecks them before transfer. Optional fingerprint fields are assertions, not prerequisites. A blocked preflight means no approval was requested; chat confirmation tokens cannot authorize the action. Uses a Graph upload session above 250 MB.", parameters: uploadSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_upload", uploadSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
         void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
         validateProtectedMediaUri(sourceMediaUri);
@@ -1441,7 +1441,7 @@ const plugin = defineToolPlugin({
           );
         } finally { await source?.close(); }
       }, config)) }),
-      tool({ name: "onedrive_update", label: "OneDrive Update", optional: true, description: "Replace one file from protected inbound media with ETag protection, using a Graph upload session above 250 MB.", parameters: writeSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_update", writeSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
+      tool({ name: "onedrive_update", label: "OneDrive Update", optional: true, description: "Replace one file with ETag protection. Pass an authorized rootLabel, relativePath, and existing media://inbound/... sourceMediaUri. The plugin computes SHA-256 and size before native approval and rechecks them before transfer. Optional fingerprint fields are assertions, not prerequisites. A blocked preflight means no approval was requested. Uses a Graph upload session above 250 MB.", parameters: writeSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_update", writeSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
         void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
         validateProtectedMediaUri(sourceMediaUri);
@@ -1471,7 +1471,7 @@ const plugin = defineToolPlugin({
         validateDriveFolderInput(name);
         return withDrive(config, toolContext.agentId, rootLabel, "write", signal, (root, token, bounded) => driveCreateFolder(root, parentPath, name, conflictBehavior, token, bounded));
       }, config) }),
-      tool({ name: "onedrive_delete", label: "OneDrive Delete", optional: true, description: "Delete one item after exact grants and call-bound approval.", parameters: deleteSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_delete", deleteSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, agentsInstructionAck }, signal) => {
+      tool({ name: "onedrive_delete", label: "OneDrive Delete", optional: true, description: "Delete exactly one relativePath in an authorized root. Always requires OpenClaw-native critical allow-once approval bound to this call; a chat token cannot authorize it. If approval fails, including missing operator.approvals scope, nothing is deleted. Repair the approval route and request fresh approval for the exact target.", parameters: deleteSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_delete", deleteSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, agentsInstructionAck }, signal) => {
         const path = normalizeRelativePath(relativePath);
         if (!path) throw new Error("invalid_relative_path");
         await enforceOneDriveInstructionExecution(config, { agentId: toolContext.agentId, sessionId: toolContext.sessionId }, "onedrive_delete", { rootLabel, relativePath: path, agentsInstructionAck }, signal);
@@ -2771,9 +2771,12 @@ export async function beforeMicrosoftGraphToolCall(
   approvalSnapshots = nativeApprovalSnapshots,
 ) {
   const severity = classifyApproval(event.toolName, event.params);
-  const params = callParams(event.params);
+  let params = callParams(event.params);
   let authorizedRoot: OneDriveApprovalRoot | undefined;
   try { authorizedRoot = authorizeOneDriveMutationPreflight(runtimeConfig, ctx.agentId, event.toolName, params); }
+  catch (error) { return { block: true, blockReason: errorCode(error) }; }
+
+  try { params = await bindOneDriveWriteArtifact(event.toolName, params, ctx); }
   catch (error) { return { block: true, blockReason: errorCode(error) }; }
 
   let expectedRoot: OneDriveApprovalRoot | undefined;
@@ -2782,8 +2785,6 @@ export async function beforeMicrosoftGraphToolCall(
     catch (error) { return { block: true, blockReason: errorCode(error) }; }
   }
 
-  try { await verifyOneDriveWriteApprovalArtifact(event.toolName, params, ctx); }
-  catch (error) { return { block: true, blockReason: errorCode(error) }; }
   if (severity !== "none" && !event.toolCallId) return { block: true, blockReason: "approval_context_tool_call_id_required" };
 
   const bindExecutionSnapshot = () => {
