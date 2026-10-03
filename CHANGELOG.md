@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.8.1 - 2026-10-03
+
+- Build and validate this release with OpenClaw 2026.9.8; keep the compatible host floor at 2026.9.6.
+- Fix native approval snapshots across plugin module instances and resolve protected inbound media from the authoritative Gateway state root, preventing substituted or unreachable attachment inputs. Thanks to [@BrewingCoder](https://github.com/BrewingCoder) for the report and initial fix in [#22](https://github.com/Baumus/openclaw-microsoft-graph-plugin/pull/22).
+- Accept a successful Microsoft Graph `201 Created` attachment response with an attachment ID regardless of provider-reported `size`. Report the locally known uploaded byte count without implying a content readback, and avoid misleading retry guidance after creation. Thanks to [@BrewingCoder](https://github.com/BrewingCoder) for the report and initial fix in [#24](https://github.com/Baumus/openclaw-microsoft-graph-plugin/pull/24).
+
 ## 3.8.0 - 2026-10-03
 
 - Make every agent tool self-describing at runtime and add caller-scoped, read-only `microsoft_graph_capabilities` discovery without credentials or Graph calls.
