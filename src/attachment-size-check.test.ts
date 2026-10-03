@@ -2,16 +2,14 @@ import { describe, expect, it } from "vitest";
 import { boundedAttachmentSummary } from "./index.js";
 
 /**
- * Regression: Microsoft Graph reports `fileAttachment.size` including attachment overhead, so it
- * is larger than the uploaded content. The response check required exact equality with the raw
- * buffer length, so every successful direct upload raised `invalid_provider_response` after the
- * attachment had already been created, reporting `mutationApplied: "unknown"` for a mutation that
- * had applied. Measured against a live tenant: 17273 bytes sent, 17537 reported.
+ * A successful attachment POST must not become an apparent failure because Graph's response
+ * metadata uses a different size convention. A 201 receipt with a usable ID is authoritative;
+ * the local content length remains the size exposed to callers.
  */
 describe("bounded attachment summary size handling", () => {
   const plan = {
     mode: "direct" as const,
-    name: "tamp-observer-ui-design-brief.md",
+    name: "synthetic-brief.md",
     contentType: "text/markdown",
     content: Buffer.alloc(0),
     size: 17273,
@@ -37,22 +35,12 @@ describe("bounded attachment summary size handling", () => {
     expect(summary.size).toBe(plan.size);
   });
 
-  it("still rejects a smaller size, which would indicate truncation", () => {
-    expect(() => boundedAttachmentSummary(
-      { id: "attachment-1", name: plan.name, contentType: plan.contentType, size: plan.size - 1 },
+  it.each([plan.size - 1, 17537.5, "17537", null])("ignores informational provider size %s", (reportedSize) => {
+    const summary = boundedAttachmentSummary(
+      { id: "attachment-1", name: plan.name, contentType: plan.contentType, size: reportedSize },
       plan,
-    )).toThrow("invalid_provider_response");
-  });
-
-  it("still rejects a non integer size", () => {
-    expect(() => boundedAttachmentSummary(
-      { id: "attachment-1", name: plan.name, contentType: plan.contentType, size: 17537.5 },
-      plan,
-    )).toThrow("invalid_provider_response");
-    expect(() => boundedAttachmentSummary(
-      { id: "attachment-1", name: plan.name, contentType: plan.contentType, size: "17537" },
-      plan,
-    )).toThrow("invalid_provider_response");
+    );
+    expect(summary).toMatchObject({ id: "attachment-1", size: plan.size });
   });
 
   it("still rejects a malformed response envelope and bad field values", () => {

@@ -154,6 +154,23 @@ describe("protected media write inputs", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    ["outlook_calendar_write", { action: "attach", eventId: "event-1", attachmentName: "fixture.bin", attachmentMediaUri: "media://inbound/fixture.bin" }],
+    ["outlook_mail_write", { action: "add_attachment", messageId: "message-1", attachmentName: "fixture.bin", attachmentMediaUri: "media://inbound/fixture.bin" }],
+    ["microsoft_todo_write", { action: "add_attachment", listId: "list-1", taskId: "task-1", attachmentName: "fixture.bin", attachmentMediaUri: "media://inbound/fixture.bin" }],
+  ])("treats Graph 201 as a completed %s attachment write despite smaller reported size", async (toolName, params) => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      if (init?.method !== "POST") return Response.json({ id: "list-1", isOwner: true, isShared: false });
+      return Response.json({ id: "attachment-1", name: "fixture.bin", contentType: "application/octet-stream", size: fixtureBytes.byteLength - 1 }, { status: 201 });
+    });
+    const response = await registeredTools()[toolName].execute("attach", params);
+    expect(response.details).toMatchObject({
+      ok: true, code: "ok", phase: "complete", mutationApplied: true, retrySafety: "do_not_repeat",
+      upload_mode: "direct", attachment: { id: "attachment-1", size: fixtureBytes.byteLength },
+    });
+    expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  });
+
   it("returns a self-verifying OneDrive receipt from one content PUT", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       expect(await requestBodyBytes(init?.body)).toEqual(fixtureBytes);
