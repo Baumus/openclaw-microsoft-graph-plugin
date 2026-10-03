@@ -225,6 +225,9 @@ describe("microsoft-graph plugin contract", () => {
   });
 
   it("reads OneDrive upload sources only from protected media/inbound staging", async () => {
+    const resolverKey = Symbol.for("@baumus/openclaw-microsoft-graph/plugin-state-dir-resolver");
+    const previousResolver = (globalThis as Record<symbol, unknown>)[resolverKey];
+    delete (globalThis as Record<symbol, unknown>)[resolverKey];
     const workspace = await mkdtemp(join(tmpdir(), "microsoft-graph-staging-"));
     const inbound = join(workspace, "media", "inbound");
     const staged = join(inbound, "batch", "SYNTHETIC_RECORD.xlsx");
@@ -242,6 +245,8 @@ describe("microsoft-graph plugin contract", () => {
       await link(staged, join(inbound, "hardlink.xlsx"));
       await expect(readProtectedMediaSource("media://inbound/batch/SYNTHETIC_RECORD.xlsx", workspace, 1024)).rejects.toThrow("invalid_source_media_uri");
     } finally {
+      if (previousResolver === undefined) delete (globalThis as Record<symbol, unknown>)[resolverKey];
+      else (globalThis as Record<symbol, unknown>)[resolverKey] = previousResolver;
       await rm(workspace, { recursive: true, force: true });
     }
   });
@@ -854,6 +859,10 @@ describe("microsoft-graph plugin contract", () => {
     root.agents.main.permissions = { read: true, write: true, delete: true };
     const config = { enabled: true, warningApprovalsRequired: true, policy };
     const workspaceDir = await mkdtemp(join(tmpdir(), "microsoft-graph-approval-copy-"));
+    // In this synthetic fixture the state media directory and workspace share one root.
+    const resolverKey = Symbol.for("@baumus/openclaw-microsoft-graph/plugin-state-dir-resolver");
+    const previousResolver = (globalThis as Record<symbol, unknown>)[resolverKey];
+    (globalThis as Record<symbol, unknown>)[resolverKey] = () => workspaceDir;
     await mkdir(join(workspaceDir, "media", "inbound"), { recursive: true });
     const uploadBytes = Buffer.alloc(17, 0x63);
     const uploadSha256 = createHash("sha256").update(uploadBytes).digest("hex");
@@ -912,6 +921,8 @@ describe("microsoft-graph plugin contract", () => {
     }, context);
     expect(todo.requireApproval.description).toContain('To Do list "list-1", task "new task"');
     expect(todo.requireApproval.description).not.toContain("PRIVATE TODO TITLE");
+    if (previousResolver === undefined) delete (globalThis as Record<symbol, unknown>)[resolverKey];
+    else (globalThis as Record<symbol, unknown>)[resolverKey] = previousResolver;
     await rm(workspaceDir, { recursive: true, force: true });
   });
 

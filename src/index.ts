@@ -474,36 +474,37 @@ export function validateProtectedMediaUri(sourceMediaUri: unknown): string {
  * media read failed with `invalid_source_media_uri` and no attachment or upload could ever be
  * sourced.
  *
- * Both candidates are returned, state directory first, so hosts that do place media under the
- * workspace keep working. Each candidate is still opened through a confined root, so the
- * traversal, symlink and hardlink protections are unchanged.
+ * A media URI has no root identity. Once the host supplies a state directory, it is authoritative:
+ * trying the workspace after a missing or rejected state file could silently substitute another
+ * file with the same name. The workspace root is only a compatibility path for hosts without a
+ * state-directory resolver. Both paths retain the same confined-open protections.
  */
-function protectedMediaStagingRoots(workspaceDir: string | undefined): string[] {
-  const roots: string[] = [];
-  const stateDir = getResolvePluginStateDir()?.();
-  if (typeof stateDir === "string" && stateDir) roots.push(resolve(stateDir, "media/inbound"));
-  if (typeof workspaceDir === "string" && workspaceDir) roots.push(resolve(workspaceDir, "media/inbound"));
-  return roots;
+function protectedMediaStagingRoot(workspaceDir: string | undefined): string {
+  const stateResolver = getResolvePluginStateDir();
+  if (stateResolver) {
+    const stateDir = stateResolver();
+    if (typeof stateDir !== "string" || !stateDir) throw new Error("invalid_source_media_uri");
+    return resolve(stateDir, "media/inbound");
+  }
+  if (typeof workspaceDir !== "string" || !workspaceDir) throw new Error("invalid_source_media_uri");
+  return resolve(workspaceDir, "media/inbound");
 }
 
 export async function readProtectedMediaSource(sourceMediaUri: string, workspaceDir: string | undefined, maxBytes = ONEDRIVE_WRITE_MAX_BYTES): Promise<Buffer> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("invalid_source_media_uri");
   const relativePath = validateProtectedMediaUri(sourceMediaUri);
-  const stagingRoots = protectedMediaStagingRoots(workspaceDir);
-  if (!stagingRoots.length) throw new Error("invalid_source_media_uri");
   try {
-    for (const stagingRoot of stagingRoots) {
-      const opened = await readLocalFileFromRoots({
-        filePath: resolve(stagingRoot, relativePath),
-        roots: [stagingRoot],
-        label: "OneDrive upload staging",
-        hardlinks: "reject",
-        symlinks: "reject",
-        maxBytes,
-      }).catch(() => undefined);
-      if (opened) return opened.buffer;
-    }
-    throw new Error("invalid_source_media_uri");
+    const stagingRoot = protectedMediaStagingRoot(workspaceDir);
+    const opened = await readLocalFileFromRoots({
+      filePath: resolve(stagingRoot, relativePath),
+      roots: [stagingRoot],
+      label: "OneDrive upload staging",
+      hardlinks: "reject",
+      symlinks: "reject",
+      maxBytes,
+    });
+    if (!opened) throw new Error("invalid_source_media_uri");
+    return opened.buffer;
   } catch {
     throw new Error("invalid_source_media_uri");
   }
@@ -511,20 +512,12 @@ export async function readProtectedMediaSource(sourceMediaUri: string, workspace
 
 type ProtectedMediaUploadSource = DriveUploadSource & { close(): Promise<void> };
 
-async function openProtectedMediaUploadSource(sourceMediaUri: string, workspaceDir: string | undefined): Promise<ProtectedMediaUploadSource> {
+export async function openProtectedMediaUploadSource(sourceMediaUri: string, workspaceDir: string | undefined): Promise<ProtectedMediaUploadSource> {
   const relativePath = validateProtectedMediaUri(sourceMediaUri);
-  const stagingRoots = protectedMediaStagingRoots(workspaceDir);
-  if (!stagingRoots.length) throw new Error("invalid_source_media_uri");
   let opened: OpenResult | undefined;
   try {
-    for (const stagingRoot of stagingRoots) {
-      try {
-        const staging = await secureRoot(stagingRoot, { hardlinks: "reject", symlinks: "reject" });
-        opened = await staging.open(relativePath, { hardlinks: "reject", symlinks: "reject" });
-        break;
-      } catch { opened = undefined; }
-    }
-    if (!opened) throw new Error("invalid_source_media_uri");
+    const staging = await secureRoot(protectedMediaStagingRoot(workspaceDir), { hardlinks: "reject", symlinks: "reject" });
+    opened = await staging.open(relativePath, { hardlinks: "reject", symlinks: "reject" });
     const initial = opened.stat;
     if (!initial.isFile() || !Number.isSafeInteger(initial.size) || initial.size < 0) throw new Error("invalid_source_media_uri");
     if (initial.size > ONEDRIVE_WRITE_MAX_BYTES) throw new Error("provider_file_too_large");
