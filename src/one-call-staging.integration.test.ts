@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import entry, { openProtectedMediaUploadSource } from "./index.js";
+import entry, { concrete, NativeApprovalSnapshotStore, openProtectedMediaUploadSource } from "./index.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 import { workspaceStagingStore } from "./stage-workspace-file.js";
 
@@ -23,6 +23,88 @@ afterEach(async () => {
 });
 
 describe("workspace-file OneDrive approval preflight", () => {
+  async function approvalWithFailingBoundCleanup(toolCallId: string) {
+    directory = await mkdtemp(join(tmpdir(), "mg-bound-cleanup-"));
+    const stateDir = join(directory, "state");
+    const workspaceDir = join(directory, "workspace");
+    await mkdir(join(workspaceDir, "reports"), { recursive: true });
+    await mkdir(stateDir);
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    await writeFile(join(workspaceDir, "reports", "onepager.pdf"), "synthetic");
+    const policy = graphPolicyFixture();
+    delete policy.services.onedrive.allowed_roots[0].agents_instructions;
+    policy.services.onedrive.allowed_roots[0].agents.main.permissions.read = true;
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const hooks: Record<string, (...args: any[]) => Promise<any>> = {};
+    entry.register({ pluginConfig: { enabled: true, policy }, runtime: { state: { resolveStateDir: () => stateDir } },
+      registerTool: vi.fn(), on: (name: string, handler: (...args: any[]) => Promise<any>) => { hooks[name] = handler; }, logger } as never);
+    const originalBind = workspaceStagingStore.bind.bind(workspaceStagingStore);
+    const cleanup = vi.fn();
+    vi.spyOn(workspaceStagingStore, "bind").mockImplementationOnce((id, name, lease, sessionId, onExpire) => {
+      cleanup.mockRejectedValueOnce(new Error("private_workspace_cleanup_path"))
+        .mockImplementation(() => lease.cleanup());
+      originalBind(id, name, { cleanup }, sessionId, onExpire);
+    });
+    const context = { agentId: "main", sessionId: toolCallId, workspaceDir };
+    const approval = await hooks.before_tool_call({ toolName: "onedrive_upload", toolCallId, params: {
+      rootLabel: "synthetic_documents", relativePath: "onepager.pdf", sourceWorkspacePath: "reports/onepager.pdf",
+    } }, context) as { params: Record<string, unknown>; requireApproval: { onResolution(decision: string): Promise<void> } };
+    expect(approval.requireApproval).toBeDefined();
+    return { approval, cleanup, context, logger, policy, stateDir };
+  }
+
+  it("contains denied approval cleanup failures, warns without private details, and retries the lease", async () => {
+    const { approval, cleanup, context, logger, policy, stateDir } = await approvalWithFailingBoundCleanup("cleanup-deny");
+    const action = vi.fn(async () => ({ ok: true }));
+    await expect(approval.requireApproval.onResolution("deny")).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith("workspace_staging_cleanup_deferred");
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain("private_workspace_cleanup_path");
+    expect(await stagedFiles(stateDir)).toHaveLength(1);
+    const tool = concrete("onedrive_upload", {}, context.agentId, context.sessionId, logger as never, action, { enabled: true, policy });
+    expect((await tool.execute("cleanup-deny", approval.params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
+    expect(action).not.toHaveBeenCalled();
+    await workspaceStagingStore.retryFailedCleanups();
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(await stagedFiles(stateDir)).toEqual([]);
+  });
+
+  it("sanitizes a failed allow-once snapshot and its bound cleanup without approving execution", async () => {
+    const { approval, cleanup, context, logger, policy, stateDir } = await approvalWithFailingBoundCleanup("cleanup-allow-failure");
+    vi.spyOn(NativeApprovalSnapshotStore.prototype, "record").mockImplementationOnce(() => { throw new Error("private_snapshot_failure"); });
+    await expect(approval.requireApproval.onResolution("allow-once")).rejects.toThrow("approval_context_invalid_or_changed");
+    expect(logger.warn).toHaveBeenCalledWith("workspace_staging_cleanup_deferred");
+    const action = vi.fn(async () => ({ ok: true }));
+    const tool = concrete("onedrive_upload", {}, context.agentId, context.sessionId, logger as never, action, { enabled: true, policy });
+    expect((await tool.execute("cleanup-allow-failure", approval.params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
+    expect(action).not.toHaveBeenCalled();
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toMatch(/private_snapshot_failure|private_workspace_cleanup_path/);
+    await workspaceStagingStore.retryFailedCleanups();
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(await stagedFiles(stateDir)).toEqual([]);
+  });
+
+  it.each(["applied", "failed"])("reports a sanitized deferred cleanup after a synthetic %s write", async (execution) => {
+    const { approval, cleanup, context, logger, policy, stateDir } = await approvalWithFailingBoundCleanup(`cleanup-${execution}`);
+    await approval.requireApproval.onResolution("allow-once");
+    const action = vi.fn(async () => {
+      if (execution === "failed") throw new Error("request_timeout");
+      return { ok: true, item: { id: "synthetic-upload" } };
+    });
+    const tool = concrete("onedrive_upload", {}, context.agentId, context.sessionId, logger as never, action, { enabled: true, policy });
+    const response = await tool.execute(`cleanup-${execution}`, approval.params);
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(response.details).toMatchObject(execution === "applied"
+      ? { ok: true, outcome: "applied_with_warning", cleanupWarning: "workspace_staging_cleanup_deferred", phase: "partial", mutationApplied: true, retrySafety: "do_not_repeat" }
+      : { ok: false, error: "request_timeout", cleanupWarning: "workspace_staging_cleanup_deferred", phase: "failed", mutationApplied: "unknown", retrySafety: "readback_before_retry" });
+    if (execution === "applied") expect((response.details as { nextAction: string }).nextAction).toContain("Do not repeat a completed write");
+    expect(logger.warn).toHaveBeenCalledWith("workspace_staging_cleanup_deferred");
+    expect(JSON.stringify([response, logger.info.mock.calls, logger.warn.mock.calls])).not.toContain("private_workspace_cleanup_path");
+    expect(await stagedFiles(stateDir)).toHaveLength(1);
+    await workspaceStagingStore.retryFailedCleanups();
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(await stagedFiles(stateDir)).toEqual([]);
+  });
+
   it.each(["pre-binding", "before-binding"])("queues %s cleanup failures and returns a fixed block reason", async (failurePoint) => {
     directory = await mkdtemp(join(tmpdir(), "mg-stage-cleanup-"));
     const stateDir = join(directory, "state");
