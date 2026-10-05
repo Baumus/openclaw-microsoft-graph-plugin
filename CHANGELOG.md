@@ -8,6 +8,7 @@ All notable changes to this project are documented here.
 
 - Upload or replace a workspace-created file in one OneDrive call with `sourceWorkspacePath`. The plugin confines and streams the file into private inbound media, hashes it before native approval, verifies the staged bytes again before Graph access, and retains the existing `sourceMediaUri` path for already-staged files.
 - Make source selection, path constraints, MIME inference, and recovery guidance explicit in the tool schemas and descriptions.
+- Bind native mutation approval to the persisted session generation when the Host supplies only a session key; reject missing or reset sessions before approval or execution without changing OpenClaw Core.
 
 ## 3.8.1 - 2026-10-03
 
