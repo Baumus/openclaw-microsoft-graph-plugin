@@ -226,7 +226,7 @@ describe("workspace-file OneDrive approval preflight", () => {
       requireApproval: { onResolution: (decision: string) => Promise<void> };
     };
     expect(result).toMatchObject({ requireApproval: expect.anything() });
-    expect(result.params).not.toHaveProperty("sourceWorkspacePath");
+    expect(result.params.sourceWorkspacePath).toBe(params.sourceWorkspacePath);
     expect(result.params).toMatchObject({
       rootLabel: "synthetic_documents",
       relativePath: "onepager.pdf",

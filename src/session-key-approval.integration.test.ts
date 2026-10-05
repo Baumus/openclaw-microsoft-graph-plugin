@@ -14,7 +14,7 @@ afterEach(async () => {
   directory = undefined;
 });
 
-async function candidate() {
+async function candidate(warningApprovalsRequired = true) {
   directory = await mkdtemp(join(tmpdir(), "mg-session-key-"));
   const stateDir = join(directory, "state");
   const workspaceDir = join(directory, "workspace");
@@ -33,7 +33,7 @@ async function candidate() {
   const hooks: Record<string, (event: unknown, context: unknown) => Promise<any>> = {};
   const factories: Array<(context: any) => any> = [];
   entry.register({
-    pluginConfig: { enabled: true, policy },
+    pluginConfig: { enabled: true, policy, warningApprovalsRequired },
     runtime: { state: { resolveStateDir: () => stateDir }, agent: { session: { getSessionEntry } } },
     on: (name: string, handler: (event: unknown, context: unknown) => Promise<any>) => { hooks[name] = handler; },
     registerTool: (factory: (context: any) => any) => factories.push(factory),
@@ -60,9 +60,32 @@ describe("host sessionKey-only approval context", () => {
     expect(approval.requireApproval.severity).toBe("warning");
     expect(await staged()).toHaveLength(1);
     await approval.requireApproval.onResolution("allow-once");
-    expect((await tool.execute(event.toolCallId, approval.params)).details).toMatchObject({ ok: false, error: "credential_vault_unavailable" });
+    // OpenClaw 2026.9.8 shallow-merges hook overrides into the original call.
+    const hostParams = { ...event.params, ...approval.params };
+    expect(hostParams).toHaveProperty("sourceWorkspacePath", "reports/onepager.pdf");
+    expect(hostParams).toHaveProperty("sourceMediaUri");
+    expect((await tool.execute(event.toolCallId, hostParams)).details).toMatchObject({ ok: false, error: "credential_vault_unavailable" });
     expect(await staged()).toEqual([]);
     expect(getSessionEntry).toHaveBeenCalledTimes(3);
+  });
+
+  it("binds the host-merged params when warning approval is policy-disabled", async () => {
+    const { hook, tool, event, hookContext, staged } = await candidate(false);
+    const decision = await hook(event, hookContext);
+    expect(decision.requireApproval).toBeUndefined();
+    const hostParams = { ...event.params, ...decision.params };
+    expect(hostParams).toHaveProperty("sourceWorkspacePath", "reports/onepager.pdf");
+    expect(hostParams).toHaveProperty("sourceMediaUri");
+    expect((await tool.execute(event.toolCallId, hostParams)).details).toMatchObject({ ok: false, error: "credential_vault_unavailable" });
+    expect(await staged()).toEqual([]);
+  });
+
+  it("rejects a later rewrite of the original workspace path", async () => {
+    const { hook, tool, event, hookContext, staged } = await candidate(false);
+    const decision = await hook(event, hookContext);
+    const altered = { ...event.params, ...decision.params, sourceWorkspacePath: "reports/other.pdf" };
+    expect((await tool.execute(event.toolCallId, altered)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed", mutationApplied: false });
+    expect(await staged()).toEqual([]);
   });
 
   it("fails closed when the stored session disappears before preflight", async () => {

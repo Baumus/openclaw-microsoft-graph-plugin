@@ -1297,8 +1297,10 @@ async function bindOneDriveWriteArtifact(toolName: string, params: Record<string
     const staged = await stageWorkspaceFile(stagingWorkspaceFor(context), params.sourceWorkspacePath, String(contentType), undefined, context.abortSignal, workspaceStagingStore, stateDir);
     onStaged(staged.lease);
     if (assertion && (assertion.sourceSha256 !== staged.sourceSha256 || assertion.sourceByteSize !== staged.sourceByteSize)) throw new Error("invalid_source_fingerprint");
-    const { sourceWorkspacePath: _sourceWorkspacePath, ...rest } = params;
-    params = { ...rest, contentType, sourceMediaUri: staged.sourceMediaUri, sourceSha256: staged.sourceSha256, sourceByteSize: staged.sourceByteSize };
+    // The host shallow-merges before_tool_call overrides into the original call.
+    // Keep this non-authoritative original field in our exact snapshot so the
+    // merged execution params match; only the verified private URI is transferred.
+    params = { ...params, contentType, sourceMediaUri: staged.sourceMediaUri, sourceSha256: staged.sourceSha256, sourceByteSize: staged.sourceByteSize };
   }
   const source = await openProtectedMediaUploadSource(String(params.sourceMediaUri ?? ""), stagingWorkspaceFor(context));
   try {
