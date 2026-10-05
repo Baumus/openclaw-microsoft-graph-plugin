@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.9.0 - 2026-10-05
+
+- Upload or replace a workspace-created file in one OneDrive call with `sourceWorkspacePath`. The plugin confines and streams the file into private inbound media, hashes it before native approval, verifies the staged bytes again before Graph access, and retains the existing `sourceMediaUri` path for already-staged files.
+- Make source selection, path constraints, MIME inference, and recovery guidance explicit in the tool schemas and descriptions.
+
 ## 3.8.1 - 2026-10-03
 
 - Build and validate this release with OpenClaw 2026.9.8; keep the compatible host floor at 2026.9.6.

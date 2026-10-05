@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { readLocalFileFromRoots, root as secureRoot, type OpenResult } from "openclaw/plugin-sdk/infra-runtime";
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
+import { stageWorkspaceFile, validateWorkspaceRelativeFilePath, workspaceFileContentType } from "./stage-workspace-file.js";
 import { downloadOneDriveFile, downloadOutlookFileAttachment, publishPrivateMediaBytes } from "./attachment-download.js";
 import { exchangeRefreshToken, readCredential, selectScope, tokenForAuthorizedOperation } from "./credential.js";
 import { registerCredentialCli, registerCredentialGatewayMethods } from "./credential-cli.js";
@@ -79,7 +80,7 @@ function getResolvePluginStateDir(): (() => string) | undefined {
 function setResolvePluginStateDir(resolver: () => string): void {
   (globalThis as Record<symbol, unknown>)[PLUGIN_STATE_DIR_RESOLVER_KEY] = resolver;
 }
-type OneDriveStagingWorkspaceContext = { agentId?: string; sessionId?: string; workspaceDir?: string };
+type OneDriveStagingWorkspaceContext = { agentId?: string; sessionId?: string; workspaceDir?: string; abortSignal?: AbortSignal };
 const oneDriveStagingWorkspaceContexts = new Map<string, { agentId: string; sessionId: string; workspaceDir: string }>();
 export type NativeApprovalSnapshot = { agentId?: string; sessionId?: string; toolName: string; params: string; oneDriveRoot?: OneDriveApprovalRoot };
 
@@ -207,10 +208,10 @@ export function lifecycleResult(toolName: string, value: unknown): unknown {
   const ok = record.ok !== false;
   const incomplete = record.truncated === true || record.completeness === "partial" || record.completeness === "unknown" || record.outcome === "partial" || record.outcome === "applied_with_warning";
   const code = typeof record.error === "string" ? record.error : ok ? incomplete ? "partial_results" : "ok" : "operation_failed";
-  const uncertain = mutation && !ok && (code === "invalid_provider_response" || !/^(invalid_|unsupported_|access_denied|connector_disabled|trusted_|approval_context_|instruction_|onedrive_agents_instructions_required)/.test(code));
+  const uncertain = mutation && !ok && (code === "invalid_provider_response" || !/^(invalid_|unsupported_|access_denied|connector_disabled|trusted_|approval_context_|instruction_|onedrive_agents_instructions_required|workspace_|exactly_one_)/.test(code));
   const operations = Array.isArray(record.operations) ? record.operations as Array<Record<string, unknown>> : undefined;
   const mutationApplied = !mutation ? false : operations ? operations.some((entry) => entry.applied === true) ? true : operations.some((entry) => entry.status === 0) ? "unknown" : false : ok ? true : uncertain ? "unknown" : false;
-  const nextAction = !ok && record.action === "multiwrite" ? "Inspect each operation and read back uncertain targets before retrying only unapplied operations." : !ok ? uncertain ? "Read back the exact target before retrying; the remote outcome is unknown." : code === "access_denied" ? "Ask the operator to review this caller's policy; do not retry unchanged." : code.startsWith("approval_context_") ? "Request a new exact call and native approval; the previous approval cannot be reused." : "Correct the request or prerequisite, then make a fresh call." : incomplete && record.action === "multiwrite" ? "Inspect per-operation outcomes and read back unverified targets before retrying." : incomplete ? record.continuation ? "Repeat the same criteria with continuation for the next page." : "Narrow the query or time range; completeness is not proven." : mutation && toolName === "outlook_mail_write" && record.action === "send_draft" ? "Graph accepted the send request; delivery is not proven. Inspect Sent Items before any retry." : "No further action required.";
+  const nextAction = !ok && record.action === "multiwrite" ? "Inspect each operation and read back uncertain targets before retrying only unapplied operations." : !ok ? uncertain ? "Read back the exact target before retrying; the remote outcome is unknown." : code === "access_denied" ? "Ask the operator to review this caller's policy; do not retry unchanged." : code.startsWith("approval_context_") ? "Request a new exact call and native approval; the previous approval cannot be reused." : code === "workspace_file_unavailable" ? "Use an existing regular file relative to this agent workspace; links and host-absolute paths are not accepted." : code === "workspace_file_changed" ? "Finish writing the file, then make a fresh call; no OneDrive write was attempted." : code === "workspace_context_unavailable" ? "This tool needs a trusted agent workspace context; ask the OpenClaw operator to check the tool route." : code === "exactly_one_source_required" ? "Pass exactly one of sourceWorkspacePath or sourceMediaUri." : "Correct the request or prerequisite, then make a fresh call." : incomplete && record.action === "multiwrite" ? "Inspect per-operation outcomes and read back unverified targets before retrying." : incomplete ? record.continuation ? "Repeat the same criteria with continuation for the next page." : "Narrow the query or time range; completeness is not proven." : mutation && toolName === "outlook_mail_write" && record.action === "send_draft" ? "Graph accepted the send request; delivery is not proven. Inspect Sent Items before any retry." : "No further action required.";
   return { ...record, phase: !ok && mutationApplied !== true ? "failed" : incomplete ? "partial" : "complete", code, nextAction, retrySafety: mutation ? uncertain || record.action === "send_draft" || record.action === "multiwrite" || record.appliedButUnverified === true ? "readback_before_retry" : ok ? "do_not_repeat" : "safe_after_correction" : "safe", mutationApplied, ...(record.action === "send_draft" && ok ? { deliveryStatus: "unknown" } : {}), ...(record.items && Array.isArray(record.items) && record.items.length === 0 ? { noResults: !incomplete } : {}) };
 }
 function result(value: unknown, toolName?: string) { const details = toolName ? lifecycleResult(toolName, value) : value; return { content: [{ type: "text" as const, text: JSON.stringify(details) }], details }; }
@@ -218,7 +219,7 @@ function errorCode(error: unknown): string {
   if (error instanceof DOMException && error.name === "AbortError") return "request_aborted";
   if (error instanceof DOMException && error.name === "TimeoutError") return "request_timeout";
   const code = error instanceof Error ? error.message : "internal_error";
-  return /^(access_denied|approval_context_|connector_disabled|trusted_(?:agent_identity|workspace|session_identity)_required|instruction_|onedrive_agents_instructions_required|invalid_|unsupported_|credential_|authentication_|provider_|item_|file_|binary_|request_)/.test(code) ? code : "internal_error";
+  return /^(access_denied|approval_context_|connector_disabled|trusted_(?:agent_identity|workspace|session_identity)_required|instruction_|onedrive_agents_instructions_required|invalid_|unsupported_|credential_|authentication_|provider_|item_|file_|binary_|request_|workspace_|exactly_one_)/.test(code) ? code : "internal_error";
 }
 export async function withConcurrency<T>(limit: number, action: () => Promise<T>): Promise<T> {
   if (activeRequests >= limit) throw new Error("request_concurrency_exceeded");
@@ -556,8 +557,8 @@ const TOOL_GUIDANCE: Readonly<Record<string, string>> = {
   onedrive_list: "List one allowlisted OneDrive root or relative directory. Supply rootLabel; follow continuation for all items. Use returned relativePath for read/download/write. Trusted AGENTS.md instructions may require acknowledgement first.",
   onedrive_read: "Read bounded text or SHA-256 digest from rootLabel and exact relativePath discovered by list/search. Digest does not return bytes. Use download for private media; inspect truncation and narrow large reads.",
   onedrive_download: "Download exact rootLabel and relativePath to private media, never a host path. Locate the file by list/search first. Large transfers may exceed the host's 600-second outer limit; an aborted result may need readback.",
-  onedrive_upload: "Create a file without overwrite in an authorized rootLabel/relativePath from staged media://inbound/... sourceMediaUri. Native warning approval binds the content fingerprint; supply timeoutMs up to 600000 for approval plus transfer. On uncertain timeout, read back before retrying.",
-  onedrive_update: "Replace an existing file at exact rootLabel/relativePath from staged media://inbound/... sourceMediaUri with ETag protection. Native warning approval binds content; supply timeoutMs up to 600000. Read back after uncertain timeout.",
+  onedrive_upload: "Create one file without overwrite. For a file you created in your workspace, pass sourceWorkspacePath relative to your workspace; the plugin stages it privately, hashes it, requests native approval, and uploads in this same call. Alternatively pass an existing media://inbound/... sourceMediaUri. Supply exactly one source, plus authorized rootLabel and destination relativePath. On uncertain timeout, read back before retrying.",
+  onedrive_update: "Replace an existing file at exact rootLabel/relativePath with ETag protection. Pass sourceWorkspacePath relative to your workspace for automatic private staging in this same call, or an existing media://inbound/... sourceMediaUri; supply exactly one. Native approval binds the computed content hash. Read back after uncertain timeout.",
   onedrive_metadata_update: "Rename, move, or change metadata of exact rootLabel/relativePath; destination stays in the same root. Discover path first. Native warning approval is required unless policy permits bypass; read back on uncertain outcome.",
   onedrive_create_folder: "Create a folder below authorized rootLabel/parentRelativePath. Discover parent first. Native warning approval is required unless policy permits bypass; inspect returned path before further writes.",
   onedrive_delete: "Delete one exact rootLabel/relativePath only when both root and caller-agent policy permit delete. Discover and inspect target first. Native critical allow-once approval is mandatory; timeoutMs should cover the 120-second prompt. Read back on uncertain outcome.",
@@ -1249,9 +1250,29 @@ async function openVerifiedProtectedMediaUploadSource(sourceMediaUri: string, wo
   throw new Error("invalid_source_fingerprint");
 }
 
+function validateOneDriveSourceSelection(toolName: string, params: Record<string, unknown>): void {
+  if (toolName !== "onedrive_upload" && toolName !== "onedrive_update") return;
+  sourceFingerprint(params);
+  const hasUri = params.sourceMediaUri !== undefined;
+  const hasWorkspacePath = params.sourceWorkspacePath !== undefined;
+  if (hasUri === hasWorkspacePath) throw new Error("exactly_one_source_required");
+  if (hasUri) validateProtectedMediaUri(params.sourceMediaUri);
+  else validateWorkspaceRelativeFilePath(params.sourceWorkspacePath);
+}
+
 async function bindOneDriveWriteArtifact(toolName: string, params: Record<string, unknown>, context: OneDriveStagingWorkspaceContext): Promise<Record<string, unknown>> {
   if (toolName !== "onedrive_upload" && toolName !== "onedrive_update") return params;
   const assertion = sourceFingerprint(params);
+  const hasUri = params.sourceMediaUri !== undefined;
+  const hasWorkspacePath = params.sourceWorkspacePath !== undefined;
+  if (hasUri === hasWorkspacePath) throw new Error("exactly_one_source_required");
+  if (hasWorkspacePath) {
+    const contentType = params.contentType ?? workspaceFileContentType(String(params.sourceWorkspacePath));
+    const staged = await stageWorkspaceFile(stagingWorkspaceFor(context), params.sourceWorkspacePath, String(contentType), undefined, context.abortSignal);
+    if (assertion && (assertion.sourceSha256 !== staged.sourceSha256 || assertion.sourceByteSize !== staged.sourceByteSize)) throw new Error("invalid_source_fingerprint");
+    const { sourceWorkspacePath: _sourceWorkspacePath, ...rest } = params;
+    params = { ...rest, contentType, ...staged };
+  }
   const source = await openProtectedMediaUploadSource(String(params.sourceMediaUri ?? ""), stagingWorkspaceFor(context));
   try {
     if (assertion && (assertion.sourceSha256 !== source.sha256 || assertion.sourceByteSize !== source.size)) throw new Error("invalid_source_fingerprint");
@@ -1498,10 +1519,11 @@ const plugin = defineToolPlugin({
       agentsInstructionAck,
       chatConfirmed,
       chatConfirmationToken,
-      sourceMediaUri: Type.String({ minLength: MEDIA_INBOUND_URI_PREFIX.length + 1, maxLength: SOURCE_MEDIA_URI_MAX_LENGTH, pattern: "^media://inbound/[^?#\\\\]+$", description: "Required media://inbound/... artifact URI. Stage the file first. The plugin fingerprints the bytes before approval and verifies them again before transfer; host paths are rejected." }),
+      sourceMediaUri: Type.Optional(Type.String({ minLength: MEDIA_INBOUND_URI_PREFIX.length + 1, maxLength: SOURCE_MEDIA_URI_MAX_LENGTH, pattern: "^media://inbound/[^?#\\\\]+$", description: "Existing private inbound artifact URI. Use only when another tool returned it; otherwise use sourceWorkspacePath. Supply exactly one source." })),
+      sourceWorkspacePath: Type.Optional(Type.String({ minLength: 1, maxLength: 1024, description: "Path of a finished file relative to this agent's workspace, e.g. reports/onepager.pdf. No absolute paths, traversal, links, or manual media staging. The plugin copies it to private inbound media and fingerprints it before approval. Supply exactly one source." })),
       sourceSha256,
       sourceByteSize,
-      contentType: Type.Optional(Type.String({ maxLength: 160, default: "application/octet-stream" })),
+      contentType: Type.Optional(Type.String({ maxLength: 160, description: "Optional MIME type. For sourceWorkspacePath, common file extensions (including .pdf) are inferred; unknown extensions use application/octet-stream." })),
     }, { additionalProperties: false });
     const writeSchema = uploadSchema;
     const metadataSchema = Type.Object({ rootLabel, relativePath: relative, agentsInstructionAck, chatConfirmed, chatConfirmationToken, name: Type.Optional(Type.String({ minLength: 1, maxLength: 255 })), destinationRelativePath: Type.Optional(Type.String({ maxLength: 1024 })), description: Type.Optional(Type.Union([Type.String({ maxLength: 4096 }), Type.Null()])), fileSystemInfo: Type.Optional(fileSystemInfoInput) }, { additionalProperties: false });
@@ -1543,7 +1565,7 @@ const plugin = defineToolPlugin({
         operation: "download",
         ...await downloadOneDriveFile({ root, relativePath: normalizeRelativePath(relativePath), token, signal: bounded }),
       }), undefined, config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS)) }),
-      tool({ name: "onedrive_upload", label: "OneDrive Upload", optional: true, description: "Create one file without overwrite. Pass an authorized rootLabel, relativePath, and existing media://inbound/... sourceMediaUri. The plugin computes SHA-256 and size before native approval and rechecks them before transfer. Optional fingerprint fields are assertions, not prerequisites. A blocked preflight means no approval was requested; chat confirmation tokens cannot authorize the action. Uses a Graph upload session above 250 MB.", parameters: uploadSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_upload", uploadSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
+      tool({ name: "onedrive_upload", label: "OneDrive Upload", optional: true, description: "Create one file without overwrite from a workspace-relative sourceWorkspacePath or existing media://inbound/... sourceMediaUri; supply exactly one. The plugin computes SHA-256 and size before native approval and rechecks them before transfer. Optional fingerprint fields are assertions, not prerequisites. A blocked preflight means no approval was requested; chat confirmation tokens cannot authorize the action. Uses a Graph upload session above 250 MB.", parameters: uploadSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_upload", uploadSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
         void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
         validateProtectedMediaUri(sourceMediaUri);
@@ -1561,7 +1583,7 @@ const plugin = defineToolPlugin({
           );
         } finally { await source?.close(); }
       }, config)) }),
-      tool({ name: "onedrive_update", label: "OneDrive Update", optional: true, description: "Replace one file with ETag protection. Pass an authorized rootLabel, relativePath, and existing media://inbound/... sourceMediaUri. The plugin computes SHA-256 and size before native approval and rechecks them before transfer. Optional fingerprint fields are assertions, not prerequisites. A blocked preflight means no approval was requested. Uses a Graph upload session above 250 MB.", parameters: writeSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_update", writeSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
+      tool({ name: "onedrive_update", label: "OneDrive Update", optional: true, description: "Replace one file with ETag protection from a workspace-relative sourceWorkspacePath or existing media://inbound/... sourceMediaUri; supply exactly one. The plugin computes SHA-256 and size before native approval and rechecks them before transfer. Optional fingerprint fields are assertions, not prerequisites. A blocked preflight means no approval was requested. Uses a Graph upload session above 250 MB.", parameters: writeSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_update", writeSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
         void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
         validateProtectedMediaUri(sourceMediaUri);
@@ -2937,11 +2959,12 @@ export async function beforeMicrosoftGraphToolCall(
   try { authorizedRoot = authorizeOneDriveMutationPreflight(runtimeConfig, ctx.agentId, event.toolName, params); }
   catch (error) { return { block: true, blockReason: errorCode(error) }; }
 
-  try { params = await bindOneDriveWriteArtifact(event.toolName, params, ctx); }
+  try { validateOneDriveSourceSelection(event.toolName, params); }
   catch (error) { return { block: true, blockReason: errorCode(error) }; }
-
   const schemaParams = Object.fromEntries(Object.entries(callParams(event.params)).filter(([, value]) => value !== undefined));
   if (event.params && !TOOL_PARAMETER_CHECKS.get(event.toolName)?.(schemaParams)) return { block: true, blockReason: "invalid_tool_parameters" };
+  try { params = await bindOneDriveWriteArtifact(event.toolName, params, ctx); }
+  catch (error) { return { block: true, blockReason: errorCode(error) }; }
 
   let expectedRoot: OneDriveApprovalRoot | undefined;
   if (severity !== "none") {

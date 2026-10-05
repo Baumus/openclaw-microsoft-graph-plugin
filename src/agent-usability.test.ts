@@ -90,6 +90,12 @@ describe("agent-facing Microsoft Graph contracts", () => {
 
   it("reports uncertainty, partial results, empty results, and send acceptance without delivery certainty", () => {
     expect(lifecycleResult("outlook_mail_write", { ok: false, error: "request_timeout" })).toMatchObject({ phase: "failed", mutationApplied: "unknown", retrySafety: "readback_before_retry" });
+    for (const error of ["workspace_file_unavailable", "workspace_file_changed", "workspace_context_unavailable", "exactly_one_source_required"]) {
+      const result = lifecycleResult("onedrive_upload", { ok: false, error }) as Record<string, unknown>;
+      expect(result).toMatchObject({ phase: "failed", mutationApplied: false, retrySafety: "safe_after_correction" });
+      expect(String(result.nextAction).length).toBeGreaterThan(40);
+    }
+
     expect(lifecycleResult("outlook_mail_read", { ok: true, items: [], truncated: true })).toMatchObject({ phase: "partial", noResults: false, code: "partial_results" });
     expect(lifecycleResult("outlook_mail_read", { ok: true, items: [], truncated: false })).toMatchObject({ phase: "complete", noResults: true, code: "ok" });
     expect(lifecycleResult("outlook_calendar_write", { ok: false, action: "multiwrite", outcome: "partial", operations: [{ applied: true }, { applied: false, status: 400 }] })).toMatchObject({ phase: "partial", mutationApplied: true, retrySafety: "readback_before_retry" });
