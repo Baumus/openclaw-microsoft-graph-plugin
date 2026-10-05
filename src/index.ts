@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { readLocalFileFromRoots, root as secureRoot, type OpenResult } from "openclaw/plugin-sdk/infra-runtime";
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
-import { stageWorkspaceFile, validateWorkspaceRelativeFilePath, workspaceFileContentType } from "./stage-workspace-file.js";
+import { stageWorkspaceFile, validateWorkspaceRelativeFilePath, workspaceFileContentType, workspaceStagingStore, type WorkspaceStagingLease } from "./stage-workspace-file.js";
 import { downloadOneDriveFile, downloadOutlookFileAttachment, publishPrivateMediaBytes } from "./attachment-download.js";
 import { exchangeRefreshToken, readCredential, selectScope, tokenForAuthorizedOperation } from "./credential.js";
 import { registerCredentialCli, registerCredentialGatewayMethods } from "./credential-cli.js";
@@ -620,6 +620,7 @@ function concrete(name: string, parameters: any, agentId: string | undefined, se
         const oneDriveRoot = approvalConfig ? () => authorizeOneDriveMutationPreflight(approvalConfig, agentId, name, semantic) : undefined;
         const approvalSnapshotMatches = nativeApprovalSnapshots.consume(_id, agentId, sessionId, name, semantic, oneDriveRoot);
         if (approvalSnapshotMatches === false || (classifyApproval(name, semantic) !== "none" && approvalSnapshotMatches !== true)) throw new Error("approval_context_invalid_or_changed");
+        workspaceStagingStore.beginExecution(_id, name, sessionId);
         const value = await execute(semantic, signal);
         logger.info(JSON.stringify({ event: "microsoft_graph", tool: name, agent_id: agentId ?? null, ok: true, duration_ms: Date.now() - started }));
         return result(value, name);
@@ -627,6 +628,8 @@ function concrete(name: string, parameters: any, agentId: string | undefined, se
         const code = errorCode(error);
         logger.info(JSON.stringify({ event: "microsoft_graph", tool: name, agent_id: agentId ?? null, ok: false, error: code, duration_ms: Date.now() - started }));
         return result({ ok: false, error: code }, name);
+      } finally {
+        await workspaceStagingStore.cleanup(_id, name, sessionId);
       }
     } };
 }
@@ -1260,7 +1263,7 @@ function validateOneDriveSourceSelection(toolName: string, params: Record<string
   else validateWorkspaceRelativeFilePath(params.sourceWorkspacePath);
 }
 
-async function bindOneDriveWriteArtifact(toolName: string, params: Record<string, unknown>, context: OneDriveStagingWorkspaceContext): Promise<Record<string, unknown>> {
+async function bindOneDriveWriteArtifact(toolName: string, params: Record<string, unknown>, context: OneDriveStagingWorkspaceContext, onStaged: (lease: WorkspaceStagingLease) => void): Promise<Record<string, unknown>> {
   if (toolName !== "onedrive_upload" && toolName !== "onedrive_update") return params;
   const assertion = sourceFingerprint(params);
   const hasUri = params.sourceMediaUri !== undefined;
@@ -1269,9 +1272,10 @@ async function bindOneDriveWriteArtifact(toolName: string, params: Record<string
   if (hasWorkspacePath) {
     const contentType = params.contentType ?? workspaceFileContentType(String(params.sourceWorkspacePath));
     const staged = await stageWorkspaceFile(stagingWorkspaceFor(context), params.sourceWorkspacePath, String(contentType), undefined, context.abortSignal);
+    onStaged(staged.lease);
     if (assertion && (assertion.sourceSha256 !== staged.sourceSha256 || assertion.sourceByteSize !== staged.sourceByteSize)) throw new Error("invalid_source_fingerprint");
     const { sourceWorkspacePath: _sourceWorkspacePath, ...rest } = params;
-    params = { ...rest, contentType, ...staged };
+    params = { ...rest, contentType, sourceMediaUri: staged.sourceMediaUri, sourceSha256: staged.sourceSha256, sourceByteSize: staged.sourceByteSize };
   }
   const source = await openProtectedMediaUploadSource(String(params.sourceMediaUri ?? ""), stagingWorkspaceFor(context));
   try {
@@ -2963,8 +2967,18 @@ export async function beforeMicrosoftGraphToolCall(
   catch (error) { return { block: true, blockReason: errorCode(error) }; }
   const schemaParams = Object.fromEntries(Object.entries(callParams(event.params)).filter(([, value]) => value !== undefined));
   if (event.params && !TOOL_PARAMETER_CHECKS.get(event.toolName)?.(schemaParams)) return { block: true, blockReason: "invalid_tool_parameters" };
-  try { params = await bindOneDriveWriteArtifact(event.toolName, params, ctx); }
-  catch (error) { return { block: true, blockReason: errorCode(error) }; }
+  let ownedLease: WorkspaceStagingLease | undefined;
+  let leaseBound = false;
+  try { params = await bindOneDriveWriteArtifact(event.toolName, params, ctx, (lease) => { ownedLease = lease; }); }
+  catch (error) { await ownedLease?.cleanup(); return { block: true, blockReason: errorCode(error) }; }
+
+  try {
+  const bindOwnedLease = () => {
+    if (ownedLease) {
+      workspaceStagingStore.bind(event.toolCallId!, event.toolName, ownedLease, ctx.sessionId, () => approvalSnapshots.discard(event.toolCallId));
+      leaseBound = true;
+    }
+  };
 
   let expectedRoot: OneDriveApprovalRoot | undefined;
   if (severity !== "none") {
@@ -2998,14 +3012,23 @@ export async function beforeMicrosoftGraphToolCall(
 
   if (severity === "critical") {
     const approval = mutationApprovalText(event.toolName, params);
+    try { bindOwnedLease(); } catch (error) { return { block: true, blockReason: errorCode(error) }; }
     return { params, requireApproval: {
       ...approval,
       severity,
       allowedDecisions: ["allow-once", "deny"] as Array<"allow-once" | "deny">,
       timeoutMs: 120_000,
-      onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
-        if (decision === "allow-once") bindExecutionSnapshot();
-        else approvalSnapshots.discard(event.toolCallId);
+      async onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
+        if (ownedLease && !workspaceStagingStore.has(event.toolCallId!)) return;
+        if (decision === "allow-once") {
+          try { bindExecutionSnapshot(); }
+          catch (error) {
+            approvalSnapshots.discard(event.toolCallId);
+            await workspaceStagingStore.cleanup(event.toolCallId, event.toolName, ctx.sessionId);
+            throw error;
+          }
+        }
+        else { approvalSnapshots.discard(event.toolCallId); await workspaceStagingStore.cleanup(event.toolCallId, event.toolName, ctx.sessionId); }
       },
     } };
   }
@@ -3031,10 +3054,12 @@ export async function beforeMicrosoftGraphToolCall(
   const warningRequired = runtimeConfig.policy?.rules.warningApprovalsByService?.[service] ?? runtimeConfig.warningApprovalsRequired ?? true;
   const warningApprovalBypassed = warningRequired === false || warningApprovalTrustStore.has(scope);
   if (warningApprovalBypassed) {
-    bindExecutionSnapshot();
+    try { bindExecutionSnapshot(); bindOwnedLease(); }
+    catch (error) { approvalSnapshots.discard(event.toolCallId); return { block: true, blockReason: errorCode(error) }; }
     return { params };
   }
   const approval = mutationApprovalText(event.toolName, params);
+  try { bindOwnedLease(); } catch (error) { return { block: true, blockReason: errorCode(error) }; }
   return {
     params,
     requireApproval: {
@@ -3043,14 +3068,23 @@ export async function beforeMicrosoftGraphToolCall(
       severity,
       allowedDecisions: ["allow-once", "allow-always", "deny"] as Array<"allow-once" | "allow-always" | "deny">,
       timeoutMs: 120_000,
-      onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
+      async onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
+        if (ownedLease && !workspaceStagingStore.has(event.toolCallId!)) return;
         if (decision === "allow-once" || decision === "allow-always") {
-          bindExecutionSnapshot();
+          try { bindExecutionSnapshot(); }
+          catch (error) {
+            approvalSnapshots.discard(event.toolCallId);
+            await workspaceStagingStore.cleanup(event.toolCallId, event.toolName, ctx.sessionId);
+            throw error;
+          }
           if (decision === "allow-always") warningApprovalTrustStore.grant(scope);
-        } else approvalSnapshots.discard(event.toolCallId);
+        } else { approvalSnapshots.discard(event.toolCallId); await workspaceStagingStore.cleanup(event.toolCallId, event.toolName, ctx.sessionId); }
       },
     },
   };
+  } finally {
+    if (ownedLease && !leaseBound) await ownedLease.cleanup();
+  }
 }
 
 plugin.register = (api) => {
@@ -3091,6 +3125,7 @@ plugin.register = (api) => {
     oneDriveAgentsSessionCache.clearSession(ctx.sessionId);
     clearStagingWorkspaceSession(ctx.sessionId);
     nativeApprovalSnapshots.clearSession(ctx.sessionId);
+    workspaceStagingStore.clearSession(ctx.sessionId);
   });
 };
 
