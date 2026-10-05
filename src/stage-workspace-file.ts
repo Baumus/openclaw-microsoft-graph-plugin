@@ -82,13 +82,17 @@ async function quotaUsage(directory: string): Promise<{ bytes: number; count: nu
 
 type LockIdentity = { dev: number | bigint; ino: number | bigint };
 
+class QuotaLockChanged extends Error {
+  constructor() { super("workspace_staging_namespace_invalid"); }
+}
+
 async function checkedLock(stateDir: string, identity: LockIdentity): Promise<ReturnType<typeof secureRoot>> {
   if (!await stagingAncestors(stateDir)) throw new Error("workspace_staging_namespace_invalid");
   const directory = join(resolve(stateDir), "media", STAGING_SUBDIR);
   const lock = join(directory, QUOTA_LOCK);
   const current = await lstat(lock);
-  if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== identity.dev || current.ino !== identity.ino)
-    throw new Error("workspace_staging_namespace_invalid");
+  if (!current.isDirectory() || current.isSymbolicLink()) throw new Error("workspace_staging_namespace_invalid");
+  if (current.dev !== identity.dev || current.ino !== identity.ino) throw new QuotaLockChanged();
   return secureRoot(lock, { symlinks: "reject", hardlinks: "reject" });
 }
 
@@ -177,7 +181,7 @@ async function withQuotaLock<T>(stateDir: string, action: (directory: string) =>
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       await recoverQuotaLock(stateDir).catch((failure: NodeJS.ErrnoException) => {
-        if (failure.code !== "ENOENT" && failure.code !== "not-found") throw failure;
+        if (!(failure instanceof QuotaLockChanged) && failure.code !== "ENOENT" && failure.code !== "not-found") throw failure;
       });
       if (attempt === 499) throw new Error("workspace_staging_quota_exceeded");
       await new Promise((done) => setTimeout(done, 20));

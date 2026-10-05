@@ -1,9 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
+import * as fsPromises from "node:fs/promises";
 import { chmod, link, mkdtemp, mkdir, readFile, readlink, readdir, rename, rm, symlink, truncate, utimes, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { reconcileWorkspaceStaging, stageWorkspaceFile, validateWorkspaceRelativeFilePath, workspaceFileContentType, WorkspaceStagingStore, WORKSPACE_STAGING_QUOTA_BYTES } from "./stage-workspace-file.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, lstat: vi.fn(actual.lstat) };
+});
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -293,6 +299,80 @@ describe("one-call workspace source staging", () => {
     const rebooted = await store.reserveShared(1, stateDir);
     await rebooted.release();
     await expect(readdir(lock)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("retries when another recovery replaces the quota lock before identity verification", async () => {
+    const directory = await workspace();
+    const stateDir = join(directory, "state");
+    await mkdir(stateDir);
+    const store = new WorkspaceStagingStore();
+    await store.ownRun(stateDir);
+    const lock = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging", ".workspace-staging-quota-lock");
+    const marker = JSON.stringify({ ...JSON.parse(await owner(randomUUID(), 99999999, "0")), token: randomUUID() });
+    await mkdir(lock);
+    await writeFile(join(lock, ".workspace-staging-lock-owner"), marker);
+    const { lstat: originalLstat } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    let observations = 0;
+    const lstatMock = vi.mocked(fsPromises.lstat);
+    lstatMock.mockImplementation(async (path) => {
+      if (path === lock && ++observations === 2) {
+        const previous = `${lock}-previous`;
+        await rename(lock, previous);
+        await mkdir(lock);
+        await writeFile(join(lock, ".workspace-staging-lock-owner"), marker);
+        await rm(previous, { recursive: true });
+      }
+      return originalLstat(path);
+    });
+    try {
+      const reservation = await store.reserveShared(1, stateDir);
+      expect(observations).toBeGreaterThan(2);
+      await reservation.release();
+      await expect(readdir(lock)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { lstatMock.mockImplementation(originalLstat); }
+  });
+
+  it.each(["symlink", "foreign file"] as const)("does not accept a %s replacing the quota lock", async (kind) => {
+    const directory = await workspace();
+    const stateDir = join(directory, "state");
+    await mkdir(stateDir);
+    const store = new WorkspaceStagingStore();
+    await store.ownRun(stateDir);
+    const lock = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging", ".workspace-staging-quota-lock");
+    await mkdir(lock);
+    const foreign = join(directory, "foreign");
+    await mkdir(foreign);
+    await writeFile(join(foreign, "keep"), "keep");
+    const { lstat: originalLstat } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    const lstatMock = vi.mocked(fsPromises.lstat);
+    let observations = 0;
+    lstatMock.mockImplementation(async (path) => {
+      if (path === lock && ++observations === 2) {
+        const previous = `${lock}-previous`;
+        await rename(lock, previous);
+        if (kind === "symlink") await symlink(foreign, lock);
+        else {
+          await mkdir(lock);
+          await writeFile(join(lock, "foreign"), "keep");
+        }
+        await rm(previous, { recursive: true });
+      }
+      return originalLstat(path);
+    });
+    const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void) => {
+      queueMicrotask(callback);
+      return 0 as unknown as NodeJS.Timeout;
+    }) as typeof setTimeout);
+    try {
+      await expect(store.reserveShared(1, stateDir)).rejects.toThrow(kind === "symlink" ? "workspace_staging_namespace_invalid" : "workspace_staging_quota_exceeded");
+      expect(observations).toBeGreaterThan(1);
+      expect(await readFile(join(foreign, "keep"), "utf8")).toBe("keep");
+      if (kind === "symlink") expect(await readlink(lock)).toBe(foreign);
+      else expect(await readdir(lock)).toEqual(["foreign"]);
+    } finally {
+      timer.mockRestore();
+      lstatMock.mockImplementation(originalLstat);
+    }
   });
 
   it("fails closed for a live, foreign, or symlinked quota lock", async () => {
