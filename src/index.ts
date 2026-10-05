@@ -2971,8 +2971,13 @@ export async function beforeMicrosoftGraphToolCall(
   if (event.params && !TOOL_PARAMETER_CHECKS.get(event.toolName)?.(schemaParams)) return { block: true, blockReason: "invalid_tool_parameters" };
   let ownedLease: WorkspaceStagingLease | undefined;
   let leaseBound = false;
+  const cleanupUnboundLease = async (): Promise<boolean> => {
+    if (!ownedLease || leaseBound) return true;
+    try { await ownedLease.cleanup(); return true; }
+    catch { workspaceStagingStore.retryCleanup(ownedLease); return false; }
+  };
   try { params = await bindOneDriveWriteArtifact(event.toolName, params, ctx, (lease) => { ownedLease = lease; }); }
-  catch (error) { await ownedLease?.cleanup(); return { block: true, blockReason: errorCode(error) }; }
+  catch (error) { const cleaned = await cleanupUnboundLease(); return { block: true, blockReason: cleaned ? errorCode(error) : "workspace_file_unavailable" }; }
 
   try {
   const bindOwnedLease = () => {
@@ -3085,7 +3090,7 @@ export async function beforeMicrosoftGraphToolCall(
     },
   };
   } finally {
-    if (ownedLease && !leaseBound) await ownedLease.cleanup();
+    if (!await cleanupUnboundLease()) return { block: true, blockReason: "workspace_file_unavailable" };
   }
 }
 

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import entry, { openProtectedMediaUploadSource } from "./index.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
+import { workspaceStagingStore } from "./stage-workspace-file.js";
 
 let directory: string | undefined;
 const originalStateDir = process.env.OPENCLAW_STATE_DIR;
@@ -14,6 +15,7 @@ async function stagedFiles(stateDir: string) {
   return (await Promise.all(runs.map((run) => readdir(join(directory, run))))).flat().filter((file) => file !== ".workspace-staging-owner");
 }
 afterEach(async () => {
+  vi.restoreAllMocks();
   if (originalStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR;
   else process.env.OPENCLAW_STATE_DIR = originalStateDir;
   if (directory) await rm(directory, { recursive: true, force: true });
@@ -21,6 +23,40 @@ afterEach(async () => {
 });
 
 describe("workspace-file OneDrive approval preflight", () => {
+  it.each(["pre-binding", "before-binding"])("queues %s cleanup failures and returns a fixed block reason", async (failurePoint) => {
+    directory = await mkdtemp(join(tmpdir(), "mg-stage-cleanup-"));
+    const stateDir = join(directory, "state");
+    const workspaceDir = join(directory, "workspace");
+    await mkdir(join(workspaceDir, "reports"), { recursive: true });
+    await mkdir(stateDir);
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    await writeFile(join(workspaceDir, "reports", "onepager.pdf"), "synthetic");
+    const policy = graphPolicyFixture();
+    delete policy.services.onedrive.allowed_roots[0].agents_instructions;
+    policy.services.onedrive.allowed_roots[0].agents.main.permissions.read = true;
+    const hooks: Record<string, (...args: any[]) => Promise<any>> = {};
+    entry.register({ pluginConfig: { enabled: true, policy }, runtime: { state: { resolveStateDir: () => stateDir } },
+      registerTool: vi.fn(), on: (name: string, handler: (...args: any[]) => Promise<any>) => { hooks[name] = handler; },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as never);
+    const original = workspaceStagingStore.reserveShared.bind(workspaceStagingStore);
+    const release = vi.fn();
+    vi.spyOn(workspaceStagingStore, "reserveShared").mockImplementationOnce(async (...args) => {
+      const reservation = await original(...args);
+      release.mockRejectedValueOnce(new Error("workspace_private_cleanup_details")).mockImplementation(reservation.release);
+      return { publish: reservation.publish, release };
+    });
+    const retry = vi.spyOn(workspaceStagingStore, "retryCleanup");
+    if (failurePoint === "before-binding") vi.spyOn(workspaceStagingStore, "bind").mockImplementationOnce(() => { throw new Error("workspace_private_binding_details"); });
+    const params = { rootLabel: "synthetic_documents", relativePath: "onepager.pdf", sourceWorkspacePath: "reports/onepager.pdf",
+      ...(failurePoint === "pre-binding" ? { sourceSha256: "0".repeat(64), sourceByteSize: 9 } : {}) };
+    expect(await hooks.before_tool_call({ toolName: "onedrive_upload", toolCallId: `cleanup-${failurePoint}`, params },
+      { agentId: "main", sessionId: "cleanup", workspaceDir })).toEqual({ block: true, blockReason: "workspace_file_unavailable" });
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+    await workspaceStagingStore.retryFailedCleanups();
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(await stagedFiles(stateDir)).toEqual([]);
+  });
   it("shares the owned-artifact ledger across separately imported hook and tool bundles", async () => {
     directory = await mkdtemp(join(tmpdir(), "mg-cross-realm-stage-"));
     const stateDir = join(directory, "state");

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdtemp, mkdir, readlink, readdir, rename, rm, symlink, truncate, utimes, writeFile } from "node:fs/promises";
+import { chmod, link, mkdtemp, mkdir, readFile, readlink, readdir, rename, rm, symlink, truncate, utimes, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -30,8 +30,11 @@ function saver(directory: string, fileName = "synthetic-id.pdf") {
   return { save: save as never, saved, calls: save };
 }
 
-async function owner(runId: string, pid = process.pid) {
-  return JSON.stringify({ runId, pid, host: hostname(), pidNamespace: await readlink("/proc/self/ns/pid").catch(() => undefined) });
+async function owner(runId: string, pid = process.pid, processStart?: string) {
+  const stat = await readFile("/proc/self/stat", "utf8").catch(() => undefined);
+  return JSON.stringify({ runId, pid, host: hostname(), pidNamespace: await readlink("/proc/self/ns/pid").catch(() => undefined),
+    bootId: await readFile("/proc/sys/kernel/random/boot_id", "utf8").then((value) => value.trim(), () => undefined),
+    processStart: processStart ?? stat?.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/)[19] });
 }
 
 describe("one-call workspace source staging", () => {
@@ -190,6 +193,163 @@ describe("one-call workspace source staging", () => {
     expect(await readdir(join(directory, "media", "inbound", "baumus-msgraph-workspace-staging", runId))).toEqual([]);
   });
 
+  it("cleans a saved copy even when its receipt fails validation, without deleting foreign media", async () => {
+    const directory = await workspace();
+    const stateDir = join(directory, "state");
+    await mkdir(stateDir);
+    await writeFile(join(directory, "reports", "onepager.pdf"), "synthetic");
+    const { save } = saver(stateDir);
+    const store = new WorkspaceStagingStore();
+    const badReceipt = (async (source: AsyncIterable<Uint8Array>, mime: string, kind: string) => {
+      const saved = await (save as (stream: AsyncIterable<Uint8Array>, type: string, subdir: string) => Promise<{ id: string; path: string; size: number }>)(source, mime, kind);
+      return { ...saved, id: "wrong-id.pdf" };
+    }) as typeof save;
+    await expect(stageWorkspaceFile(directory, "reports/onepager.pdf", "application/pdf", badReceipt, undefined, store, stateDir))
+      .rejects.toThrow("workspace_file_unavailable");
+    const run = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging", store.runId);
+    expect(await readdir(run)).toEqual([".workspace-staging-owner"]);
+    const outside = join(directory, "foreign.pdf");
+    await writeFile(outside, "keep");
+    const foreignSave = (async () => ({ id: "foreign.pdf", path: outside, size: 4, contentType: "application/pdf" })) as typeof save;
+    await expect(stageWorkspaceFile(directory, "reports/onepager.pdf", "application/pdf", foreignSave, undefined, store, stateDir))
+      .rejects.toThrow("workspace_file_unavailable");
+    expect(await readFile(outside, "utf8")).toBe("keep");
+    expect(await readdir(run)).toEqual([".workspace-staging-owner"]);
+  });
+
+  it("queues an unsafe saved symlink instead of deleting foreign data or releasing its reservation", async () => {
+    const directory = await workspace();
+    const stateDir = join(directory, "state");
+    await mkdir(stateDir);
+    await writeFile(join(directory, "reports", "onepager.pdf"), "synthetic");
+    const outside = join(directory, "outside.pdf");
+    await writeFile(outside, "keep");
+    const store = new WorkspaceStagingStore();
+    const save = (async (_source: AsyncIterable<Uint8Array>, _type: string, kind: string) => {
+      const path = join(stateDir, "media", kind, "claimed.pdf");
+      await symlink(outside, path);
+      return { id: "claimed.pdf", path, size: 4, contentType: "application/pdf" };
+    }) as never;
+    await expect(stageWorkspaceFile(directory, "reports/onepager.pdf", "application/pdf", save, undefined, store, stateDir))
+      .rejects.toThrow("workspace_file_unavailable");
+    expect(await readFile(outside, "utf8")).toBe("keep");
+    const releaseHalf = store.reserve(WORKSPACE_STAGING_QUOTA_BYTES / 2);
+    expect(() => store.reserve(WORKSPACE_STAGING_QUOTA_BYTES / 2)).toThrow("workspace_staging_quota_exceeded");
+    releaseHalf();
+    const claimed = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging", store.runId, "claimed.pdf");
+    expect(await readlink(claimed)).toBe(outside);
+    await rm(claimed);
+    await store.retryFailedCleanups();
+    const release = store.reserve(WORKSPACE_STAGING_QUOTA_BYTES / 2);
+    expect(() => store.reserve(WORKSPACE_STAGING_QUOTA_BYTES / 2)).not.toThrow();
+    release();
+  });
+
+  it("retains quota and queues a saved copy when its post-save lstat cannot run", async () => {
+    if (process.getuid?.() === 0) return;
+    const directory = await workspace();
+    const stateDir = join(directory, "state");
+    await mkdir(stateDir);
+    await writeFile(join(directory, "reports", "onepager.pdf"), "synthetic");
+    const store = new WorkspaceStagingStore();
+    const { save } = saver(stateDir);
+    const run = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging", store.runId);
+    const unreadableSave = (async (source: AsyncIterable<Uint8Array>, mime: string, kind: string) => {
+      const saved = await (save as (stream: AsyncIterable<Uint8Array>, type: string, subdir: string) => Promise<unknown>)(source, mime, kind);
+      await chmod(run, 0);
+      return saved;
+    }) as typeof save;
+    try {
+      await expect(stageWorkspaceFile(directory, "reports/onepager.pdf", "application/pdf", unreadableSave, undefined, store, stateDir))
+        .rejects.toThrow("workspace_file_unavailable");
+      const releaseHalf = store.reserve(WORKSPACE_STAGING_QUOTA_BYTES / 2);
+      expect(() => store.reserve(WORKSPACE_STAGING_QUOTA_BYTES / 2)).toThrow("workspace_staging_quota_exceeded");
+      releaseHalf();
+    } finally { await chmod(run, 0o700); }
+    expect(await readdir(run)).toContain("synthetic-id.pdf");
+    await rm(join(run, "synthetic-id.pdf"));
+    await store.retryFailedCleanups();
+    const release = store.reserve(WORKSPACE_STAGING_QUOTA_BYTES / 2);
+    expect(() => store.reserve(WORKSPACE_STAGING_QUOTA_BYTES / 2)).not.toThrow();
+    release();
+  });
+
+  it("recovers a dead quota owner and a PID reused in the same boot", async () => {
+    const directory = await workspace();
+    const stateDir = join(directory, "state");
+    await mkdir(stateDir);
+    const store = new WorkspaceStagingStore();
+    await store.ownRun(stateDir);
+    const lock = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging", ".workspace-staging-quota-lock");
+    for (const [pid, start] of [[99999999, "0"], [process.pid, "0"]] as const) {
+      await mkdir(lock);
+      await writeFile(join(lock, ".workspace-staging-lock-owner"), JSON.stringify({ ...JSON.parse(await owner(randomUUID(), pid, start)), token: randomUUID() }));
+      const reservation = await store.reserveShared(1, stateDir);
+      await reservation.release();
+      await expect(readdir(lock)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    await mkdir(lock);
+    await writeFile(join(lock, ".workspace-staging-lock-owner"), JSON.stringify({ ...JSON.parse(await owner(randomUUID())), bootId: randomUUID(), token: randomUUID() }));
+    const rebooted = await store.reserveShared(1, stateDir);
+    await rebooted.release();
+    await expect(readdir(lock)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("fails closed for a live, foreign, or symlinked quota lock", async () => {
+    const directory = await workspace();
+    const stateDir = join(directory, "state");
+    await mkdir(stateDir);
+    const store = new WorkspaceStagingStore();
+    await store.ownRun(stateDir);
+    const lock = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging", ".workspace-staging-quota-lock");
+    const foreign = join(directory, "foreign");
+    await mkdir(foreign);
+    const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void) => {
+      queueMicrotask(callback);
+      return 0 as unknown as NodeJS.Timeout;
+    }) as typeof setTimeout);
+    try {
+      for (const host of [hostname(), "other-host"]) {
+        await mkdir(lock);
+        await writeFile(join(lock, ".workspace-staging-lock-owner"), JSON.stringify({ ...JSON.parse(await owner(randomUUID())), host, token: randomUUID() }));
+        await expect(store.reserveShared(1, stateDir)).rejects.toThrow("workspace_staging_quota_exceeded");
+        expect(await readdir(lock)).toEqual([".workspace-staging-lock-owner"]);
+        await rm(lock, { recursive: true });
+      }
+      await symlink(foreign, lock);
+      await expect(store.reserveShared(1, stateDir)).rejects.toThrow("workspace_staging_namespace_invalid");
+      await rm(lock);
+      await mkdir(lock);
+      await symlink(join(foreign, "owner"), join(lock, ".workspace-staging-lock-owner"));
+      await expect(store.reserveShared(1, stateDir)).rejects.toThrow("workspace_staging_quota_exceeded");
+      expect(await readdir(foreign)).toEqual([]);
+    } finally { timer.mockRestore(); }
+  }, 30_000);
+
+  it("reclaims only an old, empty unmarked quota lock", async () => {
+    const directory = await workspace();
+    const stateDir = join(directory, "state");
+    await mkdir(stateDir);
+    const store = new WorkspaceStagingStore();
+    await store.ownRun(stateDir);
+    const lock = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging", ".workspace-staging-quota-lock");
+    await mkdir(lock);
+    const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void) => {
+      queueMicrotask(callback);
+      return 0 as unknown as NodeJS.Timeout;
+    }) as typeof setTimeout);
+    try {
+      await expect(store.reserveShared(1, stateDir)).rejects.toThrow("workspace_staging_quota_exceeded");
+      expect(await readdir(lock)).toEqual([]);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 9 * 24 * 60 * 60_000);
+      try {
+        const reservation = await store.reserveShared(1, stateDir);
+        await reservation.release();
+        await expect(readdir(lock)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally { clock.mockRestore(); }
+    } finally { timer.mockRestore(); }
+  });
+
   it("reconciles crashed runs without touching active, recent, or unrelated inbound files", async () => {
     const directory = await workspace();
     const stateDir = join(directory, "state");
@@ -241,6 +401,73 @@ describe("one-call workspace source staging", () => {
     expect(await readdir(run)).toContain("foreign-note.txt");
     expect(staged.sourceMediaUri).toContain(previous.runId);
   });
+
+  it("rejects symlinked ancestors rather than deleting outside the state directory", async () => {
+    const directory = await workspace();
+    const actual = join(directory, "actual");
+    const stateDir = join(directory, "state");
+    const namespace = join(actual, "media", "inbound", "baumus-msgraph-workspace-staging");
+    const runId = randomUUID();
+    await mkdir(join(namespace, runId), { recursive: true });
+    await writeFile(join(namespace, runId, ".workspace-staging-owner"), await owner(runId, 99999999));
+    const fileName = `${randomUUID()}.pdf`;
+    await writeFile(join(namespace, runId, fileName), "keep");
+    await symlink(actual, stateDir);
+    await expect(reconcileWorkspaceStaging(stateDir)).rejects.toThrow("workspace_staging_namespace_invalid");
+    await rm(stateDir);
+    for (const ancestor of ["media", "inbound"]) {
+      const staging = join(directory, `state-${ancestor}`);
+      await mkdir(join(staging, ...(ancestor === "inbound" ? ["media"] : [])), { recursive: true });
+      await symlink(join(actual, "media", ...(ancestor === "inbound" ? ["inbound"] : [])), join(staging, "media", ...(ancestor === "inbound" ? ["inbound"] : [])));
+      await expect(reconcileWorkspaceStaging(staging)).rejects.toThrow("workspace_staging_namespace_invalid");
+    }
+    expect(await readdir(join(namespace, runId))).toContain(fileName);
+  });
+
+  it("reclaims a reused PID promptly, but preserves a live owner with unavailable identity", async () => {
+    const directory = await workspace();
+    const stateDir = join(directory, "state");
+    const namespace = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging");
+    const reused = randomUUID();
+    const rebooted = randomUUID();
+    const legacy = randomUUID();
+    for (const runId of [reused, rebooted, legacy]) {
+      await mkdir(join(namespace, runId), { recursive: true });
+      await writeFile(join(namespace, runId, `${randomUUID()}.pdf`), "copy");
+    }
+    await writeFile(join(namespace, reused, ".workspace-staging-owner"), await owner(reused, process.pid, "0"));
+    await writeFile(join(namespace, rebooted, ".workspace-staging-owner"), JSON.stringify({ ...JSON.parse(await owner(rebooted)), bootId: randomUUID() }));
+    await writeFile(join(namespace, legacy, ".workspace-staging-owner"), JSON.stringify({ runId: legacy, pid: process.pid, host: hostname(), pidNamespace: await readlink("/proc/self/ns/pid") }));
+    const old = new Date(Date.now() - 9 * 24 * 60 * 60_000);
+    await utimes(join(namespace, legacy), old, old);
+    await reconcileWorkspaceStaging(stateDir);
+    expect(await readdir(namespace)).not.toContain(reused);
+    expect(await readdir(namespace)).not.toContain(rebooted);
+    expect(await readdir(namespace)).toContain(legacy);
+  });
+
+  it("enforces shared bytes and slots across independent stores, including orphan copies", async () => {
+    const directory = await workspace();
+    const stateDir = join(directory, "state");
+    await mkdir(stateDir);
+    const first = new WorkspaceStagingStore();
+    const second = new WorkspaceStagingStore();
+    await first.ownRun(stateDir);
+    await second.ownRun(stateDir);
+    const held = await first.reserveShared(64 * 1024 * 1024, stateDir);
+    const other = await second.reserveShared(64 * 1024 * 1024, stateDir);
+    await expect(second.reserveShared(1, stateDir)).rejects.toThrow("workspace_staging_quota_exceeded");
+    await held.release();
+    const orphan = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging", first.runId, `${randomUUID()}.pdf`);
+    await writeFile(orphan, "");
+    await truncate(orphan, 64 * 1024 * 1024);
+    await expect(first.reserveShared(1, stateDir)).rejects.toThrow("workspace_staging_quota_exceeded");
+    await other.release();
+    const slots = [];
+    for (let slot = 0; slot < 63; slot++) slots.push(await second.reserveShared(0, stateDir));
+    await expect(second.reserveShared(0, stateDir)).rejects.toThrow("workspace_staging_quota_exceeded");
+    await Promise.all(slots.map((slot) => slot.release()));
+  }, 20_000);
 
   it("retries after a blocked orphan cleanup without deleting a foreign symlink", async () => {
     const directory = await workspace();
