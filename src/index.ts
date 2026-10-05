@@ -1271,7 +1271,9 @@ async function bindOneDriveWriteArtifact(toolName: string, params: Record<string
   if (hasUri === hasWorkspacePath) throw new Error("exactly_one_source_required");
   if (hasWorkspacePath) {
     const contentType = params.contentType ?? workspaceFileContentType(String(params.sourceWorkspacePath));
-    const staged = await stageWorkspaceFile(stagingWorkspaceFor(context), params.sourceWorkspacePath, String(contentType), undefined, context.abortSignal);
+    const stateDir = getResolvePluginStateDir()?.();
+    if (!stateDir) throw new Error("workspace_context_unavailable");
+    const staged = await stageWorkspaceFile(stagingWorkspaceFor(context), params.sourceWorkspacePath, String(contentType), undefined, context.abortSignal, workspaceStagingStore, stateDir);
     onStaged(staged.lease);
     if (assertion && (assertion.sourceSha256 !== staged.sourceSha256 || assertion.sourceByteSize !== staged.sourceByteSize)) throw new Error("invalid_source_fingerprint");
     const { sourceWorkspacePath: _sourceWorkspacePath, ...rest } = params;
@@ -3099,7 +3101,10 @@ plugin.register = (api) => {
     const policy = validatePolicy(runtimeConfig.policy);
   }
   const stateResolver = (api as unknown as { runtime?: { state?: { resolveStateDir?: (env?: NodeJS.ProcessEnv) => string } } }).runtime?.state?.resolveStateDir;
-  if (stateResolver) setResolvePluginStateDir(() => stateResolver(process.env));
+  if (stateResolver) {
+    setResolvePluginStateDir(() => stateResolver(process.env));
+    workspaceStagingStore.startReconciliation(stateResolver(process.env), () => api.logger.warn("Microsoft Graph workspace staging reconciliation failed; retrying on the next interval"));
+  }
   originalRegister(api);
   if (typeof (api as unknown as { registerCli?: unknown }).registerCli === "function" && stateResolver) {
     registerCredentialCli(api as unknown as Parameters<typeof registerCredentialCli>[0]);

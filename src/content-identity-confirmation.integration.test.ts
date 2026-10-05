@@ -42,6 +42,7 @@ function runtime(warningApprovalsRequired: boolean, managedRoot = false) {
   const factories: Array<(context: any) => any> = [];
   entry.register({
     pluginConfig: { enabled: true, warningApprovalsRequired, policy },
+    runtime: { state: { resolveStateDir: () => workspaceDir } },
     registerTool: (factory: any) => factories.push(factory),
     on: (name: string, handler: any) => { hooks[name] = handler; },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -89,48 +90,56 @@ describe.each([
     const inbound = join(workspaceDir, "media", "inbound");
     const params = { rootLabel: "synthetic_documents", relativePath: "SYNTHETIC_RECORD.pdf", sourceWorkspacePath: "reports/onepager.pdf" };
     const preflight = (callId: string, input: Record<string, unknown> = params) => hooks.before_tool_call({ toolName, toolCallId: callId, params: input }, context);
-    const originalFiles = await readdir(inbound);
+    const mediaFiles = async () => {
+      const entries = await readdir(inbound);
+      const namespace = "baumus-msgraph-workspace-staging";
+      if (!entries.includes(namespace)) return entries;
+      const runs = await readdir(join(inbound, namespace));
+      const staged = (await Promise.all(runs.map(async (run) => readdir(join(inbound, namespace, run))))).flat().filter((file) => file !== ".workspace-staging-owner");
+      return [...entries.filter((entry) => entry !== namespace), ...staged];
+    };
+    const originalFiles = await mediaFiles();
 
     const mismatch = await preflight("stage-mismatch", { ...params, sourceSha256: "0".repeat(64), sourceByteSize: bytes.length });
     expect(mismatch).toEqual({ block: true, blockReason: "invalid_source_fingerprint" });
-    expect(await readdir(inbound)).toEqual(originalFiles);
+    expect(await mediaFiles()).toEqual(originalFiles);
 
     for (const decision of ["deny", "cancelled", "timeout"]) {
       const approval = await preflight(`stage-${decision}`);
-      expect((await readdir(inbound)).length).toBe(originalFiles.length + 1);
+      expect((await mediaFiles()).length).toBe(originalFiles.length + 1);
       await approval.requireApproval.onResolution(decision);
-      expect(await readdir(inbound)).toEqual(originalFiles);
+      expect(await mediaFiles()).toEqual(originalFiles);
     }
 
     const missingId = await hooks.before_tool_call({ toolName, params }, context);
     expect(missingId).toEqual({ block: true, blockReason: "approval_context_tool_call_id_required" });
-    expect(await readdir(inbound)).toEqual(originalFiles);
+    expect(await mediaFiles()).toEqual(originalFiles);
 
     const changed = await preflight("stage-changed");
     await changed.requireApproval.onResolution("allow-once");
     expect((await tools[toolName].execute("stage-changed", { ...changed.params, relativePath: "changed.pdf" })).details)
       .toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
-    expect(await readdir(inbound)).toEqual(originalFiles);
+    expect(await mediaFiles()).toEqual(originalFiles);
 
     const failed = await preflight("stage-failed");
     await failed.requireApproval.onResolution("allow-once");
     vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("synthetic_provider_failure"));
     expect((await tools[toolName].execute("stage-failed", failed.params)).details).toMatchObject({ ok: false });
-    expect(await readdir(inbound)).toEqual(originalFiles);
+    expect(await mediaFiles()).toEqual(originalFiles);
     vi.restoreAllMocks();
 
     const approved = await preflight("stage-success");
     await approved.requireApproval.onResolution("allow-once");
     graphSuccess(bytes, update);
     expect((await tools[toolName].execute("stage-success", approved.params)).details).toMatchObject({ ok: true });
-    expect(await readdir(inbound)).toEqual(originalFiles);
+    expect(await mediaFiles()).toEqual(originalFiles);
 
     await writeFile(join(inbound, "existing.pdf"), bytes);
     const existing = await preflight("existing-media", {
       rootLabel: params.rootLabel, relativePath: params.relativePath, sourceMediaUri: "media://inbound/existing.pdf",
     });
     await existing.requireApproval.onResolution("deny");
-    expect(await readdir(inbound)).toEqual([...originalFiles, "existing.pdf"]);
+    expect(await mediaFiles()).toEqual([...originalFiles, "existing.pdf"]);
   });
 
   it.each([

@@ -8,6 +8,11 @@ import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 
 let directory: string | undefined;
 const originalStateDir = process.env.OPENCLAW_STATE_DIR;
+async function stagedFiles(stateDir: string) {
+  const directory = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging");
+  const runs = await readdir(directory).catch(() => []);
+  return (await Promise.all(runs.map((run) => readdir(join(directory, run))))).flat().filter((file) => file !== ".workspace-staging-owner");
+}
 afterEach(async () => {
   if (originalStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR;
   else process.env.OPENCLAW_STATE_DIR = originalStateDir;
@@ -46,18 +51,18 @@ describe("workspace-file OneDrive approval preflight", () => {
       rootLabel: "synthetic_documents", relativePath: "onepager.pdf", sourceWorkspacePath: "reports/onepager.pdf",
     } }, context);
     await approval.requireApproval.onResolution("allow-once");
-    expect((await readdir(join(stateDir, "media", "inbound"))).length).toBe(1);
+    expect((await stagedFiles(stateDir)).length).toBe(1);
     expect((await tool.execute("cross-realm-stage", { ...approval.params, relativePath: "modified.pdf" })).details)
       .toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
-    expect(await readdir(join(stateDir, "media", "inbound"))).toEqual([]);
+    expect(await stagedFiles(stateDir)).toEqual([]);
 
     const abandoned = await hooks.before_tool_call({ toolName: "onedrive_upload", toolCallId: "cross-realm-abandoned", params: {
       rootLabel: "synthetic_documents", relativePath: "onepager.pdf", sourceWorkspacePath: "reports/onepager.pdf",
     } }, context);
     expect(abandoned.requireApproval).toBeDefined();
-    expect((await readdir(join(stateDir, "media", "inbound"))).length).toBe(1);
+    expect((await stagedFiles(stateDir)).length).toBe(1);
     hooks.session_end({}, context);
-    await vi.waitFor(async () => expect(await readdir(join(stateDir, "media", "inbound"))).toEqual([]));
+    await vi.waitFor(async () => expect(await stagedFiles(stateDir)).toEqual([]));
     await abandoned.requireApproval.onResolution("allow-once");
     expect((await tool.execute("cross-realm-abandoned", abandoned.params)).details)
       .toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
@@ -119,6 +124,6 @@ describe("workspace-file OneDrive approval preflight", () => {
       await source.close();
     }
     await result.requireApproval.onResolution("deny");
-    expect(await readdir(join(stateDir, "media", "inbound"))).toEqual([]);
+    expect(await stagedFiles(stateDir)).toEqual([]);
   });
 });

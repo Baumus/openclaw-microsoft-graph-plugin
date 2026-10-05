@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
-import { link, mkdtemp, mkdir, readdir, rename, rm, symlink, truncate, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { createHash, randomUUID } from "node:crypto";
+import { link, mkdtemp, mkdir, readlink, readdir, rename, rm, symlink, truncate, utimes, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { stageWorkspaceFile, validateWorkspaceRelativeFilePath, workspaceFileContentType, WorkspaceStagingStore, WORKSPACE_STAGING_QUOTA_BYTES } from "./stage-workspace-file.js";
+import { reconcileWorkspaceStaging, stageWorkspaceFile, validateWorkspaceRelativeFilePath, workspaceFileContentType, WorkspaceStagingStore, WORKSPACE_STAGING_QUOTA_BYTES } from "./stage-workspace-file.js";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -17,17 +17,21 @@ async function workspace() {
   return path;
 }
 
-function saver(directory: string) {
+function saver(directory: string, fileName = "synthetic-id.pdf") {
   const saved: Buffer[] = [];
   const save = vi.fn(async (source: AsyncIterable<Uint8Array>, _mime: string, kind: string) => {
-    expect(kind).toBe("inbound");
+    expect(kind).toMatch(/^inbound\/baumus-msgraph-workspace-staging\/[0-9a-f-]{36}$/);
+    const path = join(directory, "media", kind, fileName);
+    await mkdir(join(directory, "media", kind), { recursive: true });
     for await (const chunk of source) saved.push(Buffer.from(chunk));
-    const path = join(directory, "media", "inbound", "synthetic-id.pdf");
-    await mkdir(join(directory, "media", "inbound"), { recursive: true });
     await writeFile(path, Buffer.concat(saved));
-    return { id: "synthetic-id.pdf", path, size: Buffer.concat(saved).byteLength, contentType: "application/pdf" };
+    return { id: fileName, path, size: Buffer.concat(saved).byteLength, contentType: "application/pdf" };
   });
   return { save: save as never, saved, calls: save };
+}
+
+async function owner(runId: string, pid = process.pid) {
+  return JSON.stringify({ runId, pid, host: hostname(), pidNamespace: await readlink("/proc/self/ns/pid").catch(() => undefined) });
 }
 
 describe("one-call workspace source staging", () => {
@@ -38,14 +42,14 @@ describe("one-call workspace source staging", () => {
     const { save, saved, calls } = saver(directory);
     const result = await stageWorkspaceFile(directory, "reports/onepager.pdf", "application/pdf", save);
     expect(result).toMatchObject({
-      sourceMediaUri: "media://inbound/synthetic-id.pdf",
       sourceSha256: createHash("sha256").update(bytes).digest("hex"),
       sourceByteSize: bytes.byteLength,
     });
+    expect(result.sourceMediaUri).toMatch(/^media:\/\/inbound\/baumus-msgraph-workspace-staging\/[0-9a-f-]{36}\/synthetic-id\.pdf$/);
     expect(Buffer.concat(saved)).toEqual(bytes);
     expect(calls).toHaveBeenCalledTimes(1);
     await result.lease.cleanup();
-    expect(await readdir(join(directory, "media", "inbound"))).toEqual([]);
+    expect(await readdir(join(directory, "media", "inbound", "baumus-msgraph-workspace-staging", result.sourceMediaUri.split("/")[4]))).toEqual([]);
     expect(workspaceFileContentType("reports/onepager.PDF")).toBe("application/pdf");
   });
 
@@ -136,12 +140,13 @@ describe("one-call workspace source staging", () => {
     let started = 0;
     let notify!: () => void;
     const bothStarted = new Promise<void>((resolve) => { notify = resolve; });
-    const save = (async (source: AsyncIterable<Uint8Array>, _mime: string, _kind: string, _limit: number, name: string) => {
+    const save = (async (source: AsyncIterable<Uint8Array>, _mime: string, kind: string, _limit: number, name: string) => {
       if (++started === 2) notify();
       await gate;
       let size = 0;
       for await (const chunk of source) size += chunk.byteLength;
-      const path = join(directory, name);
+      const path = join(directory, "media", kind, name);
+      await mkdir(join(directory, "media", kind), { recursive: true });
       await writeFile(path, "");
       await truncate(path, size);
       return { id: name, path, size };
@@ -162,11 +167,11 @@ describe("one-call workspace source staging", () => {
     await writeFile(join(directory, "reports", "onepager.pdf"), "synthetic");
     const { save } = saver(directory);
     const staged = await stageWorkspaceFile(directory, "reports/onepager.pdf", "application/pdf", save);
-    const path = join(directory, "media", "inbound", "synthetic-id.pdf");
+    const path = join(directory, "media", staged.sourceMediaUri.slice("media://".length));
     await rename(path, `${path}.owned`);
     await writeFile(path, "not owned");
     await staged.lease.cleanup();
-    expect(await readdir(join(directory, "media", "inbound"))).toContain("synthetic-id.pdf");
+    expect(await readdir(join(directory, "media", "inbound", "baumus-msgraph-workspace-staging", staged.sourceMediaUri.split("/")[4]))).toContain("synthetic-id.pdf");
   });
 
   it("reclaims a published copy when cancellation occurs immediately after saving", async () => {
@@ -181,6 +186,121 @@ describe("one-call workspace source staging", () => {
     }) as typeof save;
     await expect(stageWorkspaceFile(directory, "reports/onepager.pdf", "application/pdf", abortingSave, controller.signal))
       .rejects.toMatchObject({ name: "AbortError" });
-    expect(await readdir(join(directory, "media", "inbound"))).toEqual([]);
+    const [runId] = await readdir(join(directory, "media", "inbound", "baumus-msgraph-workspace-staging"));
+    expect(await readdir(join(directory, "media", "inbound", "baumus-msgraph-workspace-staging", runId))).toEqual([]);
+  });
+
+  it("reconciles crashed runs without touching active, recent, or unrelated inbound files", async () => {
+    const directory = await workspace();
+    const stateDir = join(directory, "state");
+    const inbound = join(stateDir, "media", "inbound");
+    const namespace = join(inbound, "baumus-msgraph-workspace-staging");
+    const staleId = randomUUID();
+    const recentId = randomUUID();
+    const activeId = randomUUID();
+    const foreignId = randomUUID();
+    const fileId = randomUUID();
+    const tempId = `.${randomUUID()}.123.${randomUUID()}.tmp`;
+    for (const runId of [staleId, recentId, activeId, foreignId]) {
+      await mkdir(join(namespace, runId), { recursive: true });
+      await writeFile(join(namespace, runId, `${fileId}.pdf`), "synthetic");
+      if (runId === staleId) {
+        await mkdir(join(namespace, runId, tempId));
+        await writeFile(join(namespace, runId, tempId, "partial"), "synthetic");
+      } else await writeFile(join(namespace, runId, tempId), "synthetic");
+      if (runId !== foreignId) await writeFile(join(namespace, runId, ".workspace-staging-owner"), await owner(runId, runId === staleId ? 99999999 : process.pid));
+    }
+    await writeFile(join(inbound, "unrelated.pdf"), "keep");
+    const stale = new Date(Date.now() - 9 * 24 * 60 * 60_000);
+    await utimes(join(namespace, staleId), stale, stale);
+    await utimes(join(namespace, activeId), stale, stale);
+    await utimes(join(namespace, foreignId), stale, stale);
+    await reconcileWorkspaceStaging(stateDir, activeId);
+    expect(await readdir(namespace)).toEqual(expect.arrayContaining([recentId, activeId, foreignId]));
+    expect(await readdir(namespace)).not.toContain(staleId);
+    expect(await readdir(inbound)).toContain("unrelated.pdf");
+    expect(await readdir(join(namespace, activeId))).toContain(`${fileId}.pdf`);
+    expect(await readdir(join(namespace, foreignId))).toContain(`${fileId}.pdf`);
+  });
+
+  it("reconciles a real prior run on startup, leaving foreign files inside the marked run", async () => {
+    const directory = await workspace();
+    const stateDir = join(directory, "state");
+    const source = join(directory, "reports", "onepager.pdf");
+    await mkdir(stateDir);
+    await writeFile(source, "synthetic");
+    const { save } = saver(stateDir, `${randomUUID()}.pdf`);
+    const previous = new WorkspaceStagingStore();
+    const staged = await stageWorkspaceFile(directory, "reports/onepager.pdf", "application/pdf", save, undefined, previous, stateDir);
+    const run = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging", previous.runId);
+    await writeFile(join(run, "foreign-note.txt"), "keep");
+    await writeFile(join(run, ".workspace-staging-owner"), await owner(previous.runId, 99999999));
+    const restarted = new WorkspaceStagingStore();
+    restarted.startReconciliation(stateDir);
+    await vi.waitFor(async () => expect(await readdir(run)).toEqual([".workspace-staging-owner", "foreign-note.txt"]));
+    expect(await readdir(run)).toContain("foreign-note.txt");
+    expect(staged.sourceMediaUri).toContain(previous.runId);
+  });
+
+  it("retries after a blocked orphan cleanup without deleting a foreign symlink", async () => {
+    const directory = await workspace();
+    const stateDir = join(directory, "state");
+    const runId = randomUUID();
+    const run = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging", runId);
+    const temp = `.${randomUUID()}.123.${randomUUID()}.tmp`;
+    await mkdir(join(run, temp), { recursive: true });
+    await writeFile(join(run, ".workspace-staging-owner"), await owner(runId, 99999999));
+    await symlink(join(directory, "reports"), join(run, temp, "foreign"));
+    const stale = new Date(Date.now() - 9 * 24 * 60 * 60_000);
+    await utimes(run, stale, stale);
+    await expect(reconcileWorkspaceStaging(stateDir)).rejects.toThrow("workspace_staging_reconciliation_failed");
+    expect(await readdir(join(run, temp))).toContain("foreign");
+    await rm(join(run, temp, "foreign"));
+    await reconcileWorkspaceStaging(stateDir);
+    expect(await readdir(join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging"))).not.toContain(runId);
+  });
+
+  it("records ownership before saving so a crash before streaming remains discoverable", async () => {
+    const directory = await workspace();
+    const stateDir = join(directory, "state");
+    await mkdir(stateDir);
+    await writeFile(join(directory, "reports", "onepager.pdf"), "synthetic");
+    const store = new WorkspaceStagingStore();
+    const interruptedSave = vi.fn(async () => { throw new Error("interrupted"); }) as never;
+    await expect(stageWorkspaceFile(directory, "reports/onepager.pdf", "application/pdf", interruptedSave, undefined, store, stateDir))
+      .rejects.toThrow("workspace_file_unavailable");
+    const run = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging", store.runId);
+    expect(await readdir(run)).toEqual([".workspace-staging-owner"]);
+    await writeFile(join(run, ".workspace-staging-owner"), await owner(store.runId, 99999999));
+    await reconcileWorkspaceStaging(stateDir);
+    expect(await readdir(join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging"))).not.toContain(store.runId);
+  });
+
+  it("does not claim a preexisting foreign directory with the same run ID", async () => {
+    const directory = await workspace();
+    const stateDir = join(directory, "state");
+    const store = new WorkspaceStagingStore();
+    const run = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging", store.runId);
+    await mkdir(run, { recursive: true });
+    await writeFile(join(run, "foreign.pdf"), "keep");
+    await writeFile(join(directory, "reports", "onepager.pdf"), "synthetic");
+    const { save, calls } = saver(stateDir);
+    await expect(stageWorkspaceFile(directory, "reports/onepager.pdf", "application/pdf", save, undefined, store, stateDir))
+      .rejects.toThrow("workspace_file_unavailable");
+    expect(calls).not.toHaveBeenCalled();
+    expect(await readdir(run)).toEqual(["foreign.pdf"]);
+  });
+
+  it("retries a failed terminal cleanup without permanently holding its quota", async () => {
+    const store = new WorkspaceStagingStore();
+    const releaseFirst = store.reserve(WORKSPACE_STAGING_QUOTA_BYTES / 2);
+    const releaseSecond = store.reserve(WORKSPACE_STAGING_QUOTA_BYTES / 2);
+    const lease = { cleanup: vi.fn().mockRejectedValueOnce(new Error("temporarily locked")).mockImplementation(async () => { releaseFirst(); releaseSecond(); }) };
+    store.bind("failed-call", "onedrive_upload", lease, undefined, () => undefined);
+    await expect(store.cleanup("failed-call")).rejects.toThrow("temporarily locked");
+    expect(() => store.reserve(1)).toThrow("workspace_staging_quota_exceeded");
+    await store.retryFailedCleanups();
+    expect(lease.cleanup).toHaveBeenCalledTimes(2);
+    store.reserve(1)();
   });
 });
