@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, readlink } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { root as secureRoot, type OpenResult } from "openclaw/plugin-sdk/infra-runtime";
+import { root as secureRoot, type OpenResult } from "@openclaw/fs-safe";
 import { saveMediaStream } from "openclaw/plugin-sdk/media-store";
 import { sanitizeAttachmentName } from "./attachment-download.js";
 import { ONEDRIVE_WRITE_MAX_BYTES } from "./graph.js";

@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.10.1 - 2026-10-06
+
+- Accept Microsoft's exact `https://www.microsoft.com/link` verification page for personal-account device-code sign-in, while continuing to reject lookalike and altered destinations. Thanks to [@DevilBehindTheSofa](https://github.com/DevilBehindTheSofa) for the clear report and verified workaround in [#28](https://github.com/Baumus/openclaw-microsoft-graph-plugin/issues/28).
+- Replace the removed `infra-runtime` SDK import with the existing direct `@openclaw/fs-safe` dependency for protected local-file access.
+
 ## 3.10.0 - 2026-10-06
 
 - Show a read-only update badge beside the established-connection status when ClawHub reports a newer, security-clean stable plugin release. The administrator-scoped Gateway check sends no credentials or policy data, is bounded and cached, and never installs an update.
