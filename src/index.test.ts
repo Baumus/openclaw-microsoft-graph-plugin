@@ -96,6 +96,7 @@ describe("microsoft-graph plugin contract", () => {
     expect(manifest.configContracts.secretInputs.paths).toEqual([
       { path: "credentialVaultKey", expected: "string", ownerKind: "capability" },
       { path: "nativeBoundaryKey", expected: "string", ownerKind: "capability" },
+      { path: "nativeExecutionPublicKey", expected: "string", ownerKind: "capability" },
     ]);
     expect(metadata.activation).toEqual({ onStartup: true });
     expect(manifest.toolMetadata.onedrive_agents_instructions).toEqual({ optional: true, replaySafe: true, sideEffecting: false });

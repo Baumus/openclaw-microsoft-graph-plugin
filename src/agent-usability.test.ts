@@ -45,7 +45,12 @@ describe("agent-facing Microsoft Graph contracts", () => {
 
   it("strips timeout metadata before semantic approval binding and provider execution", async () => {
     const { tools, hooks, context } = runtime();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 202 }));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) =>
+      init?.method === "POST"
+        ? new Response(null, { status: 202 })
+        : new Response(JSON.stringify({ id: "draft-1", internetMessageId: "<draft-1@example.test>", isDraft: true }), {
+          status: 200, headers: { "content-type": "application/json" },
+        }));
     try {
       const params = { action: "send_draft", messageId: "draft-1", timeoutMs: 180_000 };
       const gate = await hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: "budgeted-send", params }, context);
@@ -54,8 +59,8 @@ describe("agent-facing Microsoft Graph contracts", () => {
       gate.requireApproval.onResolution("allow-once");
       const response = (await tools.outlook_mail_write.execute("budgeted-send", params)).details;
       expect(response).toMatchObject({ ok: true, sent: true, deliveryStatus: "unknown", mutationApplied: true, retrySafety: "readback_before_retry" });
-      expect(String(fetchSpy.mock.calls[0][0])).toContain("/messages/draft-1/send");
-      expect(JSON.stringify(fetchSpy.mock.calls[0])).not.toContain("timeoutMs");
+      expect(fetchSpy.mock.calls.some((call) => String(call[0]).includes("/messages/draft-1/send"))).toBe(true);
+      expect(JSON.stringify(fetchSpy.mock.calls)).not.toContain("timeoutMs");
     } finally { fetchSpy.mockRestore(); }
   });
 

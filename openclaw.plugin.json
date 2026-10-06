@@ -98,6 +98,50 @@
         "minLength": 1,
         "maxLength": 4096
       },
+      "nativeExecutionRequired": {
+        "type": "boolean",
+        "default": false,
+        "description": "Require one exact, short-lived Native OS execution permit immediately before every Microsoft Graph effect."
+      },
+      "nativeExecutionPublicKey": {
+        "type": "object",
+        "required": [
+          "source",
+          "provider",
+          "id"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "env",
+              "file",
+              "exec",
+              "store"
+            ]
+          },
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "nativeExecutionSocketPath": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096
+      },
+      "nativeExecutionSocketOwnerUid": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 4294967295,
+        "default": 0
+      },
       "policy": {
         "type": "object",
         "required": [
@@ -470,6 +514,11 @@
         },
         {
           "path": "nativeBoundaryKey",
+          "expected": "string",
+          "ownerKind": "capability"
+        },
+        {
+          "path": "nativeExecutionPublicKey",
           "expected": "string",
           "ownerKind": "capability"
         }

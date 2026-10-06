@@ -16,6 +16,7 @@ import { authorizeOperation, authorizeRoot, GraphPolicySchema, normalizeRelative
 import { base64DecodedByteLengthStrict, base64JsonResponseLimit, canonicalGraphContinuation, contentTypeAllowed, decodeBase64Strict, DIRECT_ATTACHMENT_MAX_BYTES, driveCreateFolder, driveDelete, driveList, driveListContinuation, driveMetadataUpdate, drivePath, driveRead, driveReadInstructionsCandidate, driveSearchPath, driveSearchScoped, driveWriteSource, graphOperationSignal, graphRequest, normalizeDriveSearch, ONEDRIVE_READ_MAX_BYTES, ONEDRIVE_WRITE_MAX_BYTES, OUTLOOK_ATTACHMENT_MAX_BYTES, safeId, TODO_ATTACHMENT_MAX_BYTES, uploadAttachmentSession, validateDriveFolderInput, validateDriveMetadataInput, validateDriveWriteBytes, type DriveUploadSource } from "./graph.js";
 import { ONEDRIVE_AGENTS_MAX_FILE_BYTES, ONEDRIVE_AGENTS_MAX_PARALLEL, OneDriveAgentsSessionCache, oneDriveAgentsSessionCache } from "./onedrive-agents-instructions.js";
 import { NativeBoundaryService } from "./native-boundary.js";
+import { completeNativeExecutionPermit, consumeNativeExecutionPermit } from "./native-execution-permit.js";
 
 const MAX_RESULTS = 50;
 const MAX_MAIL_FOLDERS = 200;
@@ -39,6 +40,10 @@ const APPROVAL_DISPLAY_VALUE_MAX_CHARS = 72;
 const MAX_OUTER_TOOL_TIMEOUT_MS = 600_000;
 const MAX_ONEDRIVE_STAGING_WORKSPACE_CONTEXTS = 64;
 const STAGING_CLEANUP_DEFERRED = "workspace_staging_cleanup_deferred";
+const NATIVE_EXTERNAL_EFFECT_EXEMPT_TOOLS = new Set([
+  "microsoft_graph_capabilities",
+  "onedrive_agents_instructions",
+]);
 
 const SecretRefOnly = Type.Unsafe<string>({
   type: "object",
@@ -59,6 +64,10 @@ const Config = Type.Object({
   nativeBoundaryKey: Type.Optional(SecretRefOnly),
   nativeBoundaryAgentId: Type.Optional(Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._-]+$", default: "main" })),
   nativeBoundarySocketPath: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+  nativeExecutionRequired: Type.Optional(Type.Boolean({ default: false, description: "Require one exact, short-lived Native OS execution permit immediately before every Microsoft Graph effect." })),
+  nativeExecutionPublicKey: Type.Optional(SecretRefOnly),
+  nativeExecutionSocketPath: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+  nativeExecutionSocketOwnerUid: Type.Optional(Type.Integer({ minimum: 0, maximum: 4294967295, default: 0 })),
   policy: Type.Optional(GraphPolicySchema),
   requestTimeoutMs: Type.Optional(Type.Integer({ minimum: 1000, maximum: 30000, default: 5000 })),
   readOperationTimeoutMs: Type.Optional(Type.Integer({ minimum: 5000, maximum: 300000, default: DEFAULT_READ_OPERATION_TIMEOUT_MS, description: "Whole-operation deadline for multi-request reads; each Graph request remains bounded by requestTimeoutMs." })),
@@ -71,7 +80,7 @@ const Config = Type.Object({
   oneDriveTransferTimeoutMs: Type.Optional(Type.Integer({ minimum: 30000, maximum: 7 * 24 * 60 * 60 * 1000, default: DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS, description: "Whole-operation deadline for OneDrive private-media downloads and uploads; each Graph request remains bounded by requestTimeoutMs." })),
 }, { additionalProperties: false });
 
-export type RuntimeConfig = { enabled?: boolean; warningApprovalsRequired?: boolean; credentialVaultKey?: unknown; nativeBoundaryEnabled?: boolean; nativeBoundaryKey?: unknown; nativeBoundaryAgentId?: string; nativeBoundarySocketPath?: string; policy?: GraphPolicy; requestTimeoutMs?: number; readOperationTimeoutMs?: number; calendarMultiwriteTimeoutMs?: number; maxConcurrent?: number; maxReadBytes?: number; maxReadOutputBytes?: number; maxAttachmentDownloadBytes?: number; attachmentDownloadTimeoutMs?: number; oneDriveTransferTimeoutMs?: number };
+export type RuntimeConfig = { enabled?: boolean; warningApprovalsRequired?: boolean; credentialVaultKey?: unknown; nativeBoundaryEnabled?: boolean; nativeBoundaryKey?: unknown; nativeBoundaryAgentId?: string; nativeBoundarySocketPath?: string; nativeExecutionRequired?: boolean; nativeExecutionPublicKey?: unknown; nativeExecutionSocketPath?: string; nativeExecutionSocketOwnerUid?: number; policy?: GraphPolicy; requestTimeoutMs?: number; readOperationTimeoutMs?: number; calendarMultiwriteTimeoutMs?: number; maxConcurrent?: number; maxReadBytes?: number; maxReadOutputBytes?: number; maxAttachmentDownloadBytes?: number; attachmentDownloadTimeoutMs?: number; oneDriveTransferTimeoutMs?: number };
 type OneDriveApprovalRoot = Pick<AllowedRoot, "label" | "drive_id" | "item_id">;
 type Logger = { info: (message: string) => void; warn: (message: string) => void };
 let activeRequests = 0;
@@ -240,7 +249,7 @@ function errorCode(error: unknown): string {
   if (error instanceof DOMException && error.name === "AbortError") return "request_aborted";
   if (error instanceof DOMException && error.name === "TimeoutError") return "request_timeout";
   const code = error instanceof Error ? error.message : "internal_error";
-  return /^(access_denied|approval_context_|connector_disabled|trusted_(?:agent_identity|workspace|session_identity)_required|instruction_|onedrive_agents_instructions_required|invalid_|unsupported_|credential_|authentication_|provider_|item_|file_|binary_|request_|workspace_|exactly_one_)/.test(code) ? code : "internal_error";
+  return /^(access_denied|approval_context_|connector_disabled|trusted_(?:agent_identity|workspace|session_identity)_required|instruction_|onedrive_agents_instructions_required|native_execution_|invalid_|unsupported_|credential_|authentication_|provider_|item_|file_|binary_|request_|workspace_|exactly_one_)/.test(code) ? code : "internal_error";
 }
 export async function withConcurrency<T>(limit: number, action: () => Promise<T>): Promise<T> {
   if (activeRequests >= limit) throw new Error("request_concurrency_exceeded");
@@ -644,7 +653,28 @@ export function concrete(name: string, parameters: any, agentId: string | undefi
         const approvalSnapshotMatches = nativeApprovalSnapshots.consume(_id, agentId, sessionId, name, semantic, oneDriveRoot);
         if (approvalSnapshotMatches === false || (classifyApproval(name, semantic) !== "none" && (approvalSnapshotMatches !== true || !sessionIsCurrent()))) throw new Error("approval_context_invalid_or_changed");
         workspaceStagingStore.beginExecution(_id, name, sessionId);
-        value = await execute(semantic, signal);
+        const nativeEffectConfig = NATIVE_EXTERNAL_EFFECT_EXEMPT_TOOLS.has(name)
+          ? { ...(approvalConfig ?? {}), nativeExecutionRequired: false }
+          : approvalConfig ?? {};
+        const nativePermit = await consumeNativeExecutionPermit(nativeEffectConfig, name, _id, semantic);
+        try {
+          value = await execute(semantic, signal);
+        } catch (effectError) {
+          if (nativePermit) {
+            try {
+              await completeNativeExecutionPermit(nativeEffectConfig, nativePermit, {
+                ok: false,
+                error: errorCode(effectError),
+                phase: "failed",
+                mutationApplied: "unknown",
+              });
+            } catch {
+              throw new Error("native_execution_completion_unverified");
+            }
+          }
+          throw effectError;
+        }
+        await completeNativeExecutionPermit(nativeEffectConfig, nativePermit, value);
       } catch (error) {
         failure = errorCode(error);
       }
@@ -1582,7 +1612,7 @@ const plugin = defineToolPlugin({
           const page = await driveSearchScoped(root, search.query, token, max, searchState, bounded, undefined, {}, search.mode, search.exhaustive);
           return { ok: true, operation: "search", root_label: rootLabel, ...publicStatePage(page, binding, expectedPath) };
         }, (root) => { if (verified) searchState = continuationStore.continuationState(verified, driveSearchPath(root, search.query)); });
-      }) }),
+      }, config) }),
       tool({ name: "onedrive_list", label: "OneDrive List", optional: true, description: "List one exact allowlisted root with explicit continuation and truncation metadata.", parameters: listSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_list", listSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath = "", limit, continuation }, signal) => {
         const path = normalizeRelativePath(relativePath);
         const max = boundedLimit(limit);
@@ -1594,13 +1624,13 @@ const plugin = defineToolPlugin({
           const page = providerPath ? await driveListContinuation(root, path, token, max, providerPath, bounded) : await driveList(root, path, token, max, bounded);
           return { ok: true, operation: "list", root_label: rootLabel, ...publicPage(page, binding, expectedPath) };
         }, (root) => { if (verified) providerPath = continuationStore.providerPath(verified, drivePath(root, path, "/children")); });
-      }) }),
-      tool({ name: "onedrive_read", label: "OneDrive Read", optional: true, description: "Read bounded text or stream a digest for supported files, including XLSX, in one allowlisted root. Digest mode returns metadata, byte count, and SHA-256 only.", parameters: readSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_read", readSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, mode }, signal) => withDrive(config, toolContext.agentId, rootLabel, "read", signal, (root, token, bounded) => driveRead(root, normalizeRelativePath(relativePath), token, mode, mode === "digest" ? config.maxReadBytes ?? ONEDRIVE_READ_MAX_BYTES : config.maxReadOutputBytes ?? DEFAULT_READ_OUTPUT_BYTES, bounded))) }),
+      }, config) }),
+      tool({ name: "onedrive_read", label: "OneDrive Read", optional: true, description: "Read bounded text or stream a digest for supported files, including XLSX, in one allowlisted root. Digest mode returns metadata, byte count, and SHA-256 only.", parameters: readSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_read", readSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, mode }, signal) => withDrive(config, toolContext.agentId, rootLabel, "read", signal, (root, token, bounded) => driveRead(root, normalizeRelativePath(relativePath), token, mode, mode === "digest" ? config.maxReadBytes ?? ONEDRIVE_READ_MAX_BYTES : config.maxReadOutputBytes ?? DEFAULT_READ_OUTPUT_BYTES, bounded)), config) }),
       tool({ name: "onedrive_download", label: "OneDrive Download", optional: true, description: "Stream one allowlisted file into OpenClaw's private media store without exposing bytes or host paths.", parameters: downloadSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_download", downloadSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath }, signal) => withDrive(config, toolContext.agentId, rootLabel, "read", signal, async (root, token, bounded) => ({
         ok: true,
         operation: "download",
         ...await downloadOneDriveFile({ root, relativePath: normalizeRelativePath(relativePath), token, signal: bounded }),
-      }), undefined, config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS)) }),
+      }), undefined, config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS), config) }),
       tool({ name: "onedrive_upload", label: "OneDrive Upload", optional: true, description: "Create one file without overwrite from a workspace-relative sourceWorkspacePath or existing media://inbound/... sourceMediaUri; supply exactly one. The plugin computes SHA-256 and size before native approval and rechecks them before transfer. Optional fingerprint fields are assertions, not prerequisites. A blocked preflight means no approval was requested; chat confirmation tokens cannot authorize the action. Uses a Graph upload session above 250 MB.", parameters: uploadSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_upload", uploadSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
         void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
@@ -1655,14 +1685,14 @@ const plugin = defineToolPlugin({
         await enforceOneDriveInstructionExecution(config, { agentId: toolContext.agentId, sessionId: toolContext.sessionId }, "onedrive_delete", { rootLabel, relativePath: path, agentsInstructionAck }, signal);
         return withDrive(config, toolContext.agentId, rootLabel, "delete", signal, (root, token, bounded) => driveDelete(root, path, token, bounded));
       }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
-      tool({ name: "outlook_calendar_read", label: "Outlook Calendar Read", optional: true, description: "Bounded default or explicitly authorized calendar reads, selected stable event fields, event search, free/busy, attachment metadata, and direct file downloads.", parameters: calendarReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_read", calendarReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "outlook_calendar_write", label: "Outlook Calendar Write", optional: true, description: "Create, update, or non-atomically multiwrite stable Microsoft Graph v1.0 event settings, respond, attach private media up to 150 MB, or delete. Multiwrite is capped at 100 operations, ordered, and chunked into Graph batches of 20. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: calendarWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_write", calendarWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
-      tool({ name: "outlook_mail_read", label: "Outlook Mail Read", optional: true, description: "Bounded own-mailbox message reads, KQL/filter search, selected stable message fields, attachment metadata, and direct file downloads.", parameters: mailReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_read", mailReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "outlook_mail_write", label: "Outlook Mail Write", optional: true, description: "Own-mailbox draft fields, reply/reply-all/forward drafts, copy/move, private-media attachments up to 150 MB, send, and delete. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: mailWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_write", mailWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
-      tool({ name: "microsoft_todo_read", label: "Microsoft To Do Read", optional: true, description: "Bounded own-account list/task reads and client-side search, including checklist, linked-resource, and attachment collections.", parameters: todoReadSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_read", todoReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "microsoft_todo_write", label: "Microsoft To Do Write", optional: true, description: "Owned non-shared list/task settings, checklist, linked-resource, and private-media attachment mutations up to 25 MB. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: todoWriteSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_write", todoWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
-      tool({ name: "onedrive_agents_instructions", label: "OneDrive AGENTS.md Instructions", optional: true, description: "Batch-discover the bounded root-to-directory AGENTS.md chain for a centrally trusted OneDrive root. Ordinary OneDrive tools invoke this preflight automatically and require a session-bound acknowledgement before proceeding.", parameters: agentsInstructionsSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_agents_instructions", agentsInstructionsSchema, toolContext.agentId, toolContext.sessionId, api.logger, ({ rootLabel, relativeDirectory = "", acknowledgement }, signal) => oneDriveAgentsInstructions(config, { agentId: toolContext.agentId, sessionId: toolContext.sessionId }, { rootLabel, relativeDirectory, acknowledgement }, signal)) }),
-      tool({ name: "microsoft_graph_capabilities", label: "Microsoft Graph Capabilities", optional: true, description: TOOL_GUIDANCE.microsoft_graph_capabilities, parameters: Type.Object({}, { additionalProperties: false }), factory: ({ config, toolContext, api }) => concrete("microsoft_graph_capabilities", Type.Object({}, { additionalProperties: false }), toolContext.agentId, toolContext.sessionId, api.logger, async () => callerCapabilities(config, toolContext.agentId)) }),
+      tool({ name: "outlook_calendar_read", label: "Outlook Calendar Read", optional: true, description: "Bounded default or explicitly authorized calendar reads, selected stable event fields, event search, free/busy, attachment metadata, and direct file downloads.", parameters: calendarReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_read", calendarReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarRead(config, toolContext.agentId, params, signal), config) }),
+      tool({ name: "outlook_calendar_write", label: "Outlook Calendar Write", optional: true, description: "Create, update, or non-atomically multiwrite stable Microsoft Graph v1.0 event settings, respond, attach private media up to 150 MB, or delete. Multiwrite is capped at 100 operations, ordered, and chunked into Graph batches of 20. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: calendarWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_write", calendarWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
+      tool({ name: "outlook_mail_read", label: "Outlook Mail Read", optional: true, description: "Bounded own-mailbox message reads, KQL/filter search, selected stable message fields, attachment metadata, and direct file downloads.", parameters: mailReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_read", mailReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailRead(config, toolContext.agentId, params, signal), config) }),
+      tool({ name: "outlook_mail_write", label: "Outlook Mail Write", optional: true, description: "Own-mailbox draft fields, reply/reply-all/forward drafts, copy/move, private-media attachments up to 150 MB, send, and delete. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: mailWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_write", mailWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
+      tool({ name: "microsoft_todo_read", label: "Microsoft To Do Read", optional: true, description: "Bounded own-account list/task reads and client-side search, including checklist, linked-resource, and attachment collections.", parameters: todoReadSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_read", todoReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoRead(config, toolContext.agentId, params, signal), config) }),
+      tool({ name: "microsoft_todo_write", label: "Microsoft To Do Write", optional: true, description: "Owned non-shared list/task settings, checklist, linked-resource, and private-media attachment mutations up to 25 MB. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: todoWriteSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_write", todoWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
+      tool({ name: "onedrive_agents_instructions", label: "OneDrive AGENTS.md Instructions", optional: true, description: "Batch-discover the bounded root-to-directory AGENTS.md chain for a centrally trusted OneDrive root. Ordinary OneDrive tools invoke this preflight automatically and require a session-bound acknowledgement before proceeding.", parameters: agentsInstructionsSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_agents_instructions", agentsInstructionsSchema, toolContext.agentId, toolContext.sessionId, api.logger, ({ rootLabel, relativeDirectory = "", acknowledgement }, signal) => oneDriveAgentsInstructions(config, { agentId: toolContext.agentId, sessionId: toolContext.sessionId }, { rootLabel, relativeDirectory, acknowledgement }, signal), config) }),
+      tool({ name: "microsoft_graph_capabilities", label: "Microsoft Graph Capabilities", optional: true, description: TOOL_GUIDANCE.microsoft_graph_capabilities, parameters: Type.Object({}, { additionalProperties: false }), factory: ({ config, toolContext, api }) => concrete("microsoft_graph_capabilities", Type.Object({}, { additionalProperties: false }), toolContext.agentId, toolContext.sessionId, api.logger, async () => callerCapabilities(config, toolContext.agentId), config) }),
     ];
     for (const definition of definitions) {
       const item = definition as { name: string; description?: string; parameters: { properties?: Record<string, unknown> } };
@@ -2772,7 +2802,12 @@ async function mailWrite(config: RuntimeConfig, agentId: string | undefined, wor
       return { ok: true, action: p.action, ...uploaded, attachment: { name: attachmentPlan!.name, contentType: attachmentPlan!.contentType, size: attachmentPlan!.size } };
     }
     if (p.action === "mark_read") return { ok: true, action: p.action, item: await graphRequest(token, `/me/messages/${id}`, { method: "PATCH", body: { isRead: p.isRead }, signal: bounded }) };
-    if (p.action === "send_draft") { await graphRequest(token, mailMessageActionPath(p.messageId, "send"), { method: "POST", body: {}, response: "none", signal: bounded }); return { ok: true, action: p.action, sent: true }; }
+    if (p.action === "send_draft") {
+      const draft = await graphRequest(token, `/me/messages/${id}?$select=id,internetMessageId,isDraft`, { signal: bounded }) as Record<string, unknown>;
+      if (draft.id !== p.messageId || draft.isDraft !== true || typeof draft.internetMessageId !== "string" || !draft.internetMessageId) throw new Error("invalid_provider_response");
+      await graphRequest(token, mailMessageActionPath(p.messageId, "send"), { method: "POST", body: {}, response: "none", signal: bounded });
+      return { ok: true, action: p.action, sent: true, sentInternetMessageId: draft.internetMessageId };
+    }
     if (p.action === "delete") { await graphRequest(token, `/me/messages/${id}`, { method: "DELETE", response: "none", signal: bounded }); return { ok: true, action: p.action, deleted: true }; }
     throw new Error("unsupported_action");
   }, "me", undefined, p.action === "add_attachment" ? async () => {
@@ -3263,6 +3298,16 @@ plugin.register = (api) => {
   if (runtimeConfig.policy !== undefined) {
     const policy = validatePolicy(runtimeConfig.policy);
   }
+  if (
+    runtimeConfig.nativeExecutionRequired === true &&
+    (
+      typeof runtimeConfig.nativeExecutionPublicKey !== "string" ||
+      typeof runtimeConfig.nativeExecutionSocketPath !== "string" ||
+      !runtimeConfig.nativeExecutionSocketPath ||
+      !Number.isSafeInteger(runtimeConfig.nativeExecutionSocketOwnerUid ?? 0) ||
+      (runtimeConfig.nativeExecutionSocketOwnerUid ?? 0) < 0
+    )
+  ) throw new Error("native_execution_configuration_invalid");
   const stateResolver = (api as unknown as { runtime?: { state?: { resolveStateDir?: (env?: NodeJS.ProcessEnv) => string } } }).runtime?.state?.resolveStateDir;
   if (stateResolver) {
     setResolvePluginStateDir(() => stateResolver(process.env));
