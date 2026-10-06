@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## 3.9.0 - 2026-10-06
+
+- Add the versioned, process-local `gemacode-microsoft-graph-compact-read/1`
+  bridge for three exact read-only operations. The bridge reapplies Graph
+  policy, credential, parameter and optional native-execution-permit controls;
+  it is not exposed as a network service.
+- Keep package, OpenClaw manifest and installation metadata on the same release
+  version so a product compatibility gate can reject mixed installations.
+
 ## 3.8.9 - 2026-10-06
 
 - Add compact, fail-closed OneDrive root-folder create and exact-delete tools for small local models, while preserving Graph policy, native approval, Native OS execution permits, instruction gating, and bounded exact-match scanning.
