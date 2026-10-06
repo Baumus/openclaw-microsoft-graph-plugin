@@ -110,6 +110,7 @@ describe("agent-facing Microsoft Graph contracts", () => {
     expect(lifecycleResult("outlook_mail_read", { ok: true, items: [], truncated: true })).toMatchObject({ phase: "partial", noResults: false, code: "partial_results" });
     expect(lifecycleResult("outlook_mail_read", { ok: true, items: [], truncated: false })).toMatchObject({ phase: "complete", noResults: true, code: "ok" });
     expect(lifecycleResult("outlook_calendar_write", { ok: false, action: "multiwrite", outcome: "partial", operations: [{ applied: true }, { applied: false, status: 400 }] })).toMatchObject({ phase: "partial", mutationApplied: true, retrySafety: "readback_before_retry" });
+    expect(lifecycleResult("microsoft_todo_default_task_create", { ok: true, action: "create_task", item: { id: "task-1" } })).toMatchObject({ phase: "complete", mutationApplied: true, retrySafety: "do_not_repeat" });
   });
 
   it("exposes only effective caller grants and prerequisites without credentials or foreign grants", async () => {

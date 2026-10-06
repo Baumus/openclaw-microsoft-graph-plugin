@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { getToolPluginMetadata } from "openclaw/plugin-sdk/tool-plugin";
-import entry, { approvalInventory, assertOwnedTodoList, assertWriteActionFields, attachmentWritePlan, boundedCollectionPage, calendarApprovalCriteria, calendarCollectionPath, calendarDayReadParams, calendarEventPath, calendarEventPayload, calendarPageIsTruncated, calendarViewPath, calendarViewQuery, calendarWindowDateTime, classifyApproval, collectFilteredCollection, COMPACT_READ_BRIDGE_KEY, COMPACT_READ_BRIDGE_PROTOCOL, dateTimeTimeZone, deadlineSignal, enforceOneDriveInstructionPreflight, eventGetFields, eventMatchesSearch, eventReadFields, executeCompactMicrosoftRead, fileAttachmentPayload, listMailFolders, mailFolderCollectionPath, mailListQuery, mailMessageActionPath, mailMessageCollectionPath, mailMessagePayload, mailReplyForwardPlan, NativeApprovalSnapshotStore, nextGraphPath, normalizedWarningApprovalAction, oneDriveAgentsInstructions, oneDriveInstructionDirectories, oneDriveWriteApprovalCriteria, readProtectedMediaSource, readOperationTimeout, schedulePage, taskPayload, todoTaskChildPath, todoTaskMatches, todoTaskPath, validateAttachmentContent, validateProtectedMediaUri, WarningApprovalTrustStore, WRITE_ACTION_FIELDS } from "./index.js";
+import entry, { approvalInventory, assertOwnedTodoList, assertWriteActionFields, attachmentWritePlan, boundedCollectionPage, calendarApprovalCriteria, calendarCollectionPath, calendarDayReadParams, calendarEventPath, calendarEventPayload, calendarPageIsTruncated, calendarViewPath, calendarViewQuery, calendarWindowDateTime, classifyApproval, collectFilteredCollection, COMPACT_OPERATION_BRIDGE_KEY, COMPACT_OPERATION_BRIDGE_PROTOCOL, COMPACT_READ_BRIDGE_KEY, COMPACT_READ_BRIDGE_PROTOCOL, dateTimeTimeZone, deadlineSignal, enforceOneDriveInstructionPreflight, eventGetFields, eventMatchesSearch, eventReadFields, executeCompactMicrosoftOperation, executeCompactMicrosoftRead, fileAttachmentPayload, listMailFolders, mailFolderCollectionPath, mailListQuery, mailMessageActionPath, mailMessageCollectionPath, mailMessagePayload, mailReplyForwardPlan, NativeApprovalSnapshotStore, nextGraphPath, normalizedWarningApprovalAction, oneDriveAgentsInstructions, oneDriveInstructionDirectories, oneDriveWriteApprovalCriteria, readProtectedMediaSource, readOperationTimeout, schedulePage, taskPayload, todoTaskChildPath, todoTaskMatches, todoTaskPath, validateAttachmentContent, validateProtectedMediaUri, WarningApprovalTrustStore, WRITE_ACTION_FIELDS } from "./index.js";
 import { beforeMicrosoftGraphToolCall, enforceOneDriveInstructionExecution, normalizeMicrosoftGraphReadParams } from "./index.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 import { ONEDRIVE_AGENTS_MAX_DEPTH, OneDriveAgentsSessionCache, oneDriveAgentsSessionCache } from "./onedrive-agents-instructions.js";
@@ -84,7 +84,22 @@ describe("microsoft-graph plugin contract", () => {
     })).rejects.toThrow("invalid_compact_read_request");
   });
 
-  it("publishes and retracts the versioned in-process compact-read bridge", async () => {
+  it("requires an explicit non-interactive policy for compact mutations", async () => {
+    await expect(executeCompactMicrosoftOperation({ warningApprovalsRequired: true } as any, {
+      toolCallId: "compact-write-1",
+      toolName: "microsoft_todo_default_task_create",
+      agentId: "main",
+      params: { title: "Pagar Inglés", dueDateTime: "2026-10-09T00:00:00", timeZone: "Europe/Madrid" },
+    })).rejects.toThrow("native_approval_required");
+    await expect(executeCompactMicrosoftOperation({ warningApprovalsRequired: false } as any, {
+      toolCallId: "compact-write-2",
+      toolName: "microsoft_todo_default_task_create",
+      agentId: "main",
+      params: { title: "Pagar Inglés", timeZone: "Europe/Madrid" },
+    })).rejects.toThrow("invalid_datetime_timezone");
+  });
+
+  it("publishes and retracts the versioned in-process compact-operation bridge", async () => {
     const services: Array<any> = [];
     const current = graphPolicyFixture();
     const api = {
@@ -98,13 +113,17 @@ describe("microsoft-graph plugin contract", () => {
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     };
     entry.register(api as any);
-    const service = services.find((candidate) => candidate.id === "microsoft-graph-compact-read-bridge");
+    const service = services.find((candidate) => candidate.id === "microsoft-graph-compact-operation-bridge");
     expect(service).toBeDefined();
     await service.start();
+    const operationBridge = (globalThis as any)[COMPACT_OPERATION_BRIDGE_KEY];
+    expect(operationBridge.protocol).toBe(COMPACT_OPERATION_BRIDGE_PROTOCOL);
+    expect(typeof operationBridge.execute).toBe("function");
     const bridge = (globalThis as any)[COMPACT_READ_BRIDGE_KEY];
     expect(bridge.protocol).toBe(COMPACT_READ_BRIDGE_PROTOCOL);
     expect(typeof bridge.execute).toBe("function");
     await service.stop();
+    expect((globalThis as any)[COMPACT_OPERATION_BRIDGE_KEY]).toBeUndefined();
     expect((globalThis as any)[COMPACT_READ_BRIDGE_KEY]).toBeUndefined();
   });
 
@@ -718,9 +737,11 @@ describe("microsoft-graph plugin contract", () => {
     const metadata = getToolPluginMetadata(entry)!;
     const readSchema = metadata.tools.find((tool) => tool.name === "microsoft_todo_read")?.parameters as any;
     const writeSchema = metadata.tools.find((tool) => tool.name === "microsoft_todo_write")?.parameters as any;
+    const compactCreateSchema = metadata.tools.find((tool) => tool.name === "microsoft_todo_default_task_create")?.parameters as any;
     expect(readSchema.properties.action.anyOf.map((entry: any) => entry.const)).toEqual(expect.arrayContaining(["search_lists", "search_tasks", "list_checklist", "list_linked_resources", "list_attachments", "get_attachment"]));
     expect(writeSchema.properties.action.anyOf.map((entry: any) => entry.const)).toEqual(expect.arrayContaining(["update_checklist", "delete_checklist", "add_linked_resource", "update_linked_resource", "delete_linked_resource", "add_attachment", "delete_attachment"]));
     for (const field of ["bodyHtml", "categories", "recurrence", "isReminderOn", "completedDateTime"]) expect(writeSchema.properties[field]).toBeTruthy();
+    for (const field of ["title", "dueDateTime", "timeZone"]) expect(compactCreateSchema.properties[field]).toBeTruthy();
     expect(taskPayload({ title: "Synthetic Task", bodyHtml: "<p>Synthetic details</p>", categories: ["Synthetic Category"], isReminderOn: false, completedDateTime: "2026-09-08T12:00:00" })).toEqual({ title: "Synthetic Task", body: { contentType: "html", content: "<p>Synthetic details</p>" }, categories: ["Synthetic Category"], isReminderOn: false, completedDateTime: { dateTime: "2026-09-08T12:00:00", timeZone: "UTC" } });
     expect(todoTaskMatches({ title: "Synthetic task record", body: { content: "Synthetic content" }, categories: ["Synthetic Category"], status: "inProgress", isReminderOn: false }, { search: "synthetic content", searchFields: ["body"], categories: ["Synthetic Category"], status: "inProgress", isReminderOn: false })).toBe(true);
     expect(todoTaskMatches({ title: "Synthetic task record", categories: ["Synthetic Category"] }, { search: "absent", searchFields: ["title"] })).toBe(false);

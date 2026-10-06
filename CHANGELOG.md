@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here.
 
+## 3.10.0 - 2026-10-06
+
+- Add `gemacode-microsoft-graph-compact-operation/2` with a closed default-list
+  To Do creation operation and optional due date/time zone.
+- Require an explicitly configured non-interactive warning policy before that
+  pre-model mutation lane can execute; retain the v1 compact-read bridge for
+  compatibility.
+
 ## 3.9.0 - 2026-10-06
 
 - Add the versioned, process-local `gemacode-microsoft-graph-compact-read/1`

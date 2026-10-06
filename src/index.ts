@@ -48,11 +48,15 @@ const NATIVE_EXTERNAL_EFFECT_EXEMPT_TOOLS = new Set([
 
 export const COMPACT_READ_BRIDGE_KEY = Symbol.for("gemacode/microsoft-graph-compact-read/1");
 export const COMPACT_READ_BRIDGE_PROTOCOL = "gemacode-microsoft-graph-compact-read/1";
+export const COMPACT_OPERATION_BRIDGE_KEY = Symbol.for("gemacode/microsoft-graph-compact-operation/2");
+export const COMPACT_OPERATION_BRIDGE_PROTOCOL = "gemacode-microsoft-graph-compact-operation/2";
 
 type CompactReadToolName = "onedrive_root_list" | "outlook_calendar_day_read" | "microsoft_todo_overview_read";
-type CompactReadBridge = {
-  protocol: typeof COMPACT_READ_BRIDGE_PROTOCOL;
-  execute(request: { toolCallId: string; toolName: CompactReadToolName; agentId: string; params: Record<string, unknown>; signal?: AbortSignal }): Promise<unknown>;
+type CompactMutationToolName = "microsoft_todo_default_task_create";
+type CompactOperationToolName = CompactReadToolName | CompactMutationToolName;
+type CompactOperationBridge = {
+  protocol: typeof COMPACT_OPERATION_BRIDGE_PROTOCOL;
+  execute(request: { toolCallId: string; toolName: CompactOperationToolName; agentId: string; params: Record<string, unknown>; signal?: AbortSignal }): Promise<unknown>;
 };
 
 const SecretRefOnly = Type.Unsafe<string>({
@@ -759,7 +763,47 @@ export async function executeCompactMicrosoftRead(
     throw error;
   }
   await completeNativeExecutionPermit(config, permit, value);
-  return value;
+  return lifecycleResult(request.toolName, value);
+}
+
+/**
+ * Execute the small, versioned operation surface used by Gemacode's
+ * deterministic lane. Read operations retain the v1 behavior; the only v2
+ * mutation is creation in the unique owned default To Do list. A deployment
+ * that still requires OpenClaw's interactive warning approval must keep the
+ * normal tool path because a pre-model hook cannot display that approval UI.
+ */
+export async function executeCompactMicrosoftOperation(
+  config: RuntimeConfig,
+  request: { toolCallId: string; toolName: CompactOperationToolName; agentId: string; params: Record<string, unknown>; signal?: AbortSignal },
+): Promise<unknown> {
+  if (request.toolName !== "microsoft_todo_default_task_create") {
+    return executeCompactMicrosoftRead(config, request as Parameters<typeof executeCompactMicrosoftRead>[1]);
+  }
+  if (config.warningApprovalsRequired !== false) throw new Error("native_approval_required");
+  if (typeof request.agentId !== "string" || !request.agentId) throw new Error("trusted_agent_identity_required");
+  if (typeof request.toolCallId !== "string" || !request.toolCallId) throw new Error("tool_call_identity_required");
+  const params = exactCompactReadParams(request.params, ["title", "dueDateTime", "timeZone"]);
+  if (typeof params.title !== "string" || !params.title.trim()) throw new Error("invalid_compact_mutation_request");
+  if (params.dueDateTime !== undefined && typeof params.dueDateTime !== "string") throw new Error("invalid_compact_mutation_request");
+  if (params.timeZone !== undefined && typeof params.timeZone !== "string") throw new Error("invalid_compact_mutation_request");
+  if (params.timeZone !== undefined && params.dueDateTime === undefined) throw new Error("invalid_datetime_timezone");
+
+  const permit = await consumeNativeExecutionPermit(config, request.toolName, request.toolCallId, params);
+  let value: unknown;
+  try {
+    value = await todoDefaultTaskCreate(config, request.agentId, undefined, params, request.signal);
+  } catch (error) {
+    if (permit) await completeNativeExecutionPermit(config, permit, {
+      ok: false,
+      error: errorCode(error),
+      phase: "failed",
+      mutationApplied: false,
+    });
+    throw error;
+  }
+  await completeNativeExecutionPermit(config, permit, value);
+  return lifecycleResult(request.toolName, value);
 }
 
 export function concrete(name: string, parameters: any, agentId: string | undefined, sessionId: string | undefined, logger: Logger, execute: (params: any, signal?: AbortSignal) => Promise<unknown>, approvalConfig?: RuntimeConfig, sessionIsCurrent: () => boolean = () => true) {
@@ -1238,6 +1282,11 @@ const todoReadSchema = Type.Object({
 const todoOverviewReadSchema = Type.Object({
   limit,
   includeCompleted: Type.Optional(Type.Boolean({ default: false })),
+}, { additionalProperties: false });
+const todoCompactCreateSchema = Type.Object({
+  title: shortText,
+  dueDateTime: Type.Optional(dateTime),
+  timeZone: Type.Optional(timeZone),
 }, { additionalProperties: false });
 const todoCompactTitleSchema = Type.Object({ title: shortText }, { additionalProperties: false });
 type ReadActionFields = Record<string, readonly string[]>;
@@ -1919,7 +1968,7 @@ const plugin = defineToolPlugin({
       tool({ name: "onedrive_root_folder_delete_exact", label: "OneDrive Root Folder Delete Exact", optional: true, description: TOOL_GUIDANCE.onedrive_root_folder_delete_exact, parameters: rootFolderSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_root_folder_delete_exact", rootFolderSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => oneDriveRootFolderDeleteExact(config, toolContext.agentId, toolContext.sessionId, params, signal), config) }),
       tool({ name: "outlook_calendar_event_create", label: "Outlook Calendar Event Create", optional: true, description: TOOL_GUIDANCE.outlook_calendar_event_create, parameters: calendarEventCreateSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_event_create", calendarEventCreateSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarEventCreate(config, toolContext.agentId, toolContext.workspaceDir, params, signal), config) }),
       tool({ name: "outlook_calendar_event_delete_exact", label: "Outlook Calendar Event Delete Exact", optional: true, description: TOOL_GUIDANCE.outlook_calendar_event_delete_exact, parameters: calendarEventDeleteExactSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_event_delete_exact", calendarEventDeleteExactSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarEventDeleteExact(config, toolContext.agentId, toolContext.workspaceDir, params, signal), config) }),
-      tool({ name: "microsoft_todo_default_task_create", label: "Microsoft To Do Default Task Create", optional: true, description: TOOL_GUIDANCE.microsoft_todo_default_task_create, parameters: todoCompactTitleSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_default_task_create", todoCompactTitleSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoDefaultTaskCreate(config, toolContext.agentId, toolContext.workspaceDir, params, signal), config) }),
+      tool({ name: "microsoft_todo_default_task_create", label: "Microsoft To Do Default Task Create", optional: true, description: TOOL_GUIDANCE.microsoft_todo_default_task_create, parameters: todoCompactCreateSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_default_task_create", todoCompactCreateSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoDefaultTaskCreate(config, toolContext.agentId, toolContext.workspaceDir, params, signal), config) }),
       tool({ name: "microsoft_todo_task_delete_exact", label: "Microsoft To Do Task Delete Exact", optional: true, description: TOOL_GUIDANCE.microsoft_todo_task_delete_exact, parameters: todoCompactTitleSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_task_delete_exact", todoCompactTitleSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoTaskDeleteExact(config, toolContext.agentId, toolContext.workspaceDir, params, signal), config) }),
     ];
     for (const definition of definitions) {
@@ -3362,7 +3411,13 @@ async function defaultTodoListId(config: RuntimeConfig, agentId: string | undefi
 
 async function todoDefaultTaskCreate(config: RuntimeConfig, agentId: string | undefined, workspaceDir: string | undefined, p: any, signal?: AbortSignal) {
   const listId = await defaultTodoListId(config, agentId, signal);
-  return todoWrite(config, agentId, workspaceDir, { action: "create_task", listId, title: p.title }, signal);
+  return todoWrite(config, agentId, workspaceDir, {
+    action: "create_task",
+    listId,
+    title: p.title,
+    ...(p.dueDateTime !== undefined ? { dueDateTime: p.dueDateTime } : {}),
+    ...(p.timeZone !== undefined ? { timeZone: p.timeZone } : {}),
+  }, signal);
 }
 
 async function todoTaskDeleteExact(config: RuntimeConfig, agentId: string | undefined, workspaceDir: string | undefined, p: any, signal?: AbortSignal) {
@@ -3725,18 +3780,25 @@ plugin.register = (api) => {
     );
   }
   if (typeof (api as unknown as { registerService?: unknown }).registerService === "function") {
-    const bridge: CompactReadBridge = {
+    const bridge: CompactOperationBridge = {
+      protocol: COMPACT_OPERATION_BRIDGE_PROTOCOL,
+      execute: (request) => executeCompactMicrosoftOperation(runtimeConfig, request),
+    };
+    const legacyReadBridge = {
       protocol: COMPACT_READ_BRIDGE_PROTOCOL,
-      execute: (request) => executeCompactMicrosoftRead(runtimeConfig, request),
+      execute: (request: Parameters<typeof executeCompactMicrosoftRead>[1]) => executeCompactMicrosoftRead(runtimeConfig, request),
     };
     api.registerService({
-      id: "microsoft-graph-compact-read-bridge",
+      id: "microsoft-graph-compact-operation-bridge",
       start() {
-        (globalThis as Record<symbol, unknown>)[COMPACT_READ_BRIDGE_KEY] = bridge;
+        const registry = globalThis as Record<symbol, unknown>;
+        registry[COMPACT_OPERATION_BRIDGE_KEY] = bridge;
+        registry[COMPACT_READ_BRIDGE_KEY] = legacyReadBridge;
       },
       stop() {
         const registry = globalThis as Record<symbol, unknown>;
-        if (registry[COMPACT_READ_BRIDGE_KEY] === bridge) delete registry[COMPACT_READ_BRIDGE_KEY];
+        if (registry[COMPACT_OPERATION_BRIDGE_KEY] === bridge) delete registry[COMPACT_OPERATION_BRIDGE_KEY];
+        if (registry[COMPACT_READ_BRIDGE_KEY] === legacyReadBridge) delete registry[COMPACT_READ_BRIDGE_KEY];
       },
     });
     let nativeBoundaryService: NativeBoundaryService | undefined;
