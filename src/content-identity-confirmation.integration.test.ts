@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { link, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +22,7 @@ import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 import { OneDriveAgentsSessionCache } from "./onedrive-agents-instructions.js";
 
 let workspaceDir = "";
+const originalStateDir = process.env.OPENCLAW_STATE_DIR;
 
 function digest(bytes: Uint8Array) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -41,6 +42,7 @@ function runtime(warningApprovalsRequired: boolean, managedRoot = false) {
   const factories: Array<(context: any) => any> = [];
   entry.register({
     pluginConfig: { enabled: true, warningApprovalsRequired, policy },
+    runtime: { state: { resolveStateDir: () => workspaceDir } },
     registerTool: (factory: any) => factories.push(factory),
     on: (name: string, handler: any) => { hooks[name] = handler; },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -63,6 +65,7 @@ function graphSuccess(bytes: Uint8Array, update = false) {
 
 beforeEach(async () => {
   workspaceDir = await mkdtemp(join(tmpdir(), "msgraph-content-identity-"));
+  process.env.OPENCLAW_STATE_DIR = workspaceDir;
   await mkdir(join(workspaceDir, "media", "inbound"), { recursive: true });
   vi.mocked(readCredential).mockClear();
   vi.mocked(exchangeRefreshToken).mockClear();
@@ -70,6 +73,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  if (originalStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR;
+  else process.env.OPENCLAW_STATE_DIR = originalStateDir;
   await rm(workspaceDir, { recursive: true, force: true });
 });
 
@@ -77,6 +82,66 @@ describe.each([
   ["onedrive_upload", false],
   ["onedrive_update", true],
 ] as const)("content identity preconditions for %s", (toolName, update) => {
+  it("reclaims owned workspace copies on denial, cancellation, timeout, fingerprint mismatch and both execution outcomes", async () => {
+    const bytes = Buffer.from("%PDF-1.7\nsynthetic staging");
+    await mkdir(join(workspaceDir, "reports"));
+    await writeFile(join(workspaceDir, "reports", "onepager.pdf"), bytes);
+    const { hooks, tools, context } = runtime(true);
+    const inbound = join(workspaceDir, "media", "inbound");
+    const params = { rootLabel: "synthetic_documents", relativePath: "SYNTHETIC_RECORD.pdf", sourceWorkspacePath: "reports/onepager.pdf" };
+    const preflight = (callId: string, input: Record<string, unknown> = params) => hooks.before_tool_call({ toolName, toolCallId: callId, params: input }, context);
+    const mediaFiles = async () => {
+      const entries = await readdir(inbound);
+      const namespace = "baumus-msgraph-workspace-staging";
+      if (!entries.includes(namespace)) return entries;
+      const runs = await readdir(join(inbound, namespace));
+      const staged = (await Promise.all(runs.map(async (run) => readdir(join(inbound, namespace, run))))).flat().filter((file) => file !== ".workspace-staging-owner");
+      return [...entries.filter((entry) => entry !== namespace), ...staged];
+    };
+    const originalFiles = await mediaFiles();
+
+    const mismatch = await preflight("stage-mismatch", { ...params, sourceSha256: "0".repeat(64), sourceByteSize: bytes.length });
+    expect(mismatch).toEqual({ block: true, blockReason: "invalid_source_fingerprint" });
+    expect(await mediaFiles()).toEqual(originalFiles);
+
+    for (const decision of ["deny", "cancelled", "timeout"]) {
+      const approval = await preflight(`stage-${decision}`);
+      expect((await mediaFiles()).length).toBe(originalFiles.length + 1);
+      await approval.requireApproval.onResolution(decision);
+      expect(await mediaFiles()).toEqual(originalFiles);
+    }
+
+    const missingId = await hooks.before_tool_call({ toolName, params }, context);
+    expect(missingId).toEqual({ block: true, blockReason: "approval_context_tool_call_id_required" });
+    expect(await mediaFiles()).toEqual(originalFiles);
+
+    const changed = await preflight("stage-changed");
+    await changed.requireApproval.onResolution("allow-once");
+    expect((await tools[toolName].execute("stage-changed", { ...changed.params, relativePath: "changed.pdf" })).details)
+      .toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
+    expect(await mediaFiles()).toEqual(originalFiles);
+
+    const failed = await preflight("stage-failed");
+    await failed.requireApproval.onResolution("allow-once");
+    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("synthetic_provider_failure"));
+    expect((await tools[toolName].execute("stage-failed", failed.params)).details).toMatchObject({ ok: false });
+    expect(await mediaFiles()).toEqual(originalFiles);
+    vi.restoreAllMocks();
+
+    const approved = await preflight("stage-success");
+    await approved.requireApproval.onResolution("allow-once");
+    graphSuccess(bytes, update);
+    expect((await tools[toolName].execute("stage-success", approved.params)).details).toMatchObject({ ok: true });
+    expect(await mediaFiles()).toEqual(originalFiles);
+
+    await writeFile(join(inbound, "existing.pdf"), bytes);
+    const existing = await preflight("existing-media", {
+      rootLabel: params.rootLabel, relativePath: params.relativePath, sourceMediaUri: "media://inbound/existing.pdf",
+    });
+    await existing.requireApproval.onResolution("deny");
+    expect(await mediaFiles()).toEqual([...originalFiles, "existing.pdf"]);
+  });
+
   it.each([
     {
       name: "missing",

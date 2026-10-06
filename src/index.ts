@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { readLocalFileFromRoots, root as secureRoot, type OpenResult } from "openclaw/plugin-sdk/infra-runtime";
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
+import { stageWorkspaceFile, validateWorkspaceRelativeFilePath, workspaceFileContentType, workspaceStagingStore, type WorkspaceStagingLease } from "./stage-workspace-file.js";
 import { downloadOneDriveFile, downloadOutlookFileAttachment, publishPrivateMediaBytes } from "./attachment-download.js";
 import { exchangeRefreshToken, readCredential, selectScope, tokenForAuthorizedOperation } from "./credential.js";
 import { registerCredentialCli, registerCredentialGatewayMethods } from "./credential-cli.js";
@@ -34,6 +35,7 @@ const MAX_NATIVE_APPROVAL_SNAPSHOTS = 2048;
 const APPROVAL_DISPLAY_VALUE_MAX_CHARS = 72;
 const MAX_OUTER_TOOL_TIMEOUT_MS = 600_000;
 const MAX_ONEDRIVE_STAGING_WORKSPACE_CONTEXTS = 64;
+const STAGING_CLEANUP_DEFERRED = "workspace_staging_cleanup_deferred";
 
 const SecretRefOnly = Type.Unsafe<string>({
   type: "object",
@@ -64,7 +66,7 @@ const Config = Type.Object({
 
 export type RuntimeConfig = { enabled?: boolean; warningApprovalsRequired?: boolean; credentialVaultKey?: unknown; policy?: GraphPolicy; requestTimeoutMs?: number; readOperationTimeoutMs?: number; calendarMultiwriteTimeoutMs?: number; maxConcurrent?: number; maxReadBytes?: number; maxReadOutputBytes?: number; maxAttachmentDownloadBytes?: number; attachmentDownloadTimeoutMs?: number; oneDriveTransferTimeoutMs?: number };
 type OneDriveApprovalRoot = Pick<AllowedRoot, "label" | "drive_id" | "item_id">;
-type Logger = { info: (message: string) => void };
+type Logger = { info: (message: string) => void; warn: (message: string) => void };
 let activeRequests = 0;
 const continuationStore = new ContinuationStore();
 /**
@@ -79,9 +81,22 @@ function getResolvePluginStateDir(): (() => string) | undefined {
 function setResolvePluginStateDir(resolver: () => string): void {
   (globalThis as Record<symbol, unknown>)[PLUGIN_STATE_DIR_RESOLVER_KEY] = resolver;
 }
-type OneDriveStagingWorkspaceContext = { agentId?: string; sessionId?: string; workspaceDir?: string };
+type OneDriveStagingWorkspaceContext = { agentId?: string; sessionId?: string; workspaceDir?: string; abortSignal?: AbortSignal };
 const oneDriveStagingWorkspaceContexts = new Map<string, { agentId: string; sessionId: string; workspaceDir: string }>();
 export type NativeApprovalSnapshot = { agentId?: string; sessionId?: string; toolName: string; params: string; oneDriveRoot?: OneDriveApprovalRoot };
+type SessionEntryLookup = (params: { agentId?: string; sessionKey: string; readConsistency: "latest" }) => { sessionId?: string } | undefined;
+
+function currentSessionId(lookup: SessionEntryLookup | undefined, agentId: string | undefined, sessionKey: string | undefined): string | undefined {
+  if (!lookup || !agentId || !sessionKey) return undefined;
+  try {
+    const id = lookup({ agentId, sessionKey, readConsistency: "latest" })?.sessionId;
+    return typeof id === "string" && id ? id : undefined;
+  } catch { return undefined; }
+}
+
+function sessionIdentityCurrent(lookup: SessionEntryLookup | undefined, agentId: string | undefined, sessionKey: string | undefined, sessionId: string | undefined): boolean {
+  return !sessionKey || (!!sessionId && currentSessionId(lookup, agentId, sessionKey) === sessionId);
+}
 
 /**
  * Execution-bound defense for host hook composition. The host gives every
@@ -207,10 +222,10 @@ export function lifecycleResult(toolName: string, value: unknown): unknown {
   const ok = record.ok !== false;
   const incomplete = record.truncated === true || record.completeness === "partial" || record.completeness === "unknown" || record.outcome === "partial" || record.outcome === "applied_with_warning";
   const code = typeof record.error === "string" ? record.error : ok ? incomplete ? "partial_results" : "ok" : "operation_failed";
-  const uncertain = mutation && !ok && (code === "invalid_provider_response" || !/^(invalid_|unsupported_|access_denied|connector_disabled|trusted_|approval_context_|instruction_|onedrive_agents_instructions_required)/.test(code));
+  const uncertain = mutation && !ok && (code === "invalid_provider_response" || !/^(invalid_|unsupported_|access_denied|connector_disabled|trusted_|approval_context_|instruction_|onedrive_agents_instructions_required|workspace_|exactly_one_)/.test(code));
   const operations = Array.isArray(record.operations) ? record.operations as Array<Record<string, unknown>> : undefined;
   const mutationApplied = !mutation ? false : operations ? operations.some((entry) => entry.applied === true) ? true : operations.some((entry) => entry.status === 0) ? "unknown" : false : ok ? true : uncertain ? "unknown" : false;
-  const nextAction = !ok && record.action === "multiwrite" ? "Inspect each operation and read back uncertain targets before retrying only unapplied operations." : !ok ? uncertain ? "Read back the exact target before retrying; the remote outcome is unknown." : code === "access_denied" ? "Ask the operator to review this caller's policy; do not retry unchanged." : code.startsWith("approval_context_") ? "Request a new exact call and native approval; the previous approval cannot be reused." : "Correct the request or prerequisite, then make a fresh call." : incomplete && record.action === "multiwrite" ? "Inspect per-operation outcomes and read back unverified targets before retrying." : incomplete ? record.continuation ? "Repeat the same criteria with continuation for the next page." : "Narrow the query or time range; completeness is not proven." : mutation && toolName === "outlook_mail_write" && record.action === "send_draft" ? "Graph accepted the send request; delivery is not proven. Inspect Sent Items before any retry." : "No further action required.";
+  const nextAction = !ok && record.action === "multiwrite" ? "Inspect each operation and read back uncertain targets before retrying only unapplied operations." : !ok ? uncertain ? "Read back the exact target before retrying; the remote outcome is unknown." : code === "access_denied" ? "Ask the operator to review this caller's policy; do not retry unchanged." : code.startsWith("approval_context_") ? "Request a new exact call and native approval; the previous approval cannot be reused." : code === "workspace_file_unavailable" ? "Use an existing regular file relative to this agent workspace; links and host-absolute paths are not accepted." : code === "workspace_file_changed" ? "Finish writing the file, then make a fresh call; no OneDrive write was attempted." : code === "workspace_context_unavailable" ? "This tool needs a trusted agent workspace context; ask the OpenClaw operator to check the tool route." : code === "exactly_one_source_required" ? "Pass exactly one of sourceWorkspacePath or sourceMediaUri." : "Correct the request or prerequisite, then make a fresh call." : incomplete && record.action === "multiwrite" ? "Inspect per-operation outcomes and read back unverified targets before retrying." : record.cleanupWarning === STAGING_CLEANUP_DEFERRED ? "The action result is preserved; staged-file cleanup is queued for retry. Do not repeat a completed write." : incomplete ? record.continuation ? "Repeat the same criteria with continuation for the next page." : "Narrow the query or time range; completeness is not proven." : mutation && toolName === "outlook_mail_write" && record.action === "send_draft" ? "Graph accepted the send request; delivery is not proven. Inspect Sent Items before any retry." : "No further action required.";
   return { ...record, phase: !ok && mutationApplied !== true ? "failed" : incomplete ? "partial" : "complete", code, nextAction, retrySafety: mutation ? uncertain || record.action === "send_draft" || record.action === "multiwrite" || record.appliedButUnverified === true ? "readback_before_retry" : ok ? "do_not_repeat" : "safe_after_correction" : "safe", mutationApplied, ...(record.action === "send_draft" && ok ? { deliveryStatus: "unknown" } : {}), ...(record.items && Array.isArray(record.items) && record.items.length === 0 ? { noResults: !incomplete } : {}) };
 }
 function result(value: unknown, toolName?: string) { const details = toolName ? lifecycleResult(toolName, value) : value; return { content: [{ type: "text" as const, text: JSON.stringify(details) }], details }; }
@@ -218,7 +233,7 @@ function errorCode(error: unknown): string {
   if (error instanceof DOMException && error.name === "AbortError") return "request_aborted";
   if (error instanceof DOMException && error.name === "TimeoutError") return "request_timeout";
   const code = error instanceof Error ? error.message : "internal_error";
-  return /^(access_denied|approval_context_|connector_disabled|trusted_(?:agent_identity|workspace|session_identity)_required|instruction_|onedrive_agents_instructions_required|invalid_|unsupported_|credential_|authentication_|provider_|item_|file_|binary_|request_)/.test(code) ? code : "internal_error";
+  return /^(access_denied|approval_context_|connector_disabled|trusted_(?:agent_identity|workspace|session_identity)_required|instruction_|onedrive_agents_instructions_required|invalid_|unsupported_|credential_|authentication_|provider_|item_|file_|binary_|request_|workspace_|exactly_one_)/.test(code) ? code : "internal_error";
 }
 export async function withConcurrency<T>(limit: number, action: () => Promise<T>): Promise<T> {
   if (activeRequests >= limit) throw new Error("request_concurrency_exceeded");
@@ -556,8 +571,8 @@ const TOOL_GUIDANCE: Readonly<Record<string, string>> = {
   onedrive_list: "List one allowlisted OneDrive root or relative directory. Supply rootLabel; follow continuation for all items. Use returned relativePath for read/download/write. Trusted AGENTS.md instructions may require acknowledgement first.",
   onedrive_read: "Read bounded text or SHA-256 digest from rootLabel and exact relativePath discovered by list/search. Digest does not return bytes. Use download for private media; inspect truncation and narrow large reads.",
   onedrive_download: "Download exact rootLabel and relativePath to private media, never a host path. Locate the file by list/search first. Large transfers may exceed the host's 600-second outer limit; an aborted result may need readback.",
-  onedrive_upload: "Create a file without overwrite in an authorized rootLabel/relativePath from staged media://inbound/... sourceMediaUri. Native warning approval binds the content fingerprint; supply timeoutMs up to 600000 for approval plus transfer. On uncertain timeout, read back before retrying.",
-  onedrive_update: "Replace an existing file at exact rootLabel/relativePath from staged media://inbound/... sourceMediaUri with ETag protection. Native warning approval binds content; supply timeoutMs up to 600000. Read back after uncertain timeout.",
+  onedrive_upload: "Create one file without overwrite. For a file you created in your workspace, pass sourceWorkspacePath relative to your workspace; the plugin stages it privately, hashes it, requests native approval, and uploads in this same call. Alternatively pass an existing media://inbound/... sourceMediaUri. Supply exactly one source, plus authorized rootLabel and destination relativePath. On uncertain timeout, read back before retrying.",
+  onedrive_update: "Replace an existing file at exact rootLabel/relativePath with ETag protection. Pass sourceWorkspacePath relative to your workspace for automatic private staging in this same call, or an existing media://inbound/... sourceMediaUri; supply exactly one. Native approval binds the computed content hash. Read back after uncertain timeout.",
   onedrive_metadata_update: "Rename, move, or change metadata of exact rootLabel/relativePath; destination stays in the same root. Discover path first. Native warning approval is required unless policy permits bypass; read back on uncertain outcome.",
   onedrive_create_folder: "Create a folder below authorized rootLabel/parentRelativePath. Discover parent first. Native warning approval is required unless policy permits bypass; inspect returned path before further writes.",
   onedrive_delete: "Delete one exact rootLabel/relativePath only when both root and caller-agent policy permit delete. Discover and inspect target first. Native critical allow-once approval is mandatory; timeoutMs should cover the 120-second prompt. Read back on uncertain outcome.",
@@ -610,23 +625,33 @@ export function callerCapabilities(config: RuntimeConfig, agentId: string | unde
   return { ok: true, roots, services, prerequisites: ["Operator-managed Microsoft sign-in and credential vault must be ready; this read-only tool does not check credentials or connect to Graph.", "Discover exact IDs with read tools before writes.", "Native approval may be required for writes; caller policy remains authoritative."] };
 }
 
-function concrete(name: string, parameters: any, agentId: string | undefined, sessionId: string | undefined, logger: Logger, execute: (params: any, signal?: AbortSignal) => Promise<unknown>, approvalConfig?: RuntimeConfig) {
+export function concrete(name: string, parameters: any, agentId: string | undefined, sessionId: string | undefined, logger: Logger, execute: (params: any, signal?: AbortSignal) => Promise<unknown>, approvalConfig?: RuntimeConfig, sessionIsCurrent: () => boolean = () => true) {
   return { name, label: name.replaceAll("_", " "), description: TOOL_GUIDANCE[name] ?? `Microsoft Graph ${name} operation.`, parameters,
     async execute(_id: string, params: unknown, signal?: AbortSignal) {
       const started = Date.now();
+      let value: unknown;
+      let failure: string | undefined;
       try {
         const semantic = semanticParams(params);
         const oneDriveRoot = approvalConfig ? () => authorizeOneDriveMutationPreflight(approvalConfig, agentId, name, semantic) : undefined;
         const approvalSnapshotMatches = nativeApprovalSnapshots.consume(_id, agentId, sessionId, name, semantic, oneDriveRoot);
-        if (approvalSnapshotMatches === false || (classifyApproval(name, semantic) !== "none" && approvalSnapshotMatches !== true)) throw new Error("approval_context_invalid_or_changed");
-        const value = await execute(semantic, signal);
-        logger.info(JSON.stringify({ event: "microsoft_graph", tool: name, agent_id: agentId ?? null, ok: true, duration_ms: Date.now() - started }));
-        return result(value, name);
+        if (approvalSnapshotMatches === false || (classifyApproval(name, semantic) !== "none" && (approvalSnapshotMatches !== true || !sessionIsCurrent()))) throw new Error("approval_context_invalid_or_changed");
+        workspaceStagingStore.beginExecution(_id, name, sessionId);
+        value = await execute(semantic, signal);
       } catch (error) {
-        const code = errorCode(error);
-        logger.info(JSON.stringify({ event: "microsoft_graph", tool: name, agent_id: agentId ?? null, ok: false, error: code, duration_ms: Date.now() - started }));
-        return result({ ok: false, error: code }, name);
+        failure = errorCode(error);
       }
+      let cleanupDeferred = false;
+      try { await workspaceStagingStore.cleanup(_id, name, sessionId); }
+      catch { cleanupDeferred = true; logger.warn(STAGING_CLEANUP_DEFERRED); }
+      const response = failure ? { ok: false, error: failure } : value;
+      const record = response && typeof response === "object" && !Array.isArray(response) ? response as Record<string, unknown> : undefined;
+      const outcome = cleanupDeferred && record
+        ? { ...record, cleanupWarning: STAGING_CLEANUP_DEFERRED, ...(record.ok !== false && !record.outcome ? { outcome: "applied_with_warning" } : {}) }
+        : response;
+      logger.info(JSON.stringify({ event: "microsoft_graph", tool: name, agent_id: agentId ?? null, ok: !failure && record?.ok !== false,
+        ...(failure ? { error: failure } : {}), ...(cleanupDeferred ? { cleanup: "deferred" } : {}), duration_ms: Date.now() - started }));
+      return result(outcome, name);
     } };
 }
 
@@ -1249,9 +1274,34 @@ async function openVerifiedProtectedMediaUploadSource(sourceMediaUri: string, wo
   throw new Error("invalid_source_fingerprint");
 }
 
-async function bindOneDriveWriteArtifact(toolName: string, params: Record<string, unknown>, context: OneDriveStagingWorkspaceContext): Promise<Record<string, unknown>> {
+function validateOneDriveSourceSelection(toolName: string, params: Record<string, unknown>): void {
+  if (toolName !== "onedrive_upload" && toolName !== "onedrive_update") return;
+  sourceFingerprint(params);
+  const hasUri = params.sourceMediaUri !== undefined;
+  const hasWorkspacePath = params.sourceWorkspacePath !== undefined;
+  if (hasUri === hasWorkspacePath) throw new Error("exactly_one_source_required");
+  if (hasUri) validateProtectedMediaUri(params.sourceMediaUri);
+  else validateWorkspaceRelativeFilePath(params.sourceWorkspacePath);
+}
+
+async function bindOneDriveWriteArtifact(toolName: string, params: Record<string, unknown>, context: OneDriveStagingWorkspaceContext, onStaged: (lease: WorkspaceStagingLease) => void): Promise<Record<string, unknown>> {
   if (toolName !== "onedrive_upload" && toolName !== "onedrive_update") return params;
   const assertion = sourceFingerprint(params);
+  const hasUri = params.sourceMediaUri !== undefined;
+  const hasWorkspacePath = params.sourceWorkspacePath !== undefined;
+  if (hasUri === hasWorkspacePath) throw new Error("exactly_one_source_required");
+  if (hasWorkspacePath) {
+    const contentType = params.contentType ?? workspaceFileContentType(String(params.sourceWorkspacePath));
+    const stateDir = getResolvePluginStateDir()?.();
+    if (!stateDir) throw new Error("workspace_context_unavailable");
+    const staged = await stageWorkspaceFile(stagingWorkspaceFor(context), params.sourceWorkspacePath, String(contentType), undefined, context.abortSignal, workspaceStagingStore, stateDir);
+    onStaged(staged.lease);
+    if (assertion && (assertion.sourceSha256 !== staged.sourceSha256 || assertion.sourceByteSize !== staged.sourceByteSize)) throw new Error("invalid_source_fingerprint");
+    // The host shallow-merges before_tool_call overrides into the original call.
+    // Keep this non-authoritative original field in our exact snapshot so the
+    // merged execution params match; only the verified private URI is transferred.
+    params = { ...params, contentType, sourceMediaUri: staged.sourceMediaUri, sourceSha256: staged.sourceSha256, sourceByteSize: staged.sourceByteSize };
+  }
   const source = await openProtectedMediaUploadSource(String(params.sourceMediaUri ?? ""), stagingWorkspaceFor(context));
   try {
     if (assertion && (assertion.sourceSha256 !== source.sha256 || assertion.sourceByteSize !== source.size)) throw new Error("invalid_source_fingerprint");
@@ -1498,10 +1548,11 @@ const plugin = defineToolPlugin({
       agentsInstructionAck,
       chatConfirmed,
       chatConfirmationToken,
-      sourceMediaUri: Type.String({ minLength: MEDIA_INBOUND_URI_PREFIX.length + 1, maxLength: SOURCE_MEDIA_URI_MAX_LENGTH, pattern: "^media://inbound/[^?#\\\\]+$", description: "Required media://inbound/... artifact URI. Stage the file first. The plugin fingerprints the bytes before approval and verifies them again before transfer; host paths are rejected." }),
+      sourceMediaUri: Type.Optional(Type.String({ minLength: MEDIA_INBOUND_URI_PREFIX.length + 1, maxLength: SOURCE_MEDIA_URI_MAX_LENGTH, pattern: "^media://inbound/[^?#\\\\]+$", description: "Existing private inbound artifact URI. Use only when another tool returned it; otherwise use sourceWorkspacePath. Supply exactly one source." })),
+      sourceWorkspacePath: Type.Optional(Type.String({ minLength: 1, maxLength: 1024, description: "Path of a finished file relative to this agent's workspace, e.g. reports/onepager.pdf. No absolute paths, traversal, links, or manual media staging. The plugin copies it to private inbound media and fingerprints it before approval. Supply exactly one source." })),
       sourceSha256,
       sourceByteSize,
-      contentType: Type.Optional(Type.String({ maxLength: 160, default: "application/octet-stream" })),
+      contentType: Type.Optional(Type.String({ maxLength: 160, description: "Optional MIME type. For sourceWorkspacePath, common file extensions (including .pdf) are inferred; unknown extensions use application/octet-stream." })),
     }, { additionalProperties: false });
     const writeSchema = uploadSchema;
     const metadataSchema = Type.Object({ rootLabel, relativePath: relative, agentsInstructionAck, chatConfirmed, chatConfirmationToken, name: Type.Optional(Type.String({ minLength: 1, maxLength: 255 })), destinationRelativePath: Type.Optional(Type.String({ maxLength: 1024 })), description: Type.Optional(Type.Union([Type.String({ maxLength: 4096 }), Type.Null()])), fileSystemInfo: Type.Optional(fileSystemInfoInput) }, { additionalProperties: false });
@@ -1543,7 +1594,7 @@ const plugin = defineToolPlugin({
         operation: "download",
         ...await downloadOneDriveFile({ root, relativePath: normalizeRelativePath(relativePath), token, signal: bounded }),
       }), undefined, config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS)) }),
-      tool({ name: "onedrive_upload", label: "OneDrive Upload", optional: true, description: "Create one file without overwrite. Pass an authorized rootLabel, relativePath, and existing media://inbound/... sourceMediaUri. The plugin computes SHA-256 and size before native approval and rechecks them before transfer. Optional fingerprint fields are assertions, not prerequisites. A blocked preflight means no approval was requested; chat confirmation tokens cannot authorize the action. Uses a Graph upload session above 250 MB.", parameters: uploadSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_upload", uploadSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
+      tool({ name: "onedrive_upload", label: "OneDrive Upload", optional: true, description: "Create one file without overwrite from a workspace-relative sourceWorkspacePath or existing media://inbound/... sourceMediaUri; supply exactly one. The plugin computes SHA-256 and size before native approval and rechecks them before transfer. Optional fingerprint fields are assertions, not prerequisites. A blocked preflight means no approval was requested; chat confirmation tokens cannot authorize the action. Uses a Graph upload session above 250 MB.", parameters: uploadSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_upload", uploadSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
         void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
         validateProtectedMediaUri(sourceMediaUri);
@@ -1560,8 +1611,8 @@ const plugin = defineToolPlugin({
             config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS,
           );
         } finally { await source?.close(); }
-      }, config)) }),
-      tool({ name: "onedrive_update", label: "OneDrive Update", optional: true, description: "Replace one file with ETag protection. Pass an authorized rootLabel, relativePath, and existing media://inbound/... sourceMediaUri. The plugin computes SHA-256 and size before native approval and rechecks them before transfer. Optional fingerprint fields are assertions, not prerequisites. A blocked preflight means no approval was requested. Uses a Graph upload session above 250 MB.", parameters: writeSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_update", writeSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
+      }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId))) }),
+      tool({ name: "onedrive_update", label: "OneDrive Update", optional: true, description: "Replace one file with ETag protection from a workspace-relative sourceWorkspacePath or existing media://inbound/... sourceMediaUri; supply exactly one. The plugin computes SHA-256 and size before native approval and rechecks them before transfer. Optional fingerprint fields are assertions, not prerequisites. A blocked preflight means no approval was requested. Uses a Graph upload session above 250 MB.", parameters: writeSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_update", writeSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
         void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
         validateProtectedMediaUri(sourceMediaUri);
@@ -1578,31 +1629,31 @@ const plugin = defineToolPlugin({
             config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS,
           );
         } finally { await source?.close(); }
-      }, config)) }),
+      }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId))) }),
       tool({ name: "onedrive_metadata_update", label: "OneDrive Metadata Update", optional: true, description: "Rename, move within one allowlisted root, or update stable driveItem metadata; description is OneDrive Personal only.", parameters: metadataSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_metadata_update", metadataSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, destinationRelativePath, chatConfirmed: confirmed, chatConfirmationToken: confirmationToken, ...rawChanges }, signal) => {
         void confirmed; void confirmationToken;
         const path = normalizeRelativePath(relativePath);
         const changes = { ...rawChanges, ...(destinationRelativePath !== undefined ? { destinationRelativePath: normalizeRelativePath(destinationRelativePath) } : {}) };
         validateDriveMetadataInput(path, changes);
         return withDrive(config, toolContext.agentId, rootLabel, "write", signal, (root, token, bounded) => driveMetadataUpdate(root, path, token, changes, bounded));
-      }, config) }),
+      }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "onedrive_create_folder", label: "OneDrive Create Folder", optional: true, description: "Create a folder below one exact allowlisted root.", parameters: folderSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_create_folder", folderSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, parentRelativePath = "", name, conflictBehavior = "fail" }, signal) => {
         const parentPath = normalizeRelativePath(parentRelativePath);
         validateDriveFolderInput(name);
         return withDrive(config, toolContext.agentId, rootLabel, "write", signal, (root, token, bounded) => driveCreateFolder(root, parentPath, name, conflictBehavior, token, bounded));
-      }, config) }),
+      }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "onedrive_delete", label: "OneDrive Delete", optional: true, description: "Delete exactly one relativePath in an authorized root. Always requires OpenClaw-native critical allow-once approval bound to this call; a chat token cannot authorize it. If approval fails, including missing operator.approvals scope, nothing is deleted. Repair the approval route and request fresh approval for the exact target.", parameters: deleteSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_delete", deleteSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, agentsInstructionAck }, signal) => {
         const path = normalizeRelativePath(relativePath);
         if (!path) throw new Error("invalid_relative_path");
         await enforceOneDriveInstructionExecution(config, { agentId: toolContext.agentId, sessionId: toolContext.sessionId }, "onedrive_delete", { rootLabel, relativePath: path, agentsInstructionAck }, signal);
         return withDrive(config, toolContext.agentId, rootLabel, "delete", signal, (root, token, bounded) => driveDelete(root, path, token, bounded));
-      }, config) }),
+      }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "outlook_calendar_read", label: "Outlook Calendar Read", optional: true, description: "Bounded default or explicitly authorized calendar reads, selected stable event fields, event search, free/busy, attachment metadata, and direct file downloads.", parameters: calendarReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_read", calendarReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "outlook_calendar_write", label: "Outlook Calendar Write", optional: true, description: "Create, update, or non-atomically multiwrite stable Microsoft Graph v1.0 event settings, respond, attach private media up to 150 MB, or delete. Multiwrite is capped at 100 operations, ordered, and chunked into Graph batches of 20. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: calendarWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_write", calendarWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal)) }),
+      tool({ name: "outlook_calendar_write", label: "Outlook Calendar Write", optional: true, description: "Create, update, or non-atomically multiwrite stable Microsoft Graph v1.0 event settings, respond, attach private media up to 150 MB, or delete. Multiwrite is capped at 100 operations, ordered, and chunked into Graph batches of 20. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: calendarWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_write", calendarWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "outlook_mail_read", label: "Outlook Mail Read", optional: true, description: "Bounded own-mailbox message reads, KQL/filter search, selected stable message fields, attachment metadata, and direct file downloads.", parameters: mailReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_read", mailReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "outlook_mail_write", label: "Outlook Mail Write", optional: true, description: "Own-mailbox draft fields, reply/reply-all/forward drafts, copy/move, private-media attachments up to 150 MB, send, and delete. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: mailWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_write", mailWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal)) }),
+      tool({ name: "outlook_mail_write", label: "Outlook Mail Write", optional: true, description: "Own-mailbox draft fields, reply/reply-all/forward drafts, copy/move, private-media attachments up to 150 MB, send, and delete. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: mailWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_write", mailWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "microsoft_todo_read", label: "Microsoft To Do Read", optional: true, description: "Bounded own-account list/task reads and client-side search, including checklist, linked-resource, and attachment collections.", parameters: todoReadSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_read", todoReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "microsoft_todo_write", label: "Microsoft To Do Write", optional: true, description: "Owned non-shared list/task settings, checklist, linked-resource, and private-media attachment mutations up to 25 MB. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: todoWriteSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_write", todoWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal)) }),
+      tool({ name: "microsoft_todo_write", label: "Microsoft To Do Write", optional: true, description: "Owned non-shared list/task settings, checklist, linked-resource, and private-media attachment mutations up to 25 MB. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: todoWriteSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_write", todoWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "onedrive_agents_instructions", label: "OneDrive AGENTS.md Instructions", optional: true, description: "Batch-discover the bounded root-to-directory AGENTS.md chain for a centrally trusted OneDrive root. Ordinary OneDrive tools invoke this preflight automatically and require a session-bound acknowledgement before proceeding.", parameters: agentsInstructionsSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_agents_instructions", agentsInstructionsSchema, toolContext.agentId, toolContext.sessionId, api.logger, ({ rootLabel, relativeDirectory = "", acknowledgement }, signal) => oneDriveAgentsInstructions(config, { agentId: toolContext.agentId, sessionId: toolContext.sessionId }, { rootLabel, relativeDirectory, acknowledgement }, signal)) }),
       tool({ name: "microsoft_graph_capabilities", label: "Microsoft Graph Capabilities", optional: true, description: TOOL_GUIDANCE.microsoft_graph_capabilities, parameters: Type.Object({}, { additionalProperties: false }), factory: ({ config, toolContext, api }) => concrete("microsoft_graph_capabilities", Type.Object({}, { additionalProperties: false }), toolContext.agentId, toolContext.sessionId, api.logger, async () => callerCapabilities(config, toolContext.agentId)) }),
     ];
@@ -2909,13 +2960,22 @@ const originalRegister = plugin.register.bind(plugin);
 export async function beforeMicrosoftGraphToolCall(
   runtimeConfig: RuntimeConfig,
   event: { toolName: string; params: unknown; toolCallId?: string },
-  ctx: { agentId?: string; sessionId?: string; requester?: { senderIsOwner?: boolean; channel?: string }; abortSignal?: AbortSignal },
+  ctx: { agentId?: string; sessionKey?: string; sessionId?: string; requester?: { senderIsOwner?: boolean; channel?: string }; abortSignal?: AbortSignal },
   instructionDependencies: OneDriveAgentsDependencies = {},
   warningApprovalTrustStore = new WarningApprovalTrustStore(),
   approvalSnapshots = nativeApprovalSnapshots,
+  onCleanupDeferred: () => void = () => undefined,
+  lookupSession: SessionEntryLookup | undefined = undefined,
 ) {
   if (!Object.hasOwn(TOOL_GUIDANCE, event.toolName)) return;
   const severity = classifyApproval(event.toolName, event.params);
+  // tools.invoke supplies sessionKey to this hook but currently omits sessionId.
+  // Resolve the persisted generation for approval-bearing calls using host context only.
+  if (severity !== "none" && ctx.sessionKey) {
+    const resolved = currentSessionId(lookupSession, ctx.agentId, ctx.sessionKey);
+    if (!resolved || (ctx.sessionId && ctx.sessionId !== resolved)) return { block: true, blockReason: "trusted_session_identity_required" };
+    ctx = { ...ctx, sessionId: resolved };
+  }
   let params = semanticParams(event.params);
   try {
     ctx.abortSignal?.throwIfAborted();
@@ -2937,11 +2997,31 @@ export async function beforeMicrosoftGraphToolCall(
   try { authorizedRoot = authorizeOneDriveMutationPreflight(runtimeConfig, ctx.agentId, event.toolName, params); }
   catch (error) { return { block: true, blockReason: errorCode(error) }; }
 
-  try { params = await bindOneDriveWriteArtifact(event.toolName, params, ctx); }
+  try { validateOneDriveSourceSelection(event.toolName, params); }
   catch (error) { return { block: true, blockReason: errorCode(error) }; }
-
   const schemaParams = Object.fromEntries(Object.entries(callParams(event.params)).filter(([, value]) => value !== undefined));
   if (event.params && !TOOL_PARAMETER_CHECKS.get(event.toolName)?.(schemaParams)) return { block: true, blockReason: "invalid_tool_parameters" };
+  let ownedLease: WorkspaceStagingLease | undefined;
+  let leaseBound = false;
+  const cleanupUnboundLease = async (): Promise<boolean> => {
+    if (!ownedLease || leaseBound) return true;
+    try { await ownedLease.cleanup(); return true; }
+    catch { workspaceStagingStore.retryCleanup(ownedLease); return false; }
+  };
+  const cleanupBoundLease = async (): Promise<void> => {
+    try { await workspaceStagingStore.cleanup(event.toolCallId, event.toolName, ctx.sessionId); }
+    catch { onCleanupDeferred(); }
+  };
+  try { params = await bindOneDriveWriteArtifact(event.toolName, params, ctx, (lease) => { ownedLease = lease; }); }
+  catch (error) { const cleaned = await cleanupUnboundLease(); return { block: true, blockReason: cleaned ? errorCode(error) : "workspace_file_unavailable" }; }
+
+  try {
+  const bindOwnedLease = () => {
+    if (ownedLease) {
+      workspaceStagingStore.bind(event.toolCallId!, event.toolName, ownedLease, ctx.sessionId, () => approvalSnapshots.discard(event.toolCallId));
+      leaseBound = true;
+    }
+  };
 
   let expectedRoot: OneDriveApprovalRoot | undefined;
   if (severity !== "none") {
@@ -2964,6 +3044,7 @@ export async function beforeMicrosoftGraphToolCall(
   if (severity !== "none" && !event.toolCallId) return { block: true, blockReason: "approval_context_tool_call_id_required" };
 
   const bindExecutionSnapshot = () => {
+    if (!sessionIdentityCurrent(lookupSession, ctx.agentId, ctx.sessionKey, ctx.sessionId)) throw new Error("approval_context_invalid_or_changed");
     if (event.toolCallId) approvalSnapshots.record(event.toolCallId, {
       agentId: ctx.agentId,
       sessionId: ctx.sessionId,
@@ -2975,14 +3056,23 @@ export async function beforeMicrosoftGraphToolCall(
 
   if (severity === "critical") {
     const approval = mutationApprovalText(event.toolName, params);
+    try { bindOwnedLease(); } catch (error) { return { block: true, blockReason: errorCode(error) }; }
     return { params, requireApproval: {
       ...approval,
       severity,
       allowedDecisions: ["allow-once", "deny"] as Array<"allow-once" | "deny">,
       timeoutMs: 120_000,
-      onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
-        if (decision === "allow-once") bindExecutionSnapshot();
-        else approvalSnapshots.discard(event.toolCallId);
+      async onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
+        if (ownedLease && !workspaceStagingStore.has(event.toolCallId!)) return;
+        if (decision === "allow-once") {
+          try { bindExecutionSnapshot(); }
+          catch {
+            approvalSnapshots.discard(event.toolCallId);
+            await cleanupBoundLease();
+            throw new Error("approval_context_invalid_or_changed");
+          }
+        }
+        else { approvalSnapshots.discard(event.toolCallId); await cleanupBoundLease(); }
       },
     } };
   }
@@ -3008,10 +3098,12 @@ export async function beforeMicrosoftGraphToolCall(
   const warningRequired = runtimeConfig.policy?.rules.warningApprovalsByService?.[service] ?? runtimeConfig.warningApprovalsRequired ?? true;
   const warningApprovalBypassed = warningRequired === false || warningApprovalTrustStore.has(scope);
   if (warningApprovalBypassed) {
-    bindExecutionSnapshot();
+    try { bindExecutionSnapshot(); bindOwnedLease(); }
+    catch (error) { approvalSnapshots.discard(event.toolCallId); return { block: true, blockReason: errorCode(error) }; }
     return { params };
   }
   const approval = mutationApprovalText(event.toolName, params);
+  try { bindOwnedLease(); } catch (error) { return { block: true, blockReason: errorCode(error) }; }
   return {
     params,
     requireApproval: {
@@ -3020,14 +3112,23 @@ export async function beforeMicrosoftGraphToolCall(
       severity,
       allowedDecisions: ["allow-once", "allow-always", "deny"] as Array<"allow-once" | "allow-always" | "deny">,
       timeoutMs: 120_000,
-      onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
+      async onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
+        if (ownedLease && !workspaceStagingStore.has(event.toolCallId!)) return;
         if (decision === "allow-once" || decision === "allow-always") {
-          bindExecutionSnapshot();
+          try { bindExecutionSnapshot(); }
+          catch {
+            approvalSnapshots.discard(event.toolCallId);
+            await cleanupBoundLease();
+            throw new Error("approval_context_invalid_or_changed");
+          }
           if (decision === "allow-always") warningApprovalTrustStore.grant(scope);
-        } else approvalSnapshots.discard(event.toolCallId);
+        } else { approvalSnapshots.discard(event.toolCallId); await cleanupBoundLease(); }
       },
     },
   };
+  } finally {
+    if (!await cleanupUnboundLease()) return { block: true, blockReason: "workspace_file_unavailable" };
+  }
 }
 
 plugin.register = (api) => {
@@ -3042,7 +3143,10 @@ plugin.register = (api) => {
     const policy = validatePolicy(runtimeConfig.policy);
   }
   const stateResolver = (api as unknown as { runtime?: { state?: { resolveStateDir?: (env?: NodeJS.ProcessEnv) => string } } }).runtime?.state?.resolveStateDir;
-  if (stateResolver) setResolvePluginStateDir(() => stateResolver(process.env));
+  if (stateResolver) {
+    setResolvePluginStateDir(() => stateResolver(process.env));
+    workspaceStagingStore.startReconciliation(stateResolver(process.env), () => api.logger.warn("Microsoft Graph workspace staging reconciliation failed; retrying on the next interval"));
+  }
   originalRegister(api);
   if (typeof (api as unknown as { registerCli?: unknown }).registerCli === "function" && stateResolver) {
     registerCredentialCli(api as unknown as Parameters<typeof registerCredentialCli>[0]);
@@ -3058,7 +3162,7 @@ plugin.register = (api) => {
   const warningApprovalTrustStore = new WarningApprovalTrustStore();
   api.on(
     "before_tool_call",
-    (event, ctx) => beforeMicrosoftGraphToolCall(runtimeConfig, event, ctx, {}, warningApprovalTrustStore, nativeApprovalSnapshots),
+    (event, ctx) => beforeMicrosoftGraphToolCall(runtimeConfig, event, ctx, {}, warningApprovalTrustStore, nativeApprovalSnapshots, () => api.logger.warn(STAGING_CLEANUP_DEFERRED), api.runtime?.agent?.session?.getSessionEntry),
     // Run after ordinary policy hooks so this plugin's exact original snapshot
     // becomes authoritative. The execution-bound snapshot still fails closed
     // if a same/lower-priority hook attempts a later rewrite.
@@ -3068,6 +3172,7 @@ plugin.register = (api) => {
     oneDriveAgentsSessionCache.clearSession(ctx.sessionId);
     clearStagingWorkspaceSession(ctx.sessionId);
     nativeApprovalSnapshots.clearSession(ctx.sessionId);
+    workspaceStagingStore.clearSession(ctx.sessionId);
   });
 };
 

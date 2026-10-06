@@ -143,10 +143,14 @@ describe("microsoft-graph plugin contract", () => {
     expect(uploadSchema.properties.sourceMediaUri).toMatchObject({ type: "string", maxLength: 4096, pattern: expect.stringContaining("media://inbound/") });
     expect(uploadSchema.properties.sourceSha256).toMatchObject({ type: "string", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" });
     expect(uploadSchema.properties.sourceByteSize).toMatchObject({ type: "integer", minimum: 0, maximum: 250 * 1024 * 1024 * 1024 });
-    expect(uploadSchema.required).toEqual(expect.arrayContaining(["rootLabel", "relativePath", "sourceMediaUri"]));
+    expect(uploadSchema.required).toEqual(expect.arrayContaining(["rootLabel", "relativePath"]));
+    expect(uploadSchema.properties.sourceWorkspacePath).toMatchObject({ type: "string", maxLength: 1024 });
+    expect(uploadSchema.required).not.toContain("sourceMediaUri");
     expect(uploadSchema.required).not.toContain("sourceSha256");
     expect(uploadSchema.required).not.toContain("sourceByteSize");
-    expect(updateSchema.required).toEqual(expect.arrayContaining(["rootLabel", "relativePath", "sourceMediaUri"]));
+    expect(updateSchema.required).toEqual(expect.arrayContaining(["rootLabel", "relativePath"]));
+    expect(updateSchema.properties.sourceWorkspacePath).toMatchObject({ type: "string", maxLength: 1024 });
+    expect(updateSchema.required).not.toContain("sourceMediaUri");
     expect(updateSchema.required).not.toContain("sourceSha256");
     expect(updateSchema.required).not.toContain("sourceByteSize");
     for (const toolName of ["outlook_calendar_write", "outlook_mail_write"]) {
