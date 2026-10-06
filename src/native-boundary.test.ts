@@ -33,6 +33,22 @@ describe("native connected boundary", () => {
     );
   });
 
+  it("matches the shared Native OS cross-language signature vector", () => {
+    const vector = {
+      format: "openclaw-microsoft-graph-native-request/1" as const,
+      operationId: "calendar-list-0001",
+      intentDigest: "sha256:" + "ab".repeat(32),
+      tool: "outlook_calendar_read",
+      parameters: { action: "list_calendars", limit: 50 },
+      issuedAtMs: 1_900_000_000_000,
+      nonce: "12".repeat(16),
+    };
+    expect(signNativeBoundaryRequest(
+      vector,
+      "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    ).signature).toBe("PJ5hBDa5zLotJzym2hOFVOJTSwGxSb7ECd2_Fm3U15w");
+  });
+
   it("admits one exact signed request and rejects replay", () => {
     const verifier = new NativeBoundaryVerifier(KEY, () => NOW);
     const signed = signNativeBoundaryRequest(request(), KEY);
