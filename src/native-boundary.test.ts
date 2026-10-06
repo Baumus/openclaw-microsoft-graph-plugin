@@ -47,6 +47,11 @@ describe("native connected boundary", () => {
       vector,
       "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
     ).signature).toBe("PJ5hBDa5zLotJzym2hOFVOJTSwGxSb7ECd2_Fm3U15w");
+
+    expect(signNativeBoundaryRequest(
+      { ...vector, parameters: { subject: "integración" } },
+      "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    ).signature).toBe("trTV-t0U59SN6RoVG2GjfTlJRzk2jThSpY2pOVMFUq8");
   });
 
   it("admits one exact signed request and rejects replay", () => {
