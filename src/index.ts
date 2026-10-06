@@ -46,6 +46,15 @@ const NATIVE_EXTERNAL_EFFECT_EXEMPT_TOOLS = new Set([
   "onedrive_agents_instructions",
 ]);
 
+export const COMPACT_READ_BRIDGE_KEY = Symbol.for("gemacode/microsoft-graph-compact-read/1");
+export const COMPACT_READ_BRIDGE_PROTOCOL = "gemacode-microsoft-graph-compact-read/1";
+
+type CompactReadToolName = "onedrive_root_list" | "outlook_calendar_day_read" | "microsoft_todo_overview_read";
+type CompactReadBridge = {
+  protocol: typeof COMPACT_READ_BRIDGE_PROTOCOL;
+  execute(request: { toolCallId: string; toolName: CompactReadToolName; agentId: string; params: Record<string, unknown>; signal?: AbortSignal }): Promise<unknown>;
+};
+
 const SecretRefOnly = Type.Unsafe<string>({
   type: "object",
   required: ["source", "provider", "id"],
@@ -682,6 +691,75 @@ function singleRootLabelForOperation(config: RuntimeConfig, agentId: string | un
 
 function singleReadableRootLabel(config: RuntimeConfig, agentId: string | undefined): string {
   return singleRootLabelForOperation(config, agentId, "read");
+}
+
+async function oneDriveRootList(config: RuntimeConfig, agentId: string | undefined, rawLimit: unknown, signal?: AbortSignal) {
+  const selectedRootLabel = singleReadableRootLabel(config, agentId);
+  const max = boundedLimit(rawLimit);
+  const path = "";
+  const binding = continuationBinding(agentId, "onedrive", "list", selectedRootLabel, criteriaFor({ rootLabel: selectedRootLabel, relativePath: path, limit: rawLimit }, { relativePath: path, limit: max }));
+  return withDrive(config, agentId, selectedRootLabel, "read", signal, async (root, token, bounded) => {
+    const expectedPath = drivePath(root, path, "/children");
+    const page = await driveList(root, path, token, max, bounded);
+    const published = publicPage(page, binding, expectedPath);
+    const items = Array.isArray(published.items)
+      ? published.items.map((item) => {
+          const value = item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : {};
+          return {
+            name: value.name,
+            is_folder: value.is_folder === true,
+            size: value.size,
+            mime_type: value.mime_type,
+          };
+        })
+      : [];
+    return { ok: true, operation: "list", root_label: selectedRootLabel, ...published, items };
+  });
+}
+
+function exactCompactReadParams(value: unknown, allowed: readonly string[]): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid_compact_read_request");
+  const params = value as Record<string, unknown>;
+  if (Object.keys(params).some((key) => !allowed.includes(key))) throw new Error("invalid_compact_read_request");
+  return params;
+}
+
+export async function executeCompactMicrosoftRead(
+  config: RuntimeConfig,
+  request: { toolCallId: string; toolName: CompactReadToolName; agentId: string; params: Record<string, unknown>; signal?: AbortSignal },
+): Promise<unknown> {
+  if (typeof request.agentId !== "string" || !request.agentId) throw new Error("trusted_agent_identity_required");
+  if (typeof request.toolCallId !== "string" || !request.toolCallId) throw new Error("tool_call_identity_required");
+  const params = exactCompactReadParams(
+    request.params,
+    request.toolName === "outlook_calendar_day_read" ? ["date", "timeZone"]
+      : request.toolName === "microsoft_todo_overview_read" ? ["limit", "includeCompleted"]
+        : request.toolName === "onedrive_root_list" ? ["limit"] : [],
+  );
+  if (request.toolName === "outlook_calendar_day_read" && (typeof params.date !== "string" || (params.timeZone !== undefined && typeof params.timeZone !== "string"))) throw new Error("invalid_compact_read_request");
+  if ((request.toolName === "microsoft_todo_overview_read" || request.toolName === "onedrive_root_list") && params.limit !== undefined && (!Number.isSafeInteger(params.limit) || Number(params.limit) < 1 || Number(params.limit) > MAX_RESULTS)) throw new Error("invalid_compact_read_request");
+  if (request.toolName === "microsoft_todo_overview_read" && params.includeCompleted !== undefined && typeof params.includeCompleted !== "boolean") throw new Error("invalid_compact_read_request");
+  if (!new Set<CompactReadToolName>(["outlook_calendar_day_read", "microsoft_todo_overview_read", "onedrive_root_list"]).has(request.toolName)) throw new Error("unsupported_compact_read_tool");
+
+  const permit = await consumeNativeExecutionPermit(config, request.toolName, request.toolCallId, params);
+  let value: unknown;
+  try {
+    value = request.toolName === "outlook_calendar_day_read"
+      ? await calendarRead(config, request.agentId, calendarDayReadParams(params.date as string, params.timeZone as string | undefined), request.signal)
+      : request.toolName === "microsoft_todo_overview_read"
+        ? await todoOverviewRead(config, request.agentId, params, request.signal)
+        : await oneDriveRootList(config, request.agentId, params.limit, request.signal);
+  } catch (error) {
+    if (permit) await completeNativeExecutionPermit(config, permit, {
+      ok: false,
+      error: errorCode(error),
+      phase: "failed",
+      mutationApplied: false,
+    });
+    throw error;
+  }
+  await completeNativeExecutionPermit(config, permit, value);
+  return value;
 }
 
 export function concrete(name: string, parameters: any, agentId: string | undefined, sessionId: string | undefined, logger: Logger, execute: (params: any, signal?: AbortSignal) => Promise<unknown>, approvalConfig?: RuntimeConfig, sessionIsCurrent: () => boolean = () => true) {
@@ -1836,29 +1914,7 @@ const plugin = defineToolPlugin({
       tool({ name: "microsoft_todo_write", label: "Microsoft To Do Write", optional: true, description: "Owned non-shared list/task settings, checklist, linked-resource, and private-media attachment mutations up to 25 MB. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: todoWriteSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_write", todoWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "onedrive_agents_instructions", label: "OneDrive AGENTS.md Instructions", optional: true, description: "Batch-discover the bounded root-to-directory AGENTS.md chain for a centrally trusted OneDrive root. Ordinary OneDrive tools invoke this preflight automatically and require a session-bound acknowledgement before proceeding.", parameters: agentsInstructionsSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_agents_instructions", agentsInstructionsSchema, toolContext.agentId, toolContext.sessionId, api.logger, ({ rootLabel, relativeDirectory = "", acknowledgement }, signal) => oneDriveAgentsInstructions(config, { agentId: toolContext.agentId, sessionId: toolContext.sessionId }, { rootLabel, relativeDirectory, acknowledgement }, signal), config) }),
       tool({ name: "microsoft_graph_capabilities", label: "Microsoft Graph Capabilities", optional: true, description: TOOL_GUIDANCE.microsoft_graph_capabilities, parameters: Type.Object({}, { additionalProperties: false }), factory: ({ config, toolContext, api }) => concrete("microsoft_graph_capabilities", Type.Object({}, { additionalProperties: false }), toolContext.agentId, toolContext.sessionId, api.logger, async () => callerCapabilities(config, toolContext.agentId), config) }),
-      tool({ name: "onedrive_root_list", label: "OneDrive Root List", optional: true, description: TOOL_GUIDANCE.onedrive_root_list, parameters: rootListSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_root_list", rootListSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ limit }, signal) => {
-        const selectedRootLabel = singleReadableRootLabel(config, toolContext.agentId);
-        const max = boundedLimit(limit);
-        const path = "";
-        const binding = continuationBinding(toolContext.agentId, "onedrive", "list", selectedRootLabel, criteriaFor({ rootLabel: selectedRootLabel, relativePath: path, limit }, { relativePath: path, limit: max }));
-        return withDrive(config, toolContext.agentId, selectedRootLabel, "read", signal, async (root, token, bounded) => {
-          const expectedPath = drivePath(root, path, "/children");
-          const page = await driveList(root, path, token, max, bounded);
-          const published = publicPage(page, binding, expectedPath);
-          const items = Array.isArray(published.items)
-            ? published.items.map((item) => {
-                const value = item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : {};
-                return {
-                  name: value.name,
-                  is_folder: value.is_folder === true,
-                  size: value.size,
-                  mime_type: value.mime_type,
-                };
-              })
-            : [];
-          return { ok: true, operation: "list", root_label: selectedRootLabel, ...published, items };
-        });
-      }, config) }),
+      tool({ name: "onedrive_root_list", label: "OneDrive Root List", optional: true, description: TOOL_GUIDANCE.onedrive_root_list, parameters: rootListSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_root_list", rootListSchema, toolContext.agentId, toolContext.sessionId, api.logger, ({ limit }, signal) => oneDriveRootList(config, toolContext.agentId, limit, signal), config) }),
       tool({ name: "onedrive_root_folder_create", label: "OneDrive Root Folder Create", optional: true, description: TOOL_GUIDANCE.onedrive_root_folder_create, parameters: rootFolderSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_root_folder_create", rootFolderSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => oneDriveRootFolderCreate(config, toolContext.agentId, toolContext.sessionId, params, signal), config) }),
       tool({ name: "onedrive_root_folder_delete_exact", label: "OneDrive Root Folder Delete Exact", optional: true, description: TOOL_GUIDANCE.onedrive_root_folder_delete_exact, parameters: rootFolderSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_root_folder_delete_exact", rootFolderSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => oneDriveRootFolderDeleteExact(config, toolContext.agentId, toolContext.sessionId, params, signal), config) }),
       tool({ name: "outlook_calendar_event_create", label: "Outlook Calendar Event Create", optional: true, description: TOOL_GUIDANCE.outlook_calendar_event_create, parameters: calendarEventCreateSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_event_create", calendarEventCreateSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarEventCreate(config, toolContext.agentId, toolContext.workspaceDir, params, signal), config) }),
@@ -3669,6 +3725,20 @@ plugin.register = (api) => {
     );
   }
   if (typeof (api as unknown as { registerService?: unknown }).registerService === "function") {
+    const bridge: CompactReadBridge = {
+      protocol: COMPACT_READ_BRIDGE_PROTOCOL,
+      execute: (request) => executeCompactMicrosoftRead(runtimeConfig, request),
+    };
+    api.registerService({
+      id: "microsoft-graph-compact-read-bridge",
+      start() {
+        (globalThis as Record<symbol, unknown>)[COMPACT_READ_BRIDGE_KEY] = bridge;
+      },
+      stop() {
+        const registry = globalThis as Record<symbol, unknown>;
+        if (registry[COMPACT_READ_BRIDGE_KEY] === bridge) delete registry[COMPACT_READ_BRIDGE_KEY];
+      },
+    });
     let nativeBoundaryService: NativeBoundaryService | undefined;
     api.registerService({
       id: "microsoft-graph-native-boundary",

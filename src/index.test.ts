@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { getToolPluginMetadata } from "openclaw/plugin-sdk/tool-plugin";
-import entry, { approvalInventory, assertOwnedTodoList, assertWriteActionFields, attachmentWritePlan, boundedCollectionPage, calendarApprovalCriteria, calendarCollectionPath, calendarDayReadParams, calendarEventPath, calendarEventPayload, calendarPageIsTruncated, calendarViewPath, calendarViewQuery, calendarWindowDateTime, classifyApproval, collectFilteredCollection, dateTimeTimeZone, deadlineSignal, enforceOneDriveInstructionPreflight, eventGetFields, eventMatchesSearch, eventReadFields, fileAttachmentPayload, listMailFolders, mailFolderCollectionPath, mailListQuery, mailMessageActionPath, mailMessageCollectionPath, mailMessagePayload, mailReplyForwardPlan, NativeApprovalSnapshotStore, nextGraphPath, normalizedWarningApprovalAction, oneDriveAgentsInstructions, oneDriveInstructionDirectories, oneDriveWriteApprovalCriteria, readProtectedMediaSource, readOperationTimeout, schedulePage, taskPayload, todoTaskChildPath, todoTaskMatches, todoTaskPath, validateAttachmentContent, validateProtectedMediaUri, WarningApprovalTrustStore, WRITE_ACTION_FIELDS } from "./index.js";
+import entry, { approvalInventory, assertOwnedTodoList, assertWriteActionFields, attachmentWritePlan, boundedCollectionPage, calendarApprovalCriteria, calendarCollectionPath, calendarDayReadParams, calendarEventPath, calendarEventPayload, calendarPageIsTruncated, calendarViewPath, calendarViewQuery, calendarWindowDateTime, classifyApproval, collectFilteredCollection, COMPACT_READ_BRIDGE_KEY, COMPACT_READ_BRIDGE_PROTOCOL, dateTimeTimeZone, deadlineSignal, enforceOneDriveInstructionPreflight, eventGetFields, eventMatchesSearch, eventReadFields, executeCompactMicrosoftRead, fileAttachmentPayload, listMailFolders, mailFolderCollectionPath, mailListQuery, mailMessageActionPath, mailMessageCollectionPath, mailMessagePayload, mailReplyForwardPlan, NativeApprovalSnapshotStore, nextGraphPath, normalizedWarningApprovalAction, oneDriveAgentsInstructions, oneDriveInstructionDirectories, oneDriveWriteApprovalCriteria, readProtectedMediaSource, readOperationTimeout, schedulePage, taskPayload, todoTaskChildPath, todoTaskMatches, todoTaskPath, validateAttachmentContent, validateProtectedMediaUri, WarningApprovalTrustStore, WRITE_ACTION_FIELDS } from "./index.js";
 import { beforeMicrosoftGraphToolCall, enforceOneDriveInstructionExecution, normalizeMicrosoftGraphReadParams } from "./index.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 import { ONEDRIVE_AGENTS_MAX_DEPTH, OneDriveAgentsSessionCache, oneDriveAgentsSessionCache } from "./onedrive-agents-instructions.js";
@@ -61,6 +61,51 @@ describe("microsoft-graph plugin contract", () => {
       timeZone: "Europe/Madrid",
     });
     expect(() => calendarDayReadParams("2026-02-30", "Europe/Madrid")).toThrow("invalid_date");
+  });
+
+  it("rejects malformed native compact-read bridge requests before provider access", async () => {
+    await expect(executeCompactMicrosoftRead({} as any, {
+      toolCallId: "compact-1",
+      toolName: "outlook_calendar_day_read",
+      agentId: "",
+      params: { date: "2026-10-06" },
+    })).rejects.toThrow("trusted_agent_identity_required");
+    await expect(executeCompactMicrosoftRead({} as any, {
+      toolCallId: "compact-2",
+      toolName: "outlook_calendar_day_read",
+      agentId: "main",
+      params: { date: "2026-02-30" },
+    })).rejects.toThrow("invalid_date");
+    await expect(executeCompactMicrosoftRead({} as any, {
+      toolCallId: "compact-3",
+      toolName: "microsoft_todo_overview_read",
+      agentId: "main",
+      params: { limit: 51 },
+    })).rejects.toThrow("invalid_compact_read_request");
+  });
+
+  it("publishes and retracts the versioned in-process compact-read bridge", async () => {
+    const services: Array<any> = [];
+    const current = graphPolicyFixture();
+    const api = {
+      pluginConfig: { enabled: true, policy: { version: 2, rules: current.rules, services: current.services } },
+      registerTool: vi.fn(),
+      registerCli: vi.fn(),
+      registerGatewayMethod: vi.fn(),
+      registerService: (service: unknown) => services.push(service),
+      runtime: { state: { resolveStateDir: vi.fn(() => "/synthetic/state") } },
+      on: vi.fn(),
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    };
+    entry.register(api as any);
+    const service = services.find((candidate) => candidate.id === "microsoft-graph-compact-read-bridge");
+    expect(service).toBeDefined();
+    await service.start();
+    const bridge = (globalThis as any)[COMPACT_READ_BRIDGE_KEY];
+    expect(bridge.protocol).toBe(COMPACT_READ_BRIDGE_PROTOCOL);
+    expect(typeof bridge.execute).toBe("function");
+    await service.stop();
+    expect((globalThis as any)[COMPACT_READ_BRIDGE_KEY]).toBeUndefined();
   });
 
   it("registers CLI metadata without accessing the restricted runtime", () => {
