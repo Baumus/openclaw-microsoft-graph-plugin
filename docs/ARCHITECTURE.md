@@ -21,6 +21,14 @@ The plugin does not own user intent, business policy, data-retention decisions, 
 
 Every validation or authorization failure before step 7 avoids plugin-side key selection, vault access, OAuth, and provider calls.
 
+## Native OS connected-action entrypoint
+
+When explicitly enabled, a second entrypoint listens on a mode-`0600` Unix socket. It is a narrow provider adapter for an already admitted Native OS operation, not an MCP server and not a general Graph endpoint. The request vocabulary is a fixed allowlist of high-level plugin tools; OneDrive addressing remains a policy label plus a normalized relative path, so callers cannot supply arbitrary drive or item identifiers.
+
+The boundary validates an exact request object, canonical integer-only JSON, a 32-byte-key HMAC-SHA256 signature, a ±30-second timestamp, and a single-use nonce before dispatch. It caps request and response frames at 1 MiB and returns only sanitized status codes on refusal. The separate signing key authenticates the local Native OS caller to this entrypoint; it neither replaces the OAuth vault key nor establishes Rooted/QEL/NetKey evidence. Those authorities remain outside this plugin.
+
+After boundary verification, execution follows the same default-deny agent policy, credential vault, OAuth scope selection, fixed Graph paths, response validation, timeouts, and output bounds as ordinary plugin calls. OpenClaw chat approval hooks are not an authority for this path: Native OS must have completed its own LN and Rooted admission before signing the request. A caller that bypasses that admission has violated the deployment model even if it possesses the boundary key.
+
 ## Trust boundaries
 
 ### OpenClaw host
@@ -67,3 +75,5 @@ Discovered instruction content has a one-hour absolute freshness limit, independ
 ## Build and packaging
 
 `src/index.ts` is bundled to `dist/index.js` for Node 24 and newer supported host runtimes. Runtime dependencies remain external and are declared in `dependencies`, including exact-pinned `@openclaw/fs-safe` 0.21.1. `openclaw plugins build --check` verifies generated manifest/package metadata without rewriting it. The npm `files` allowlist ships only runtime code, static metadata, consumer documentation, the icon, synthetic JSON5 policy objects, and the bounded JSON helper.
+
+`npm audit --omit=dev` is the deployment audit boundary. Development-only OpenClaw/npm tooling may report advisories in its own bundled dependency graph; those findings must be tracked for the build environment and must not be misreported as runtime dependencies of the packaged plugin.

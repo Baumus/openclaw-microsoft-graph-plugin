@@ -15,6 +15,7 @@ import { ContinuationStore, normalizedCriteria, type ContinuationBinding } from 
 import { authorizeOperation, authorizeRoot, GraphPolicySchema, normalizeRelativePath, validatePolicy, type AllowedRoot, type GraphPolicy, type OneDriveOperation } from "./policy.js";
 import { base64DecodedByteLengthStrict, base64JsonResponseLimit, canonicalGraphContinuation, contentTypeAllowed, decodeBase64Strict, DIRECT_ATTACHMENT_MAX_BYTES, driveCreateFolder, driveDelete, driveList, driveListContinuation, driveMetadataUpdate, drivePath, driveRead, driveReadInstructionsCandidate, driveSearchPath, driveSearchScoped, driveWriteSource, graphOperationSignal, graphRequest, normalizeDriveSearch, ONEDRIVE_READ_MAX_BYTES, ONEDRIVE_WRITE_MAX_BYTES, OUTLOOK_ATTACHMENT_MAX_BYTES, safeId, TODO_ATTACHMENT_MAX_BYTES, uploadAttachmentSession, validateDriveFolderInput, validateDriveMetadataInput, validateDriveWriteBytes, type DriveUploadSource } from "./graph.js";
 import { ONEDRIVE_AGENTS_MAX_FILE_BYTES, ONEDRIVE_AGENTS_MAX_PARALLEL, OneDriveAgentsSessionCache, oneDriveAgentsSessionCache } from "./onedrive-agents-instructions.js";
+import { NativeBoundaryService } from "./native-boundary.js";
 
 const MAX_RESULTS = 50;
 const MAX_MAIL_FOLDERS = 200;
@@ -54,6 +55,10 @@ const Config = Type.Object({
   enabled: Type.Optional(Type.Boolean({ default: false })),
   warningApprovalsRequired: Type.Optional(Type.Boolean({ default: true, description: "Require OpenClaw-native approval for warning-level Microsoft Graph mutations. Missing defaults to true; set false only when policy-authorized warning mutations may proceed without an approval prompt." })),
   credentialVaultKey: Type.Optional(SecretRefOnly),
+  nativeBoundaryEnabled: Type.Optional(Type.Boolean({ default: false, description: "Expose the closed authenticated Native OS connected-action socket." })),
+  nativeBoundaryKey: Type.Optional(SecretRefOnly),
+  nativeBoundaryAgentId: Type.Optional(Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._-]+$", default: "main" })),
+  nativeBoundarySocketPath: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
   policy: Type.Optional(GraphPolicySchema),
   requestTimeoutMs: Type.Optional(Type.Integer({ minimum: 1000, maximum: 30000, default: 5000 })),
   readOperationTimeoutMs: Type.Optional(Type.Integer({ minimum: 5000, maximum: 300000, default: DEFAULT_READ_OPERATION_TIMEOUT_MS, description: "Whole-operation deadline for multi-request reads; each Graph request remains bounded by requestTimeoutMs." })),
@@ -66,7 +71,7 @@ const Config = Type.Object({
   oneDriveTransferTimeoutMs: Type.Optional(Type.Integer({ minimum: 30000, maximum: 7 * 24 * 60 * 60 * 1000, default: DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS, description: "Whole-operation deadline for OneDrive private-media downloads and uploads; each Graph request remains bounded by requestTimeoutMs." })),
 }, { additionalProperties: false });
 
-export type RuntimeConfig = { enabled?: boolean; warningApprovalsRequired?: boolean; credentialVaultKey?: unknown; policy?: GraphPolicy; requestTimeoutMs?: number; readOperationTimeoutMs?: number; calendarMultiwriteTimeoutMs?: number; maxConcurrent?: number; maxReadBytes?: number; maxReadOutputBytes?: number; maxAttachmentDownloadBytes?: number; attachmentDownloadTimeoutMs?: number; oneDriveTransferTimeoutMs?: number };
+export type RuntimeConfig = { enabled?: boolean; warningApprovalsRequired?: boolean; credentialVaultKey?: unknown; nativeBoundaryEnabled?: boolean; nativeBoundaryKey?: unknown; nativeBoundaryAgentId?: string; nativeBoundarySocketPath?: string; policy?: GraphPolicy; requestTimeoutMs?: number; readOperationTimeoutMs?: number; calendarMultiwriteTimeoutMs?: number; maxConcurrent?: number; maxReadBytes?: number; maxReadOutputBytes?: number; maxAttachmentDownloadBytes?: number; attachmentDownloadTimeoutMs?: number; oneDriveTransferTimeoutMs?: number };
 type OneDriveApprovalRoot = Pick<AllowedRoot, "label" | "drive_id" | "item_id">;
 type Logger = { info: (message: string) => void; warn: (message: string) => void };
 let activeRequests = 0;
@@ -2957,6 +2962,120 @@ async function todoWrite(config: RuntimeConfig, agentId: string | undefined, wor
   } : undefined);
 }
 
+const nativeConnectedParameterChecks = {
+  outlook_calendar_read: Compile(calendarReadSchema),
+  outlook_calendar_write: Compile(calendarWriteSchema),
+  outlook_mail_read: Compile(mailReadSchema),
+  outlook_mail_write: Compile(mailWriteSchema),
+  microsoft_todo_read: Compile(todoReadSchema),
+  microsoft_todo_write: Compile(todoWriteSchema),
+};
+
+function exactNativeFields(value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): void {
+  const allowed = new Set([...required, ...optional]);
+  if (required.some((field) => !Object.hasOwn(value, field)) || Object.keys(value).some((field) => !allowed.has(field))) {
+    throw new Error("invalid_native_connected_parameters");
+  }
+}
+
+function nativeText(value: unknown, label: string, maximum: number): string {
+  if (typeof value !== "string" || !value || Buffer.byteLength(value, "utf8") > maximum || value.includes("\0")) {
+    throw new Error(`invalid_native_connected_${label}`);
+  }
+  return value;
+}
+
+/** Execute the closed tool vocabulary admitted and signed by Native OS. */
+export async function executeNativeConnectedTool(
+  config: RuntimeConfig,
+  agentId: string,
+  workspaceDir: string | undefined,
+  tool: string,
+  parameters: Record<string, unknown>,
+): Promise<unknown> {
+  if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) throw new Error("invalid_native_connected_parameters");
+  if (tool in nativeConnectedParameterChecks) {
+    const checker = nativeConnectedParameterChecks[tool as keyof typeof nativeConnectedParameterChecks];
+    if (!checker.Check(parameters)) throw new Error("invalid_native_connected_parameters");
+    if (tool === "outlook_calendar_read") return calendarRead(config, agentId, parameters);
+    if (tool === "outlook_calendar_write") return calendarWrite(config, agentId, workspaceDir, parameters);
+    if (tool === "outlook_mail_read") return mailRead(config, agentId, parameters);
+    if (tool === "outlook_mail_write") return mailWrite(config, agentId, workspaceDir, parameters);
+    if (tool === "microsoft_todo_read") return todoRead(config, agentId, parameters);
+    return todoWrite(config, agentId, workspaceDir, parameters);
+  }
+
+  const rootLabel = nativeText(parameters.rootLabel, "root", 160);
+  if (tool === "onedrive_search") {
+    exactNativeFields(parameters, ["rootLabel", "query"], ["limit"]);
+    const search = normalizeDriveSearch(nativeText(parameters.query, "query", 200), "provider", false);
+    const maximum = boundedLimit(parameters.limit, 5);
+    return withDrive(config, agentId, rootLabel, "read", undefined, async (root, token, bounded) => {
+      const page = await driveSearchScoped(root, search.query, token, maximum, undefined, bounded, undefined, {}, search.mode, search.exhaustive) as Record<string, unknown>;
+      const { providerNextLink: _providerNextLink, continuationState: _state, ...publicValue } = page;
+      return { ok: true, operation: "search", root_label: rootLabel, ...publicValue };
+    });
+  }
+  if (tool === "onedrive_list") {
+    exactNativeFields(parameters, ["rootLabel"], ["relativePath", "limit"]);
+    const relativePath = normalizeRelativePath(String(parameters.relativePath ?? ""));
+    const maximum = boundedLimit(parameters.limit);
+    return withDrive(config, agentId, rootLabel, "read", undefined, async (root, token, bounded) => {
+      const page = await driveList(root, relativePath, token, maximum, bounded);
+      const { providerNextLink: _providerNextLink, ...publicValue } = page;
+      return { ok: true, operation: "list", root_label: rootLabel, ...publicValue };
+    });
+  }
+  if (tool === "onedrive_read") {
+    exactNativeFields(parameters, ["rootLabel", "relativePath", "mode"]);
+    const relativePath = normalizeRelativePath(nativeText(parameters.relativePath, "path", 1024));
+    if (parameters.mode !== "text" && parameters.mode !== "digest") throw new Error("invalid_native_connected_mode");
+    return withDrive(config, agentId, rootLabel, "read", undefined, (root, token, bounded) =>
+      driveRead(root, relativePath, token, parameters.mode as "text" | "digest", parameters.mode === "digest" ? config.maxReadBytes ?? ONEDRIVE_READ_MAX_BYTES : config.maxReadOutputBytes ?? DEFAULT_READ_OUTPUT_BYTES, bounded));
+  }
+  if (tool === "onedrive_create_folder") {
+    exactNativeFields(parameters, ["rootLabel", "name"], ["parentRelativePath"]);
+    const parent = normalizeRelativePath(String(parameters.parentRelativePath ?? ""));
+    const name = nativeText(parameters.name, "folder_name", 255);
+    validateDriveFolderInput(name);
+    return withDrive(config, agentId, rootLabel, "write", undefined, (root, token, bounded) => driveCreateFolder(root, parent, name, "fail", token, bounded));
+  }
+  if (tool === "onedrive_metadata_update") {
+    exactNativeFields(parameters, ["rootLabel", "relativePath"], ["name", "destinationRelativePath", "description"]);
+    const relativePath = normalizeRelativePath(nativeText(parameters.relativePath, "path", 1024));
+    const changes = {
+      ...(parameters.name !== undefined ? { name: nativeText(parameters.name, "name", 255) } : {}),
+      ...(parameters.destinationRelativePath !== undefined ? { destinationRelativePath: normalizeRelativePath(nativeText(parameters.destinationRelativePath, "destination", 1024)) } : {}),
+      ...(parameters.description !== undefined ? { description: parameters.description as string | null } : {}),
+    };
+    validateDriveMetadataInput(relativePath, changes);
+    return withDrive(config, agentId, rootLabel, "write", undefined, (root, token, bounded) => driveMetadataUpdate(root, relativePath, token, changes, bounded));
+  }
+  if (tool === "onedrive_delete") {
+    exactNativeFields(parameters, ["rootLabel", "relativePath"]);
+    const relativePath = normalizeRelativePath(nativeText(parameters.relativePath, "path", 1024));
+    if (!relativePath) throw new Error("invalid_native_connected_path");
+    return withDrive(config, agentId, rootLabel, "delete", undefined, (root, token, bounded) => driveDelete(root, relativePath, token, bounded));
+  }
+  if (tool === "onedrive_upload_small") {
+    exactNativeFields(parameters, ["rootLabel", "relativePath", "contentBase64"], ["contentType"]);
+    const relativePath = normalizeRelativePath(nativeText(parameters.relativePath, "path", 1024));
+    const content = decodeBase64Strict(parameters.contentBase64, "invalid_native_connected_content");
+    if (content.byteLength < 1 || content.byteLength > 64 * 1024) throw new Error("invalid_native_connected_content");
+    const contentType = parameters.contentType === undefined ? "application/octet-stream" : nativeText(parameters.contentType, "content_type", 160);
+    if (!contentTypeAllowed(contentType)) throw new Error("invalid_native_connected_content_type");
+    const source: DriveUploadSource = {
+      size: content.byteLength,
+      sha256: createHash("sha256").update(content).digest("hex"),
+      async readChunk(offset, maximumBytes) { return content.subarray(offset, offset + maximumBytes); },
+      async assertUnchanged() {},
+    };
+    return withDrive(config, agentId, rootLabel, "write", undefined, (root, token, bounded) =>
+      driveWriteSource(root, relativePath, token, source, contentType, false, bounded, fetch, config.requestTimeoutMs ?? 5000));
+  }
+  throw new Error("unsupported_native_connected_tool");
+}
+
 const originalRegister = plugin.register.bind(plugin);
 
 export async function beforeMicrosoftGraphToolCall(
@@ -3161,6 +3280,33 @@ plugin.register = (api) => {
       runtimeConfig,
       () => stateResolver(process.env),
     );
+  }
+  if (typeof (api as unknown as { registerService?: unknown }).registerService === "function") {
+    let nativeBoundaryService: NativeBoundaryService | undefined;
+    api.registerService({
+      id: "microsoft-graph-native-boundary",
+      reload: { configPrefixes: ["plugins.entries.microsoft-graph.config.nativeBoundary"] },
+      async start(ctx) {
+        if (runtimeConfig.nativeBoundaryEnabled !== true) return;
+        if (typeof runtimeConfig.nativeBoundaryKey !== "string") throw new Error("native_boundary_key_unavailable");
+        const agentId = runtimeConfig.nativeBoundaryAgentId ?? "main";
+        const socketPath = runtimeConfig.nativeBoundarySocketPath
+          ?? resolve(ctx.stateDir, "plugin-data", "microsoft-graph", "native-boundary.sock");
+        const service = new NativeBoundaryService(
+          socketPath,
+          runtimeConfig.nativeBoundaryKey,
+          (tool, parameters) => executeNativeConnectedTool(runtimeConfig, agentId, ctx.workspaceDir, tool, parameters),
+        );
+        await service.start();
+        nativeBoundaryService = service;
+        ctx.logger.info(`microsoft-graph: Native connected boundary listening at ${socketPath}`);
+      },
+      async stop() {
+        const service = nativeBoundaryService;
+        nativeBoundaryService = undefined;
+        await service?.stop();
+      },
+    });
   }
   const warningApprovalTrustStore = new WarningApprovalTrustStore();
   api.on(

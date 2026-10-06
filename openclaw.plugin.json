@@ -53,6 +53,51 @@
         },
         "additionalProperties": false
       },
+      "nativeBoundaryEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Expose the closed authenticated Native OS connected-action socket."
+      },
+      "nativeBoundaryKey": {
+        "type": "object",
+        "required": [
+          "source",
+          "provider",
+          "id"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "env",
+              "file",
+              "exec",
+              "store"
+            ]
+          },
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "nativeBoundaryAgentId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9._-]+$",
+        "default": "main"
+      },
+      "nativeBoundarySocketPath": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096
+      },
       "policy": {
         "type": "object",
         "required": [
@@ -420,6 +465,11 @@
       "paths": [
         {
           "path": "credentialVaultKey",
+          "expected": "string",
+          "ownerKind": "capability"
+        },
+        {
+          "path": "nativeBoundaryKey",
           "expected": "string",
           "ownerKind": "capability"
         }

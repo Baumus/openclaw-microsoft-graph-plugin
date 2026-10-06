@@ -4,6 +4,9 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Add an optional, authenticated Unix-socket boundary for Native OS/Gemacode connected actions. It accepts only a closed high-level tool vocabulary, reuses existing policy and credential controls, and rejects stale, replayed, oversized, malformed, or incorrectly signed requests.
+- Declare the Native boundary key as a separate SecretRef and document that this adapter does not replace LN, Rooted, QEL, NetKey, journal certainty, or Native Evidence.
+
 ## 3.11.0 - 2026-10-07
 
 - Guide Microsoft account connection from saved, non-secret app identifiers or two clearly labeled fields, with a separate Entra administrator path. Identifiers are stored only in the current browser after a successful device-code start; sign-in and consent remain unverified until the existing flow completes.

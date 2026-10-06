@@ -53,6 +53,27 @@ This simpler shared-credential model has an explicit tradeoff: compromise of the
 
 See [architecture](docs/ARCHITECTURE.md), [OAuth access matrix](docs/OAUTH_ACCESS_MATRIX.md), [vault design](docs/CREDENTIAL_VAULT_DESIGN.md), and [support](docs/SUPPORT.md).
 
+### Optional Native OS connected-action boundary
+
+This fork can expose a private Unix socket for a Native OS/Gemacode executor. It is disabled by default and is deliberately not a Graph proxy: it accepts only the plugin's closed Calendar, Mail, To Do, and root-relative OneDrive actions. Each request carries an operation ID and intent digest and must have a fresh timestamp, a unique nonce, and an HMAC-SHA256 signature made with a separate 32-byte base64url key. The socket is created mode `0600`; request and response bodies are bounded to 1 MiB; replays, unknown tools, extra fields, malformed JSON, and stale requests fail closed.
+
+The boundary reuses the normal plugin policy, encrypted credential vault, operation-specific OAuth scopes, provider validation, and bounded outputs. It does not make a local Apple Silicon observation equivalent to Rooted hardware evidence and it does not prove end-to-end execution by itself. Native OS remains responsible for LN validation, Rooted admission and revalidation, QEL, NetKey, journal certainty, and Native Evidence.
+
+Configure a second SecretRef (never reuse `credentialVaultKey`) and an absolute socket path:
+
+```json5
+nativeBoundaryEnabled: true,
+nativeBoundaryKey: {
+  source: "store",
+  provider: "default",
+  id: "MICROSOFT_GRAPH_NATIVE_BOUNDARY_KEY",
+},
+nativeBoundaryAgentId: "main",
+nativeBoundarySocketPath: "/absolute/private/path/microsoft-graph-native.sock",
+```
+
+Only the Native OS service account should be able to resolve the signing key. Rotate it if the key or its provider is exposed; restarting the Gateway clears the in-memory replay cache.
+
 ## Configuration reference
 
 Version 3.5.3 uses one Microsoft delegated OAuth credential and one encrypted local vault. The policy contains authorization rules only; it never contains credential locations or credential material.
