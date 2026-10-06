@@ -49,13 +49,13 @@ describe("gateway-side device-code sign-in", () => {
   });
 
   it("accepts Microsoft's alternate device page but rejects arbitrary browser destinations", async () => {
-    for (const uri of ["https://login.microsoft.com/device", "https://microsoft.com/devicelogin", "https://www.microsoft.com/devicelogin"]) {
+    for (const uri of ["https://login.microsoft.com/device", "https://microsoft.com/devicelogin", "https://www.microsoft.com/devicelogin", "https://www.microsoft.com/link"]) {
       const { state, config } = await setup();
       const fetchFn = vi.fn().mockResolvedValue(response({ ...deviceResponse, verification_uri: uri })) as unknown as typeof fetch;
       const signIn = new DeviceCodeSignIn(config, () => state, fetchFn, () => new Promise<void>(() => undefined));
       expect((await signIn.start(clientId, tenant)).verificationUri).toBe(uri);
     }
-    for (const uri of ["https://login.microsoft.com.evil.invalid/device", "https://login.microsoft.com/other", "http://login.microsoft.com/device"]) {
+    for (const uri of ["https://login.microsoft.com.evil.invalid/device", "https://login.microsoft.com/other", "http://login.microsoft.com/device", "http://www.microsoft.com/link", "https://www.microsoft.com/link/", "https://www.microsoft.com.evil.invalid/link"]) {
       const { state, config } = await setup();
       const fetchFn = vi.fn().mockResolvedValue(response({ ...deviceResponse, verification_uri: uri })) as unknown as typeof fetch;
       const signIn = new DeviceCodeSignIn(config, () => state, fetchFn);
