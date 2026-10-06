@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.10.0 - 2026-10-06
+
+- Show a read-only update badge beside the established-connection status when ClawHub reports a newer, security-clean stable plugin release. The administrator-scoped Gateway check sends no credentials or policy data, is bounded and cached, and never installs an update.
+
 ## 3.9.0 - 2026-10-05
 
 - Upload or replace a workspace-created file in one OneDrive call with `sourceWorkspacePath`. The plugin confines and streams the file into private inbound media, hashes it before native approval, verifies the staged bytes again before Graph access, and retains the existing `sourceMediaUri` path for already-staged files.
