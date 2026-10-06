@@ -2,10 +2,36 @@
 
 All notable changes to this project are documented here.
 
-## Unreleased
+## 3.8.9 - 2026-10-06
+
+- Add compact, fail-closed OneDrive root-folder create and exact-delete tools for small local models, while preserving Graph policy, native approval, Native OS execution permits, instruction gating, and bounded exact-match scanning.
+- Keep the compact folder schema to the exact name only so local models cannot invent instruction acknowledgement tokens; managed instruction roots still fail closed in preflight.
+
+## 3.8.7 - 2026-10-06
+
+- Add compact default-calendar event create/exact-delete and default-list To Do task create/exact-delete adapters for small local models. All four retain Microsoft Graph policy enforcement, OpenClaw-native approvals, and fail-closed exact target resolution.
+
+## 3.8.6 - 2026-10-06
+
+- Add a compact Microsoft To Do overview adapter that resolves authorized lists internally and returns pending task records rather than mistaking list containers for tasks.
+
+## 3.8.5 - 2026-10-06
+
+- Keep the compact OneDrive root-list result small for local models by returning only each item's name, folder flag, size, and MIME type while preserving bounded pagination status and QEL/Native DB verification.
+
+## 3.8.4 - 2026-10-06
+
+- Add a compact, read-only OneDrive root-list adapter for local models. It selects the root only when the caller has exactly one readable policy root and otherwise fails closed, avoiding guessed root labels without widening access.
+
+## 3.8.3 - 2026-10-06
+
+- Add a compact, read-only default-calendar day adapter for local models. It maps one validated `YYYY-MM-DD` date to the existing bounded calendar read path without widening permissions or bypassing policy, QEL, native execution, or receipt controls.
+
+## 3.8.2 - 2026-10-06
 
 - Add an optional, authenticated Unix-socket boundary for Native OS/Gemacode connected actions. It accepts only a closed high-level tool vocabulary, reuses existing policy and credential controls, and rejects stale, replayed, oversized, malformed, or incorrectly signed requests.
 - Declare the Native boundary key as a separate SecretRef and document that this adapter does not replace LN, Rooted, QEL, NetKey, journal certainty, or Native Evidence.
+- Normalize the closed `startDate`/`endDate` and `calendarId: default` aliases emitted by compact local models only for bounded calendar reads. Writes, permissions, and foreign-calendar targeting remain strict.
 
 ## 3.11.0 - 2026-10-07
 

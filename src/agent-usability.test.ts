@@ -20,7 +20,7 @@ describe("agent-facing Microsoft Graph contracts", () => {
   it("advertises concrete guidance for every runtime tool and action-specific schema hints", () => {
     const metadata = getToolPluginMetadata(entry)!;
     const { tools, context } = runtime();
-    expect(metadata.tools).toHaveLength(17);
+    expect(metadata.tools).toHaveLength(26);
     for (const definition of metadata.tools) {
       const concrete = tools[definition.name];
       expect(concrete.description, definition.name).toBeTruthy();
@@ -37,7 +37,13 @@ describe("agent-facing Microsoft Graph contracts", () => {
     }
     for (const definition of metadata.tools) {
       const schema = definition.parameters as any;
-      const isWrite = ["onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete", "outlook_calendar_write", "outlook_mail_write", "microsoft_todo_write"].includes(definition.name);
+      const isWrite = [
+        "onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete",
+        "onedrive_root_folder_create", "onedrive_root_folder_delete_exact",
+        "outlook_calendar_write", "outlook_calendar_event_create", "outlook_calendar_event_delete_exact",
+        "outlook_mail_write",
+        "microsoft_todo_write", "microsoft_todo_default_task_create", "microsoft_todo_task_delete_exact",
+      ].includes(definition.name);
       expect(Boolean(schema.properties?.timeoutMs), definition.name).toBe(isWrite);
       if (isWrite) expect(schema.properties.timeoutMs.maximum).toBe(600_000);
     }

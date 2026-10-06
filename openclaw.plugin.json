@@ -543,13 +543,22 @@
       "onedrive_create_folder",
       "onedrive_delete",
       "outlook_calendar_read",
+      "outlook_calendar_day_read",
       "outlook_calendar_write",
       "outlook_mail_read",
       "outlook_mail_write",
       "microsoft_todo_read",
+      "microsoft_todo_overview_read",
       "microsoft_todo_write",
       "onedrive_agents_instructions",
-      "microsoft_graph_capabilities"
+      "microsoft_graph_capabilities",
+      "onedrive_root_list",
+      "onedrive_root_folder_create",
+      "onedrive_root_folder_delete_exact",
+      "outlook_calendar_event_create",
+      "outlook_calendar_event_delete_exact",
+      "microsoft_todo_default_task_create",
+      "microsoft_todo_task_delete_exact"
     ]
   },
   "toolMetadata": {
@@ -562,6 +571,21 @@
       "optional": true,
       "replaySafe": true,
       "sideEffecting": false
+    },
+    "onedrive_root_list": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "onedrive_root_folder_create": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
+    },
+    "onedrive_root_folder_delete_exact": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
     },
     "onedrive_read": {
       "optional": true,
@@ -603,6 +627,11 @@
       "replaySafe": true,
       "sideEffecting": false
     },
+    "outlook_calendar_day_read": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
     "outlook_calendar_write": {
       "optional": true,
       "replaySafe": false,
@@ -623,6 +652,11 @@
       "replaySafe": true,
       "sideEffecting": false
     },
+    "microsoft_todo_overview_read": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
     "microsoft_todo_write": {
       "optional": true,
       "replaySafe": false,
@@ -637,6 +671,26 @@
       "optional": true,
       "replaySafe": true,
       "sideEffecting": false
+    },
+    "outlook_calendar_event_create": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
+    },
+    "outlook_calendar_event_delete_exact": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
+    },
+    "microsoft_todo_default_task_create": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
+    },
+    "microsoft_todo_task_delete_exact": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
     }
   }
 }

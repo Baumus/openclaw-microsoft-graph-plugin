@@ -5,12 +5,64 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { getToolPluginMetadata } from "openclaw/plugin-sdk/tool-plugin";
-import entry, { approvalInventory, assertOwnedTodoList, assertWriteActionFields, attachmentWritePlan, boundedCollectionPage, calendarApprovalCriteria, calendarCollectionPath, calendarEventPath, calendarEventPayload, calendarPageIsTruncated, calendarViewPath, calendarViewQuery, calendarWindowDateTime, classifyApproval, collectFilteredCollection, dateTimeTimeZone, deadlineSignal, enforceOneDriveInstructionPreflight, eventGetFields, eventMatchesSearch, eventReadFields, fileAttachmentPayload, listMailFolders, mailFolderCollectionPath, mailListQuery, mailMessageActionPath, mailMessageCollectionPath, mailMessagePayload, mailReplyForwardPlan, NativeApprovalSnapshotStore, nextGraphPath, normalizedWarningApprovalAction, oneDriveAgentsInstructions, oneDriveInstructionDirectories, oneDriveWriteApprovalCriteria, readProtectedMediaSource, readOperationTimeout, schedulePage, taskPayload, todoTaskChildPath, todoTaskMatches, todoTaskPath, validateAttachmentContent, validateProtectedMediaUri, WarningApprovalTrustStore, WRITE_ACTION_FIELDS } from "./index.js";
-import { beforeMicrosoftGraphToolCall, enforceOneDriveInstructionExecution } from "./index.js";
+import entry, { approvalInventory, assertOwnedTodoList, assertWriteActionFields, attachmentWritePlan, boundedCollectionPage, calendarApprovalCriteria, calendarCollectionPath, calendarDayReadParams, calendarEventPath, calendarEventPayload, calendarPageIsTruncated, calendarViewPath, calendarViewQuery, calendarWindowDateTime, classifyApproval, collectFilteredCollection, dateTimeTimeZone, deadlineSignal, enforceOneDriveInstructionPreflight, eventGetFields, eventMatchesSearch, eventReadFields, fileAttachmentPayload, listMailFolders, mailFolderCollectionPath, mailListQuery, mailMessageActionPath, mailMessageCollectionPath, mailMessagePayload, mailReplyForwardPlan, NativeApprovalSnapshotStore, nextGraphPath, normalizedWarningApprovalAction, oneDriveAgentsInstructions, oneDriveInstructionDirectories, oneDriveWriteApprovalCriteria, readProtectedMediaSource, readOperationTimeout, schedulePage, taskPayload, todoTaskChildPath, todoTaskMatches, todoTaskPath, validateAttachmentContent, validateProtectedMediaUri, WarningApprovalTrustStore, WRITE_ACTION_FIELDS } from "./index.js";
+import { beforeMicrosoftGraphToolCall, enforceOneDriveInstructionExecution, normalizeMicrosoftGraphReadParams } from "./index.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 import { ONEDRIVE_AGENTS_MAX_DEPTH, OneDriveAgentsSessionCache, oneDriveAgentsSessionCache } from "./onedrive-agents-instructions.js";
 
 describe("microsoft-graph plugin contract", () => {
+  it("normalizes only the closed local-model aliases for calendar reads", async () => {
+    const raw = {
+      action: "list_events",
+      calendarId: "default",
+      startDate: "2026-10-06T00:00:00",
+      endDate: "2026-10-06T23:59:59",
+    };
+    expect(normalizeMicrosoftGraphReadParams("outlook_calendar_read", raw, "Europe/Madrid")).toEqual({
+      action: "list_events",
+      startDateTime: "2026-10-06T00:00:00",
+      endDateTime: "2026-10-06T23:59:59",
+      timeZone: "Europe/Madrid",
+    });
+    expect(normalizeMicrosoftGraphReadParams("outlook_calendar_write", raw, "Europe/Madrid")).toBe(raw);
+
+    expect(normalizeMicrosoftGraphReadParams("outlook_calendar_read", {
+      date: "2026-10-06",
+      timeZone: "Europe/Madrid",
+    }, "Europe/Madrid")).toEqual({
+      action: "list_events",
+      startDateTime: "2026-10-06T00:00:00",
+      endDateTime: "2026-10-07T00:00:00",
+      timeZone: "Europe/Madrid",
+    });
+    const invalidDate = { date: "2026-02-30" };
+    expect(normalizeMicrosoftGraphReadParams("outlook_calendar_read", invalidDate, "Europe/Madrid")).toBe(invalidDate);
+
+    const result = await beforeMicrosoftGraphToolCall(
+      { enabled: true },
+      { toolName: "outlook_calendar_read", toolCallId: "read-alias", params: raw },
+      { agentId: "main", sessionId: "session" },
+    );
+    expect(result).toEqual({
+      params: {
+        action: "list_events",
+        startDateTime: "2026-10-06T00:00:00",
+        endDateTime: "2026-10-06T23:59:59",
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      },
+    });
+  });
+
+  it("maps the compact day adapter to one exact local calendar window", () => {
+    expect(calendarDayReadParams("2026-10-06", "Europe/Madrid")).toEqual({
+      action: "list_events",
+      startDateTime: "2026-10-06T00:00:00",
+      endDateTime: "2026-10-07T00:00:00",
+      timeZone: "Europe/Madrid",
+    });
+    expect(() => calendarDayReadParams("2026-02-30", "Europe/Madrid")).toThrow("invalid_date");
+  });
+
   it("registers CLI metadata without accessing the restricted runtime", () => {
     const registerCli = vi.fn();
     const runtime = new Proxy(Object.create(null), {
@@ -76,8 +128,10 @@ describe("microsoft-graph plugin contract", () => {
     const metadata = getToolPluginMetadata(entry)!;
     expect(metadata.tools.map((tool) => tool.name)).toEqual([
       "onedrive_search", "onedrive_list", "onedrive_read", "onedrive_download", "onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete",
-      "outlook_calendar_read", "outlook_calendar_write", "outlook_mail_read", "outlook_mail_write", "microsoft_todo_read", "microsoft_todo_write",
-      "onedrive_agents_instructions", "microsoft_graph_capabilities",
+      "outlook_calendar_read", "outlook_calendar_day_read", "outlook_calendar_write", "outlook_mail_read", "outlook_mail_write", "microsoft_todo_read", "microsoft_todo_overview_read", "microsoft_todo_write",
+      "onedrive_agents_instructions", "microsoft_graph_capabilities", "onedrive_root_list",
+      "onedrive_root_folder_create", "onedrive_root_folder_delete_exact",
+      "outlook_calendar_event_create", "outlook_calendar_event_delete_exact", "microsoft_todo_default_task_create", "microsoft_todo_task_delete_exact",
     ]);
     expect(metadata.tools.every((tool) => tool.optional)).toBe(true);
     for (const tool of metadata.tools) expect(JSON.stringify(tool.parameters)).not.toMatch(/agent_?id|access_?token|refresh_?token|secret/i);
@@ -606,7 +660,7 @@ describe("microsoft-graph plugin contract", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     try {
       entry.register({ pluginConfig: { enabled: true }, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
-      const tool = factories[12]({ agentId: "main" });
+      const tool = factories[13]({ agentId: "main" });
       const response = await tool.execute("x", { action: "reply_draft", messageId: "message", bodyText: "Reply", bodyHtml: "<p>Reply</p>" });
       expect(response.details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
       expect(fetchSpy).not.toHaveBeenCalled();
@@ -652,15 +706,16 @@ describe("microsoft-graph plugin contract", () => {
 
   it("exhaustively classifies only explicit read tools as approval-free", () => {
     const metadata = getToolPluginMetadata(entry)!;
-    const readTools = new Set(["onedrive_search", "onedrive_list", "onedrive_read", "onedrive_download", "onedrive_agents_instructions", "microsoft_graph_capabilities", "outlook_calendar_read", "outlook_mail_read", "microsoft_todo_read"]);
-    const oneDriveWrites = new Set(["onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete"]);
+    const readTools = new Set(["onedrive_search", "onedrive_list", "onedrive_root_list", "onedrive_read", "onedrive_download", "onedrive_agents_instructions", "microsoft_graph_capabilities", "outlook_calendar_read", "outlook_calendar_day_read", "outlook_mail_read", "microsoft_todo_read", "microsoft_todo_overview_read"]);
+    const oneDriveWrites = new Set(["onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete", "onedrive_root_folder_create", "onedrive_root_folder_delete_exact"]);
+    const compactWrites = new Set(["outlook_calendar_event_create", "outlook_calendar_event_delete_exact", "microsoft_todo_default_task_create", "microsoft_todo_task_delete_exact"]);
     for (const tool of metadata.tools) {
       const actions = (tool.parameters as any).properties?.action?.anyOf?.map((value: any) => value.const) ?? [undefined];
       for (const action of actions) {
         const level = classifyApproval(tool.name, action === undefined ? {} : { action });
         if (readTools.has(tool.name)) expect(level, `${tool.name}:${action ?? "call"}`).toBe("none");
         else {
-          expect(oneDriveWrites.has(tool.name) || tool.name.endsWith("_write"), tool.name).toBe(true);
+          expect(oneDriveWrites.has(tool.name) || compactWrites.has(tool.name) || tool.name.endsWith("_write"), tool.name).toBe(true);
           expect(level, `${tool.name}:${action ?? "call"}`).not.toBe("none");
         }
       }
@@ -960,6 +1015,8 @@ describe("microsoft-graph plugin contract", () => {
       onedrive_metadata_update: { rootLabel: root.label, relativePath: "existing.txt", name: "renamed.txt" },
       onedrive_create_folder: { rootLabel: root.label, parentRelativePath: "", name: "folder" },
       onedrive_delete: { rootLabel: root.label, relativePath: "existing.txt" },
+      onedrive_root_folder_create: { name: "root-folder" },
+      onedrive_root_folder_delete_exact: { name: "root-folder" },
     };
     for (const tool of metadata.tools.filter((candidate) => candidate.name in oneDriveParams || candidate.name.endsWith("_write"))) {
       const actions = (tool.parameters as any).properties?.action?.anyOf?.map((value: any) => value.const) ?? [undefined];
@@ -1176,8 +1233,10 @@ describe("microsoft-graph plugin contract", () => {
       expect(oneDriveInstructionDirectories(tool, { rootLabel: "r", relativePath: "a/b.txt" })).toEqual(["a"]);
     }
     expect(oneDriveInstructionDirectories("onedrive_create_folder", { rootLabel: "r", parentRelativePath: "a" })).toEqual(["a"]);
+    expect(oneDriveInstructionDirectories("onedrive_root_folder_create", { rootLabel: "r", name: "folder" })).toEqual([""]);
     expect(oneDriveInstructionDirectories("onedrive_metadata_update", { rootLabel: "r", relativePath: "a/file", destinationRelativePath: "b" })).toEqual(["a", "a/file", "b"]);
     expect(oneDriveInstructionDirectories("onedrive_delete", { rootLabel: "r", relativePath: "a/folder" })).toEqual(["a", "a/folder"]);
+    expect(oneDriveInstructionDirectories("onedrive_root_folder_delete_exact", { rootLabel: "r", name: "folder" })).toEqual(["", "folder"]);
     expect(oneDriveInstructionDirectories("outlook_mail_read", {})).toBeUndefined();
   });
 
@@ -1301,8 +1360,8 @@ describe("microsoft-graph plugin contract", () => {
       const calls = [
         [factories[1]({ agentId: "fixture-reader" }), { rootLabel: "synthetic_documents", relativePath: "", continuation: raw }],
         [factories[9]({ agentId: "main" }), { action: "list_events", startDateTime: "2026-09-01T00:00:00Z", endDateTime: "2026-09-02T00:00:00Z", continuation: raw }],
-        [factories[11]({ agentId: "main" }), { action: "list_messages", continuation: raw }],
-        [factories[13]({ agentId: "main" }), { action: "list_lists", continuation: raw }],
+        [factories[12]({ agentId: "main" }), { action: "list_messages", continuation: raw }],
+        [factories[14]({ agentId: "main" }), { action: "list_lists", continuation: raw }],
       ] as const;
       for (const [tool, params] of calls) expect((await tool.execute("x", params)).details).toMatchObject({ ok: false, error: "invalid_continuation" });
       expect(fetchSpy).not.toHaveBeenCalled();
@@ -1350,7 +1409,7 @@ describe("microsoft-graph plugin contract", () => {
   it("rejects direct calendar mutations without an approval snapshot before credential access", async () => {
     const factories: Array<(context: any) => any> = [];
     entry.register({ pluginConfig: {}, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
-    const tool = factories[10]({ agentId: "main" });
+    const tool = factories[11]({ agentId: "main" });
     const response = await tool.execute("x", { action: "respond", eventId: "event", response: "forward" });
     expect(response.details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
   });

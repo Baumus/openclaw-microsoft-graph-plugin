@@ -32,8 +32,8 @@ describe("opaque continuation tool integration", () => {
       const cases = [
         { tool: factories[1]({ agentId: "fixture-reader" }), params: { rootLabel: "synthetic_documents", relativePath: "SYNTHETIC_FOLDER", limit: 1 } },
         { tool: factories[9]({ agentId: "main" }), params: { action: "list_events", startDateTime: "2026-09-01T00:00:00Z", endDateTime: "2026-09-02T00:00:00Z", limit: 1 } },
-        { tool: factories[11]({ agentId: "main" }), params: { action: "list_messages", folder: "inbox", limit: 1 } },
-        { tool: factories[13]({ agentId: "main" }), params: { action: "list_lists", limit: 1 } },
+        { tool: factories[12]({ agentId: "main" }), params: { action: "list_messages", folder: "inbox", limit: 1 } },
+        { tool: factories[14]({ agentId: "main" }), params: { action: "list_lists", limit: 1 } },
       ];
       for (const { tool, params } of cases) {
         const first = await tool.execute("first", params);
@@ -180,8 +180,8 @@ describe("opaque continuation tool integration", () => {
     };
     const cases = [
       { service: "calendar" as const, factory: 9 },
-      { service: "mail" as const, factory: 11 },
-      { service: "todo" as const, factory: 13 },
+      { service: "mail" as const, factory: 12 },
+      { service: "todo" as const, factory: 14 },
     ];
     const credentialCalls = mocks.readCredential.mock.calls.length;
     const fetchSpy = vi.spyOn(globalThis, "fetch");
@@ -244,8 +244,8 @@ describe("opaque continuation tool integration", () => {
       [factories[0]({ agentId: "fixture-reader" }), { rootLabel: "synthetic_documents", query: "../README.md", mode: "filename_exact" }, "invalid_search"],
       [factories[0]({ agentId: "fixture-reader" }), { rootLabel: "synthetic_documents", query: "README", mode: "provider", exhaustive: true }, "invalid_search"],
       [factories[9]({ agentId: "main" }), { action: "search_events", startDateTime: "2026-09-07T09:00:00Z", endDateTime: "2026-09-07T10:00:00Z", searchFields: ["subject"], showAs: "busy" }, "invalid_search"],
-      [factories[11]({ agentId: "main" }), { action: "list_messages", orderDirection: "asc" }, "invalid_order"],
-      [factories[13]({ agentId: "main" }), { action: "search_tasks", listId: "list-id", searchFields: ["title"], status: "notStarted" }, "invalid_search"],
+      [factories[12]({ agentId: "main" }), { action: "list_messages", orderDirection: "asc" }, "invalid_order"],
+      [factories[14]({ agentId: "main" }), { action: "search_tasks", listId: "list-id", searchFields: ["title"], status: "notStarted" }, "invalid_search"],
     ] as const;
     for (const [tool, params, error] of cases) expect((await tool.execute("dependency", params)).details).toMatchObject({ ok: false, error });
     expect(mocks.readCredential).toHaveBeenCalledTimes(credentialCalls);
