@@ -9,6 +9,7 @@ type Root = { label: string; path: string; drive_id: string; item_id: string; in
 type Policy = { version: 2; rules: { default: "deny"; warningApprovalsByService?: Partial<Record<"onedrive" | "calendar" | "mail" | "todo", boolean>> }; services: { onedrive: { allowed_roots: Root[] }; calendar: { agents: Record<string, Grant> }; mail: { agents: Record<string, Grant> }; todo: { agents: Record<string, Grant> } } };
 type CredentialStatus = { policyVersion: 2; credential: { result: "missing" | "valid" | "quarantined" | "unavailable" } };
 type DeviceStart = { sessionId: string; userCode: string; verificationUri: string; expiresAt: string; scopes: string[] };
+type UpdateStatus = { updateAvailable: boolean; latestVersion?: string };
 type DeviceStatus = { state: "pending" | "created" | "failed"; error?: string; scopes?: string[] };
 type CredentialReply<T> = { ok: true; value: T } | { ok: false; error: string };
 type ConfigSnapshot = { hash: string; config: { plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; parsed?: { plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; configRevisionHash?: string; appliedConfigHash?: string };
@@ -79,6 +80,8 @@ class ConfigurationPage {
   private statusChecksRemaining = 0;
   private authTimer?: ReturnType<typeof setTimeout>;
   private credential?: CredentialStatus["credential"];
+  private updateStatus?: UpdateStatus;
+  private updateCheckStarted = false;
   private authClientId = "";
   private authTenant = "";
   private device?: DeviceStart;
@@ -87,11 +90,20 @@ class ConfigurationPage {
   private authBusy = false;
   private readonly unsubscribe: () => void;
   constructor(private container: HTMLElement, private host: ControlUiHost, private signal: AbortSignal) {
-    this.unsubscribe = host.subscribe(() => { setLocale(host.locale); if (!this.snapshot && !this.busy && this.authorized) void this.load(); else this.render(); });
+    this.unsubscribe = host.subscribe(() => { setLocale(host.locale); if (this.authorized) void this.checkForUpdate(); if (!this.snapshot && !this.busy && this.authorized) void this.load(); else this.render(); });
     void this.load();
+    void this.checkForUpdate();
     this.render();
   }
   dispose() { this.disposed = true; if (this.authTimer) clearTimeout(this.authTimer); this.stopStatusChecks(); this.unsubscribe(); this.container.replaceChildren(); }
+  private async checkForUpdate() {
+    if (!this.authorized || this.updateCheckStarted || this.disposed) return;
+    this.updateCheckStarted = true;
+    try {
+      const result = await this.host.request<UpdateStatus>("microsoft-graph.updateStatus", {});
+      if (!this.disposed && !this.signal.aborted && result.updateAvailable === true && typeof result.latestVersion === "string") { this.updateStatus = result; this.render(); }
+    } catch { /* Version information is optional; never block configuration. */ }
+  }
   private get dirty() { return !!this.initial && JSON.stringify(this.initial) !== JSON.stringify(this.policy); }
   private get authorized() { return this.host.connection.connected && this.host.connection.canAdmin; }
   private get applicationStatus(): "applied" | "pending" | "unknown" {
@@ -188,7 +200,15 @@ class ConfigurationPage {
       const status = el("p", "mg-success mg-connected", "Verbindung hergestellt");
       status.setAttribute("role", "status");
       status.setAttribute("aria-label", localize("Verbindung hergestellt. Ein Lesezugriff durch einen berechtigten Agenten wurde nicht geprüft."));
-      append(main, status);
+      const row = el("div", "mg-top-status");
+      append(row, status);
+      if (this.updateStatus?.updateAvailable) {
+        const badge = el("span", "mg-update-badge", "Update verfügbar");
+        badge.setAttribute("role", "status");
+        badge.setAttribute("aria-label", format("Update verfügbar: Version {version}", { version: this.updateStatus.latestVersion ?? "" }));
+        append(row, badge);
+      }
+      append(main, row);
       return;
     }
     const card = el("section", "mg-section mg-setup");

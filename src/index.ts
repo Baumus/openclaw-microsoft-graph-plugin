@@ -9,6 +9,7 @@ import { downloadOneDriveFile, downloadOutlookFileAttachment, publishPrivateMedi
 import { exchangeRefreshToken, readCredential, selectScope, tokenForAuthorizedOperation } from "./credential.js";
 import { registerCredentialCli, registerCredentialGatewayMethods } from "./credential-cli.js";
 import { registerConfigurationUiMethods } from "./config-ui-rpc.js";
+import { registerUpdateStatusMethod } from "./update-status.js";
 import { ContinuationStore, normalizedCriteria, type ContinuationBinding } from "./continuation.js";
 import { authorizeOperation, authorizeRoot, GraphPolicySchema, normalizeRelativePath, validatePolicy, type AllowedRoot, type GraphPolicy, type OneDriveOperation } from "./policy.js";
 import { base64DecodedByteLengthStrict, base64JsonResponseLimit, canonicalGraphContinuation, contentTypeAllowed, decodeBase64Strict, DIRECT_ATTACHMENT_MAX_BYTES, driveCreateFolder, driveDelete, driveList, driveListContinuation, driveMetadataUpdate, drivePath, driveRead, driveReadInstructionsCandidate, driveSearchPath, driveSearchScoped, driveWriteSource, graphOperationSignal, graphRequest, normalizeDriveSearch, ONEDRIVE_READ_MAX_BYTES, ONEDRIVE_WRITE_MAX_BYTES, OUTLOOK_ATTACHMENT_MAX_BYTES, safeId, TODO_ATTACHMENT_MAX_BYTES, uploadAttachmentSession, validateDriveFolderInput, validateDriveMetadataInput, validateDriveWriteBytes, type DriveUploadSource } from "./graph.js";
@@ -3153,6 +3154,7 @@ plugin.register = (api) => {
   }
   if (typeof (api as unknown as { registerGatewayMethod?: unknown }).registerGatewayMethod === "function" && stateResolver) {
     registerConfigurationUiMethods(api as unknown as Parameters<typeof registerConfigurationUiMethods>[0], runtimeConfig, () => stateResolver(process.env));
+    registerUpdateStatusMethod(api as unknown as Parameters<typeof registerUpdateStatusMethod>[0]);
     registerCredentialGatewayMethods(
       api as unknown as Parameters<typeof registerCredentialGatewayMethods>[0],
       runtimeConfig,

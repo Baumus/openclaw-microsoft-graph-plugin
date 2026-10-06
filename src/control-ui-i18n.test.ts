@@ -29,6 +29,8 @@ describe("Microsoft Graph Control UI localization", () => {
     for (const code of ["en", "de", "es", "ar"]) {
       setLocale(code);
       expect(localize("Verbindung hergestellt")).not.toBe("");
+      expect(localize("Update verfügbar")).not.toBe("");
+      expect(localize("Update verfügbar: Version {version}")).not.toBe("");
       expect(localize("Verbindung hergestellt. Ein Lesezugriff durch einen berechtigten Agenten wurde nicht geprüft.")).not.toBe("");
       if (code !== "de") expect(localize("Verbindung hergestellt")).not.toBe("Verbindung hergestellt");
     }

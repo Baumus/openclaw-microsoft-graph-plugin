@@ -49,6 +49,9 @@
 .mg-warning { border-inline-start: 4px solid #a77728; }
 .mg-error { border-inline-start: 4px solid #ba3535; }
 .mg-success { border-inline-start: 4px solid #26805e; }
+.mg-top-status { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.mg-update-badge { display: inline-flex; align-items: center; min-height: 36px; padding: 7px 12px; margin-top: 16px; border: 1px solid #e2bd81; border-radius: 999px; background: #fff4df; color: #795019; font-size: .78rem; font-weight: 700; white-space: nowrap; }
+.mg-update-badge::before { content: "●"; margin-inline-end: 7px; font-size: .6rem; }
 .mg-connected { display: inline-block; margin: 16px 0 0; padding: 9px 13px; font-weight: 600; }
 .mg-status { font-weight: 600; }
 .mg-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 9px; margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--mg-border); background: transparent; }
