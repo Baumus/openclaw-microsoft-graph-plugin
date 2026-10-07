@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.11.2 - 2026-10-07
+
+- Restore the manifest tool contract required by OpenClaw 2026.9.8. The v3.11.1 package installed but left all Microsoft Graph agent tools unavailable on that host; v3.11.2 restores registration without changing Graph permissions, tool behavior, or policy.
+
 ## 3.11.1 - 2026-10-07
 
 - Remove the unsupported generated tool contract from the plugin manifest while keeping runtime tool registration and supported tool metadata intact. The build now strips that field so future packages remain ClawHub-valid.
