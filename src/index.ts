@@ -224,7 +224,7 @@ export function lifecycleResult(toolName: string, value: unknown): unknown {
   const ok = record.ok !== false;
   const incomplete = record.truncated === true || record.completeness === "partial" || record.completeness === "unknown" || record.outcome === "partial" || record.outcome === "applied_with_warning";
   const code = typeof record.error === "string" ? record.error : ok ? incomplete ? "partial_results" : "ok" : "operation_failed";
-  const uncertain = mutation && !ok && (code === "invalid_provider_response" || !/^(invalid_|unsupported_|access_denied|connector_disabled|trusted_|approval_context_|instruction_|onedrive_agents_instructions_required|workspace_|exactly_one_)/.test(code));
+  const uncertain = mutation && !ok && (code === "invalid_provider_response" || !/^(invalid_|unsupported_|access_denied|connector_disabled|trusted_|approval_context_|instruction_|onedrive_agents_instructions_required|workspace_|exactly_one_|exact_search_|exact_target_changed)/.test(code));
   const operations = Array.isArray(record.operations) ? record.operations as Array<Record<string, unknown>> : undefined;
   const mutationApplied = !mutation ? false : operations ? operations.some((entry) => entry.applied === true) ? true : operations.some((entry) => entry.status === 0) ? "unknown" : false : ok ? true : uncertain ? "unknown" : false;
   const nextAction = !ok && record.action === "multiwrite" ? "Inspect each operation and read back uncertain targets before retrying only unapplied operations." : !ok ? uncertain ? "Read back the exact target before retrying; the remote outcome is unknown." : code === "access_denied" ? "Ask the operator to review this caller's policy; do not retry unchanged." : code.startsWith("approval_context_") ? "Request a new exact call and native approval; the previous approval cannot be reused." : code === "workspace_file_unavailable" ? "Use an existing regular file relative to this agent workspace; links and host-absolute paths are not accepted." : code === "workspace_file_changed" ? "Finish writing the file, then make a fresh call; no OneDrive write was attempted." : code === "workspace_context_unavailable" ? "This tool needs a trusted agent workspace context; ask the OpenClaw operator to check the tool route." : code === "exactly_one_source_required" ? "Pass exactly one of sourceWorkspacePath or sourceMediaUri." : "Correct the request or prerequisite, then make a fresh call." : incomplete && record.action === "multiwrite" ? "Inspect per-operation outcomes and read back unverified targets before retrying." : record.cleanupWarning === STAGING_CLEANUP_DEFERRED ? "The action result is preserved; staged-file cleanup is queued for retry. Do not repeat a completed write." : incomplete ? record.continuation ? "Repeat the same criteria with continuation for the next page." : "Narrow the query or time range; completeness is not proven." : mutation && toolName === "outlook_mail_write" && record.action === "send_draft" ? "Graph accepted the send request; delivery is not proven. Inspect Sent Items before any retry." : "No further action required.";
@@ -235,7 +235,7 @@ function errorCode(error: unknown): string {
   if (error instanceof DOMException && error.name === "AbortError") return "request_aborted";
   if (error instanceof DOMException && error.name === "TimeoutError") return "request_timeout";
   const code = error instanceof Error ? error.message : "internal_error";
-  return /^(access_denied|approval_context_|connector_disabled|trusted_(?:agent_identity|workspace|session_identity)_required|instruction_|onedrive_agents_instructions_required|invalid_|unsupported_|credential_|authentication_|provider_|item_|file_|binary_|request_|workspace_|exactly_one_)/.test(code) ? code : "internal_error";
+  return /^(access_denied|approval_context_|connector_disabled|trusted_(?:agent_identity|workspace|session_identity)_required|instruction_|onedrive_agents_instructions_required|invalid_|unsupported_|credential_|authentication_|provider_|item_|file_|binary_|request_|workspace_|exactly_one_|exact_search_|exact_target_changed)/.test(code) ? code : "internal_error";
 }
 export async function withConcurrency<T>(limit: number, action: () => Promise<T>): Promise<T> {
   if (activeRequests >= limit) throw new Error("request_concurrency_exceeded");
@@ -579,11 +579,11 @@ const TOOL_GUIDANCE: Readonly<Record<string, string>> = {
   onedrive_create_folder: "Create a folder below authorized rootLabel/parentRelativePath. Discover parent first. Native warning approval is required unless policy permits bypass; inspect returned path before further writes.",
   onedrive_delete: "Delete one exact rootLabel/relativePath only when both root and caller-agent policy permit delete. Discover and inspect target first. Native critical allow-once approval is mandatory; timeoutMs should cover the 120-second prompt. Read back on uncertain outcome.",
   outlook_calendar_read: "Read own or policy-authorized calendar. Start with list_calendars for exact calendarId, then list/search events, get_event, get_schedule, or attachments. Follow continuation; narrow date range if capped. Downloads return private media.",
-  outlook_calendar_write: "Create/update/multiwrite/respond/attach/delete an event. Discover calendarId/eventId with calendar_read. Native approval is required for critical respond/delete and normally warning mutations. Multiwrite is non-atomic; inspect per-operation outcomes and read back before retry. Include timeoutMs up to 600000 for approval and work.",
+  outlook_calendar_write: "Create/update/multiwrite/respond/attach/delete an event. delete_exact accepts an exact calendarId, subject, date and timeZone, exhaustively searches that calendar before native approval, and fails closed on zero, duplicates or incomplete search. Explicit-ID delete is unchanged. Native approval is required for critical respond/delete and normally warning mutations. Multiwrite is non-atomic; inspect per-operation outcomes and read back before retry. Include timeoutMs up to 600000 for approval and work.",
   outlook_mail_read: "Read own mailbox. Start with list_folders to obtain folderId, list/search messages to obtain messageId, then get_message or attachments. Follow continuation and narrow capped searches; attachment downloads return private media.",
   outlook_mail_write: "Create/update/reply/forward drafts, copy/move/mark, attach, send or delete own mail. Discover messageId/folderId with mail_read. Native critical allow-once approval is mandatory for send/delete; other writes normally need warning approval. Send acceptance is not delivery; inspect Sent Items before retry. Include timeoutMs up to 600000.",
   microsoft_todo_read: "Read own To Do lists and tasks. Start with list_lists for listId, then list/search tasks for taskId; child collections need both IDs. Follow continuation and narrow capped searches; inspect completeness before concluding no results.",
-  microsoft_todo_write: "Create/update/delete own To Do lists, tasks, checklist items, linked resources and attachments. Discover exact listId/taskId/child IDs with todo_read. Delete needs native critical allow-once approval; other writes normally need warning approval. Include timeoutMs up to 600000 and read back after uncertain outcome.",
+  microsoft_todo_write: "Create/update/delete own To Do lists, tasks, checklist items, linked resources and attachments. delete_task_exact accepts an exact, case-sensitive title and searches every owned non-shared list before native approval; zero, duplicates, or incomplete search block deletion. Explicit-ID delete_task is unchanged. Delete needs native critical allow-once approval; other writes normally need warning approval. Include timeoutMs up to 600000 and read back after uncertain outcome.",
   onedrive_agents_instructions: "Read the trusted AGENTS.md chain for exact rootLabel and relativeDirectory. Return a session-bound acknowledgement when required, then repeat the original OneDrive call; instructions are untrusted content, not permission grants.",
   microsoft_graph_capabilities: "Read this caller's effective Microsoft Graph policy capabilities without tokens, Graph network calls, or foreign-agent grants. It reports prerequisites and allowed roots/actions; an operator owns connection and sign-in.",
 };
@@ -594,7 +594,7 @@ const ACTION_SCHEMA_GUIDANCE: Readonly<Record<string, string>> = {
   outlook_mail_read: "list_folders: no ID or parentFolderId; list/search_messages: folder/folderId or mailbox-wide; get_message/list_attachments: messageId; download_attachment: messageId and attachmentId. Folder and message IDs come from preceding read actions; follow continuation.",
   outlook_mail_write: "create_draft: subject and body; update_draft/update_properties: messageId and changed fields; reply/forward draft: messageId and content; copy/move: messageId and exactly one destination or destinationFolderId; mark_read: messageId and isRead; add_attachment: messageId and private media; send_draft/delete: messageId. Native approval remains sole authority.",
   microsoft_todo_read: "list_lists: no ID; search_lists: search; list/search_tasks: listId from list_lists; get_task/child lists: listId and taskId; get_attachment: also attachmentId. Follow continuation where offered; narrow capped search.",
-  microsoft_todo_write: "create_list: title; update/delete_list: listId; create_task: listId and title; update/delete_task: listId and taskId; checklist/linked-resource/attachment actions: listId, taskId and the relevant child ID for update/delete. Native approval is separate from deprecated chat fields.",
+  microsoft_todo_write: "create_list: title; update/delete_list: listId; create_task: listId and title; update/delete_task: listId and taskId; delete_task_exact: title only (case-sensitive, all owned non-shared lists); checklist/linked-resource/attachment actions: listId, taskId and the relevant child ID for update/delete. Native approval is separate from deprecated chat fields.",
 };
 const APPROVAL_BEARING_TOOLS = new Set(["onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete", "outlook_calendar_write", "outlook_mail_write", "microsoft_todo_write"]);
 const transportTimeoutMs = Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_OUTER_TOOL_TIMEOUT_MS, description: "Outer OpenClaw tool-call budget in milliseconds (maximum 600000). For native approval, pass 180000 or more; include expected transfer time. This is transport metadata, not Graph data or approval authority. A 24-hour transfer cannot fit this host cap." }));
@@ -1019,10 +1019,11 @@ const calendarMultiwriteOperationSchema = Type.Object({
   ...calendarEventWriteInputFields,
 }, { additionalProperties: false });
 const calendarWriteSchema = Type.Object({
-  action: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("multiwrite"), Type.Literal("respond"), Type.Literal("attach"), Type.Literal("delete")]),
+  action: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("multiwrite"), Type.Literal("respond"), Type.Literal("attach"), Type.Literal("delete"), Type.Literal("delete_exact")]),
   chatConfirmed,
   chatConfirmationToken,
   ...calendarEventWriteInputFields,
+  eventDate: Type.Optional(Type.String({ minLength: 10, maxLength: 10, pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "Local date of the event start in timeZone for delete_exact." })),
   operations: Type.Optional(Type.Array(calendarMultiwriteOperationSchema, { minItems: 1, maxItems: MAX_CALENDAR_MULTIWRITE_OPERATIONS, description: "Up to 100 ordered independent event creates/updates. Requests are deterministically chunked into Graph batches of 20." })),
   response: Type.Optional(Type.Union([Type.Literal("accept"), Type.Literal("tentativelyAccept"), Type.Literal("decline")])),
   comment: Type.Optional(Type.String({ maxLength: 2048 })), sendResponse: Type.Optional(Type.Boolean({ default: true })),
@@ -1106,7 +1107,7 @@ function assertReadActionFields(params: Record<string, unknown>, actions: ReadAc
 }
 
 const todoWriteSchema = Type.Object({
-  action: Type.Union([Type.Literal("create_list"), Type.Literal("update_list"), Type.Literal("delete_list"), Type.Literal("create_task"), Type.Literal("update_task"), Type.Literal("delete_task"), Type.Literal("add_checklist"), Type.Literal("update_checklist"), Type.Literal("delete_checklist"), Type.Literal("add_linked_resource"), Type.Literal("update_linked_resource"), Type.Literal("delete_linked_resource"), Type.Literal("add_attachment"), Type.Literal("delete_attachment")]),
+  action: Type.Union([Type.Literal("create_list"), Type.Literal("update_list"), Type.Literal("delete_list"), Type.Literal("create_task"), Type.Literal("update_task"), Type.Literal("delete_task"), Type.Literal("delete_task_exact"), Type.Literal("add_checklist"), Type.Literal("update_checklist"), Type.Literal("delete_checklist"), Type.Literal("add_linked_resource"), Type.Literal("update_linked_resource"), Type.Literal("delete_linked_resource"), Type.Literal("add_attachment"), Type.Literal("delete_attachment")]),
   chatConfirmed,
   chatConfirmationToken,
   listId: Type.Optional(resourceId), taskId: Type.Optional(resourceId), checklistItemId: Type.Optional(resourceId), linkedResourceId: Type.Optional(resourceId), attachmentId: Type.Optional(resourceId), title: Type.Optional(shortText),
@@ -1131,7 +1132,7 @@ export const WRITE_ACTION_FIELDS = {
     multiwrite: ["action", "operations"],
     respond: ["action", "calendarId", "eventId", "response", "comment", "sendResponse"],
     attach: ["action", "calendarId", "eventId", "attachmentName", "attachmentContentType", "attachmentMediaUri"],
-    delete: ["action", "calendarId", "eventId"],
+    delete: ["action", "calendarId", "eventId"], delete_exact: ["action", "calendarId", "eventId", "subject", "eventDate", "timeZone"],
   },
   mail: {
     create_draft: ["action", ...MAIL_DRAFT_WRITE_FIELDS, ...MAIL_PROPERTY_WRITE_FIELDS, "internetMessageHeaders"],
@@ -1149,7 +1150,7 @@ export const WRITE_ACTION_FIELDS = {
   },
   todo: {
     create_list: ["action", "title"], update_list: ["action", "listId", "title"], delete_list: ["action", "listId"],
-    create_task: ["action", "listId", ...TODO_TASK_WRITE_FIELDS], update_task: ["action", "listId", "taskId", ...TODO_TASK_WRITE_FIELDS], delete_task: ["action", "listId", "taskId"],
+    create_task: ["action", "listId", ...TODO_TASK_WRITE_FIELDS], update_task: ["action", "listId", "taskId", ...TODO_TASK_WRITE_FIELDS], delete_task: ["action", "listId", "taskId"], delete_task_exact: ["action", "title", "listId", "taskId"],
     add_checklist: ["action", "listId", "taskId", "title", "checklistIsChecked"],
     update_checklist: ["action", "listId", "taskId", "checklistItemId", "title", "checklistIsChecked", "checklistCheckedDateTime"],
     delete_checklist: ["action", "listId", "taskId", "checklistItemId"],
@@ -1391,8 +1392,10 @@ export function mutationApprovalText(toolName: string, rawParams: unknown): { ti
       target = `${operations.length} calendar operations across ${calendars.length || 1} calendar(s): ${calendars.slice(0, 3).join(", ") || "default calendar"}${calendars.length > 3 ? ", ..." : ""}`;
       risk = "Creates or updates multiple remote events independently; partial completion is possible.";
     } else {
-      target = `calendar "${calendar}", event "${event}"`;
-      risk = action === "delete" ? "Deletes this remote event; recovery is provider-dependent."
+      target = action === "delete_exact"
+        ? `calendar ID "${params.calendarId}", event ID "${params.eventId}", exact subject ${JSON.stringify(params.subject)}, start date "${params.eventDate}" in "${params.timeZone}"`
+        : `calendar "${calendar}", event "${event}"`;
+      risk = action === "delete" || action === "delete_exact" ? "Deletes this remote event; recovery is provider-dependent."
         : action === "respond" ? "Changes attendance status and may notify the organizer."
           : action === "attach" ? "Adds file content to this remote event."
             : action === "create" ? "Creates a new remote calendar event."
@@ -1417,7 +1420,9 @@ export function mutationApprovalText(toolName: string, rawParams: unknown): { ti
   } else if (toolName === "microsoft_todo_write") {
     const list = approvalDisplayValue(params.listId, action === "create_list" ? "new list" : "unspecified list");
     const task = approvalDisplayValue(params.taskId, action === "create_task" ? "new task" : "unspecified task");
-    target = `To Do list "${list}"${action.includes("task") || params.taskId !== undefined ? `, task "${task}"` : ""}`;
+    target = action === "delete_task_exact"
+      ? `To Do list ID "${params.listId}", task ID "${params.taskId}", exact title ${JSON.stringify(params.title)}`
+      : `To Do list "${list}"${action.includes("task") || params.taskId !== undefined ? `, task "${task}"` : ""}`;
     risk = action.startsWith("delete") ? "Deletes remote To Do data; recovery is provider-dependent."
       : action.startsWith("create") || action.startsWith("add_") ? "Creates remote To Do data."
         : "Changes remote To Do data.";
@@ -1476,12 +1481,12 @@ const APPROVAL_INVENTORY_CALLS: ApprovalInventoryCall[] = [
   { tool: "onedrive_create_folder", condition: "create", params: {} },
   { tool: "onedrive_delete", condition: "delete", params: {} },
   { tool: "outlook_calendar_write", action: "create", params: { action: "create" } },
-  ...["update", "multiwrite", "respond", "attach", "delete"].map((action) => ({ tool: "outlook_calendar_write", action, params: { action } })),
+  ...["update", "multiwrite", "respond", "attach", "delete", "delete_exact"].map((action) => ({ tool: "outlook_calendar_write", action, params: { action } })),
   { tool: "outlook_calendar_write", condition: "unknown_or_missing_action", params: {} },
   ...["create_draft", "update_draft"].map((action) => ({ tool: "outlook_mail_write", action, params: { action } })),
   ...["reply_draft", "reply_all_draft", "forward_draft", "copy", "add_attachment", "move", "mark_read", "update_properties", "send_draft", "delete"].map((action) => ({ tool: "outlook_mail_write", action, params: { action } })),
   { tool: "outlook_mail_write", condition: "unknown_or_missing_action", params: {} },
-  ...["create_list", "update_list", "create_task", "update_task", "add_checklist", "update_checklist", "delete_checklist", "add_linked_resource", "update_linked_resource", "delete_linked_resource", "add_attachment", "delete_attachment", "delete_list", "delete_task"].map((action) => ({ tool: "microsoft_todo_write", action, params: { action } })),
+  ...["create_list", "update_list", "create_task", "update_task", "add_checklist", "update_checklist", "delete_checklist", "add_linked_resource", "update_linked_resource", "delete_linked_resource", "add_attachment", "delete_attachment", "delete_list", "delete_task", "delete_task_exact"].map((action) => ({ tool: "microsoft_todo_write", action, params: { action } })),
   { tool: "microsoft_todo_write", condition: "unknown_or_missing_action", params: {} },
 ];
 
@@ -1651,11 +1656,11 @@ const plugin = defineToolPlugin({
         return withDrive(config, toolContext.agentId, rootLabel, "delete", signal, (root, token, bounded) => driveDelete(root, path, token, bounded));
       }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "outlook_calendar_read", label: "Outlook Calendar Read", optional: true, description: "Bounded default or explicitly authorized calendar reads, selected stable event fields, event search, free/busy, attachment metadata, and direct file downloads.", parameters: calendarReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_read", calendarReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "outlook_calendar_write", label: "Outlook Calendar Write", optional: true, description: "Create, update, or non-atomically multiwrite stable Microsoft Graph v1.0 event settings, respond, attach private media up to 150 MB, or delete. Multiwrite is capped at 100 operations, ordered, and chunked into Graph batches of 20. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: calendarWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_write", calendarWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
+      tool({ name: "outlook_calendar_write", label: "Outlook Calendar Write", optional: true, description: "Create, update, or non-atomically multiwrite stable Microsoft Graph v1.0 event settings, respond, attach private media up to 150 MB, or delete. Multiwrite is capped at 100 operations, ordered, and chunked into Graph batches of 20. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: calendarWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_write", calendarWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => params.action === "delete_exact" ? calendarDeleteExact(config, toolContext.agentId, params, signal) : calendarWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "outlook_mail_read", label: "Outlook Mail Read", optional: true, description: "Bounded own-mailbox message reads, KQL/filter search, selected stable message fields, attachment metadata, and direct file downloads.", parameters: mailReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_read", mailReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailRead(config, toolContext.agentId, params, signal)) }),
       tool({ name: "outlook_mail_write", label: "Outlook Mail Write", optional: true, description: "Own-mailbox draft fields, reply/reply-all/forward drafts, copy/move, private-media attachments up to 150 MB, send, and delete. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: mailWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_write", mailWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "microsoft_todo_read", label: "Microsoft To Do Read", optional: true, description: "Bounded own-account list/task reads and client-side search, including checklist, linked-resource, and attachment collections.", parameters: todoReadSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_read", todoReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "microsoft_todo_write", label: "Microsoft To Do Write", optional: true, description: "Owned non-shared list/task settings, checklist, linked-resource, and private-media attachment mutations up to 25 MB. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: todoWriteSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_write", todoWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
+      tool({ name: "microsoft_todo_write", label: "Microsoft To Do Write", optional: true, description: "Owned non-shared list/task settings, checklist, linked-resource, and private-media attachment mutations up to 25 MB. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: todoWriteSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_write", todoWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => params.action === "delete_task_exact" ? todoDeleteTaskExact(config, toolContext.agentId, params, signal) : todoWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "onedrive_agents_instructions", label: "OneDrive AGENTS.md Instructions", optional: true, description: "Batch-discover the bounded root-to-directory AGENTS.md chain for a centrally trusted OneDrive root. Ordinary OneDrive tools invoke this preflight automatically and require a session-bound acknowledgement before proceeding.", parameters: agentsInstructionsSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_agents_instructions", agentsInstructionsSchema, toolContext.agentId, toolContext.sessionId, api.logger, ({ rootLabel, relativeDirectory = "", acknowledgement }, signal) => oneDriveAgentsInstructions(config, { agentId: toolContext.agentId, sessionId: toolContext.sessionId }, { rootLabel, relativeDirectory, acknowledgement }, signal)) }),
       tool({ name: "microsoft_graph_capabilities", label: "Microsoft Graph Capabilities", optional: true, description: TOOL_GUIDANCE.microsoft_graph_capabilities, parameters: Type.Object({}, { additionalProperties: false }), factory: ({ config, toolContext, api }) => concrete("microsoft_graph_capabilities", Type.Object({}, { additionalProperties: false }), toolContext.agentId, toolContext.sessionId, api.logger, async () => callerCapabilities(config, toolContext.agentId)) }),
     ];
@@ -2607,6 +2612,71 @@ function planCalendarWrite(p: any): CalendarWritePlan {
   return { id, eventPlan, operation };
 }
 
+function validateExactCalendarInput(p: Record<string, unknown>, resolved: boolean): void {
+  assertWriteActionFields(p, WRITE_ACTION_FIELDS.calendar);
+  if (p.action !== "delete_exact" || typeof p.calendarId !== "string" || typeof p.subject !== "string" || !p.subject || p.subject.length > 512 || typeof p.eventDate !== "string" || !validDateOnly(p.eventDate)) throw new Error("invalid_calendar_target");
+  safeId(p.calendarId);
+  if (p.timeZone !== undefined && typeof p.timeZone !== "string") throw new Error("invalid_datetime_timezone");
+  formatterForZone(String(p.timeZone ?? "UTC"));
+  if (resolved) {
+    if (typeof p.eventId !== "string") throw new Error("invalid_resource_id");
+    safeId(p.eventId);
+  } else if (p.eventId !== undefined) throw new Error("invalid_write_parameter");
+}
+
+function nextCalendarDate(value: string): string {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  const next = date.toISOString().slice(0, 10);
+  if (!validDateOnly(next)) throw new Error("invalid_calendar_target");
+  return next;
+}
+
+function exactCalendarEventMatches(event: Record<string, unknown>, subject: string, date: string, zone: string): boolean {
+  if (typeof event.id !== "string" || typeof event.subject !== "string" || !event.start || typeof event.start !== "object") throw new Error("invalid_provider_response");
+  safeId(event.id);
+  const start = event.start as Record<string, unknown>;
+  if (typeof start.dateTime !== "string" || start.timeZone !== zone || !/^\d{4}-\d{2}-\d{2}T/.test(start.dateTime)) throw new Error("invalid_provider_response");
+  return event.subject === subject && start.dateTime.slice(0, 10) === date;
+}
+
+async function resolveExactCalendarEvent(token: string, p: Record<string, unknown>, bounded: AbortSignal): Promise<string> {
+  const calendarId = p.calendarId as string;
+  const zone = p.timeZone as string;
+  const prefix = calendarViewPath(calendarId);
+  const query = calendarViewQuery(`${p.eventDate}T00:00:00`, `${nextCalendarDate(p.eventDate as string)}T00:00:00`, zone, MAX_RESULTS);
+  let path: string | undefined = `${prefix}?${query}`;
+  const visited = new Set<string>();
+  let match: string | undefined;
+  let count = 0;
+  while (path) {
+    if (visited.size >= 1000 || visited.has(path)) throw new Error("exact_search_incomplete");
+    visited.add(path);
+    const page = await graphRequest(token, path, { signal: bounded, headers: { Prefer: `outlook.timezone=\"${zone}\"` } });
+    if (!page || typeof page !== "object" || !Array.isArray(page.value) || page.value.length > MAX_RESULTS) throw new Error("invalid_provider_response");
+    for (const item of page.value) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("invalid_provider_response");
+      if (exactCalendarEventMatches(item, p.subject as string, p.eventDate as string, zone)) { match = item.id as string; count += 1; }
+    }
+    path = nextGraphPath(page["@odata.nextLink"], prefix);
+  }
+  if (count !== 1 || !match) throw new Error(count ? "exact_search_ambiguous" : "exact_search_no_match");
+  return match;
+}
+
+async function calendarDeleteExact(config: RuntimeConfig, agentId: string | undefined, p: Record<string, unknown>, signal?: AbortSignal) {
+  validateExactCalendarInput(p, true);
+  authorizeOperation(validatePolicy(config.policy), agentId, "calendar", "read", p.calendarId as string);
+  return withService(config, agentId, "calendar", "delete", "calendar_write", signal, async (token, bounded) => {
+    const currentId = await resolveExactCalendarEvent(token, p, bounded);
+    if (currentId !== p.eventId) throw new Error("exact_target_changed");
+    const item = await graphRequest(token, calendarEventPath(p.calendarId as string, currentId), { signal: bounded, headers: { Prefer: `outlook.timezone=\"${p.timeZone}\"` } });
+    if (!item || item.id !== currentId || !exactCalendarEventMatches(item, p.subject as string, p.eventDate as string, p.timeZone as string)) throw new Error("exact_target_changed");
+    await graphRequest(token, calendarEventPath(p.calendarId as string, currentId), { method: "DELETE", response: "none", signal: bounded });
+    return { ok: true, action: "delete_exact", deleted: true, calendarId: p.calendarId, eventId: currentId, subject: p.subject, eventDate: p.eventDate, timeZone: p.timeZone };
+  }, p.calendarId as string, config.readOperationTimeoutMs ?? DEFAULT_READ_OPERATION_TIMEOUT_MS);
+}
+
 async function calendarWrite(config: RuntimeConfig, agentId: string | undefined, workspaceDir: string | undefined, p: any, signal?: AbortSignal) {
   const { multiwritePlans, eventPlan, operation } = planCalendarWrite(p);
   if (multiwritePlans) {
@@ -2892,6 +2962,68 @@ function linkedResourcePayload(p: any, creating: boolean): Record<string, unknow
   return body;
 }
 
+type ExactTodoTask = { listId: string; taskId: string };
+
+/** A page limit is an integrity failure, never a uniqueness proof. */
+async function completeExactCollection(token: string, prefix: string, bounded: AbortSignal, visit: (item: Record<string, unknown>) => Promise<void> | void): Promise<void> {
+  let path: string | undefined = `${prefix}?$top=${MAX_RESULTS}`;
+  const visited = new Set<string>();
+  while (path) {
+    if (visited.size >= 1000 || visited.has(path)) throw new Error("exact_search_incomplete");
+    visited.add(path);
+    const page = await graphRequest(token, path, { signal: bounded });
+    if (!page || typeof page !== "object" || !Array.isArray(page.value) || page.value.length > MAX_RESULTS) throw new Error("invalid_provider_response");
+    for (const item of page.value) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("invalid_provider_response");
+      await visit(item);
+    }
+    path = nextGraphPath(page["@odata.nextLink"], prefix);
+  }
+}
+
+/** Strict equality: no trimming, Unicode normalization, or case folding. Shared lists are outside the writable scope. */
+async function resolveExactTodoTask(token: string, title: string, bounded: AbortSignal): Promise<ExactTodoTask> {
+  let match: ExactTodoTask | undefined;
+  let count = 0;
+  await completeExactCollection(token, "/me/todo/lists", bounded, async (list) => {
+    if (typeof list.id !== "string" || typeof list.isOwner !== "boolean" || typeof list.isShared !== "boolean") throw new Error("invalid_provider_response");
+    const listId = safeId(list.id);
+    if (!list.isOwner || list.isShared) return;
+    await completeExactCollection(token, `/me/todo/lists/${listId}/tasks`, bounded, (task) => {
+      if (typeof task.id !== "string" || typeof task.title !== "string") throw new Error("invalid_provider_response");
+      const taskId = safeId(task.id);
+      if (task.title === title) { match = { listId: list.id as string, taskId: task.id as string }; count += 1; }
+    });
+  });
+  if (count !== 1 || !match) throw new Error(count ? "exact_search_ambiguous" : "exact_search_no_match");
+  return match;
+}
+
+function validateExactTodoInput(p: Record<string, unknown>, resolved: boolean): void {
+  assertWriteActionFields(p, WRITE_ACTION_FIELDS.todo);
+  if (p.action !== "delete_task_exact" || typeof p.title !== "string" || !p.title || p.title.length > 512) throw new Error("invalid_title");
+  if (resolved) {
+    if (typeof p.listId !== "string" || typeof p.taskId !== "string") throw new Error("invalid_resource_id");
+    safeId(p.listId); safeId(p.taskId);
+  }
+  else if (p.listId !== undefined || p.taskId !== undefined) throw new Error("invalid_write_parameter");
+}
+
+async function todoDeleteTaskExact(config: RuntimeConfig, agentId: string | undefined, p: Record<string, unknown>, signal?: AbortSignal) {
+  validateExactTodoInput(p, true);
+  const policy = validatePolicy(config.policy);
+  authorizeOperation(policy, agentId, "todo", "read");
+  return withService(config, agentId, "todo", "delete", "todo_write", signal, async (token, bounded) => {
+    const current = await resolveExactTodoTask(token, p.title as string, bounded);
+    if (current.listId !== p.listId || current.taskId !== p.taskId) throw new Error("exact_target_changed");
+    assertOwnedTodoList(await graphRequest(token, `/me/todo/lists/${safeId(current.listId)}`, { signal: bounded }));
+    const task = await graphRequest(token, todoTaskPath(current.listId, current.taskId), { signal: bounded });
+    if (!task || task.id !== current.taskId || task.title !== p.title) throw new Error("exact_target_changed");
+    await graphRequest(token, todoTaskPath(current.listId, current.taskId), { method: "DELETE", response: "none", signal: bounded });
+    return { ok: true, action: "delete_task_exact", deleted: true, listId: current.listId, taskId: current.taskId, title: p.title };
+  }, "me", config.readOperationTimeoutMs ?? DEFAULT_READ_OPERATION_TIMEOUT_MS);
+}
+
 function planTodoWrite(p: any) {
   assertWriteActionFields(p, WRITE_ACTION_FIELDS.todo);
   const operation = p.action.startsWith("create") || p.action.startsWith("add_") ? "create" : p.action.startsWith("delete") ? "delete" : "update";
@@ -2983,16 +3115,29 @@ export async function beforeMicrosoftGraphToolCall(
     ctx.abortSignal?.throwIfAborted();
     if (severity !== "none" && runtimeConfig.enabled !== true) throw new Error("connector_disabled");
     if (event.toolName === "outlook_calendar_write") {
-      const plan = planCalendarWrite(params);
       const policy = validatePolicy(runtimeConfig.policy);
-      if (plan.multiwritePlans) for (const operation of plan.multiwritePlans) authorizeOperation(policy, ctx.agentId, "calendar", operation.kind, operation.calendarId ?? "me");
-      else authorizeOperation(policy, ctx.agentId, "calendar", plan.operation!, String(params.calendarId ?? "me"));
+      if (params.action === "delete_exact") {
+        validateExactCalendarInput(params, false);
+        authorizeOperation(policy, ctx.agentId, "calendar", "delete", params.calendarId as string);
+        authorizeOperation(policy, ctx.agentId, "calendar", "read", params.calendarId as string);
+      } else {
+        const plan = planCalendarWrite(params);
+        if (plan.multiwritePlans) for (const operation of plan.multiwritePlans) authorizeOperation(policy, ctx.agentId, "calendar", operation.kind, operation.calendarId ?? "me");
+        else authorizeOperation(policy, ctx.agentId, "calendar", plan.operation!, String(params.calendarId ?? "me"));
+      }
     } else if (event.toolName === "outlook_mail_write") {
       const plan = planMailWrite(params);
       authorizeOperation(validatePolicy(runtimeConfig.policy), ctx.agentId, "mail", plan.operation);
     } else if (event.toolName === "microsoft_todo_write") {
-      const plan = planTodoWrite(params);
-      authorizeOperation(validatePolicy(runtimeConfig.policy), ctx.agentId, "todo", plan.operation);
+      if (params.action === "delete_task_exact") {
+        validateExactTodoInput(params, false);
+        const policy = validatePolicy(runtimeConfig.policy);
+        authorizeOperation(policy, ctx.agentId, "todo", "delete");
+        authorizeOperation(policy, ctx.agentId, "todo", "read");
+      } else {
+        const plan = planTodoWrite(params);
+        authorizeOperation(validatePolicy(runtimeConfig.policy), ctx.agentId, "todo", plan.operation);
+      }
     }
   } catch (error) { return { block: true, blockReason: errorCode(error) }; }
   let authorizedRoot: OneDriveApprovalRoot | undefined;
@@ -3016,6 +3161,24 @@ export async function beforeMicrosoftGraphToolCall(
   };
   try { params = await bindOneDriveWriteArtifact(event.toolName, params, ctx, (lease) => { ownedLease = lease; }); }
   catch (error) { const cleaned = await cleanupUnboundLease(); return { block: true, blockReason: cleaned ? errorCode(error) : "workspace_file_unavailable" }; }
+
+  if (event.toolName === "microsoft_todo_write" && params.action === "delete_task_exact") {
+    if (!event.toolCallId) return { block: true, blockReason: "approval_context_tool_call_id_required" };
+    try {
+      const target = await withService(runtimeConfig, ctx.agentId, "todo", "read", "todo_read", ctx.abortSignal,
+        (token, bounded) => resolveExactTodoTask(token, params.title as string, bounded));
+      params = { ...params, ...target };
+    } catch (error) { return { block: true, blockReason: errorCode(error) }; }
+  }
+  if (event.toolName === "outlook_calendar_write" && params.action === "delete_exact") {
+    if (!event.toolCallId) return { block: true, blockReason: "approval_context_tool_call_id_required" };
+    try {
+      params = { ...params, timeZone: params.timeZone ?? "UTC" };
+      const eventId = await withService(runtimeConfig, ctx.agentId, "calendar", "read", "calendar_read", ctx.abortSignal,
+        (token, bounded) => resolveExactCalendarEvent(token, params, bounded), params.calendarId as string);
+      params = { ...params, eventId };
+    } catch (error) { return { block: true, blockReason: errorCode(error) }; }
+  }
 
   try {
   const bindOwnedLease = () => {

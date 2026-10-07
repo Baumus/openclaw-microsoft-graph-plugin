@@ -10,7 +10,7 @@ The plugin does not own user intent, business policy, data-retention decisions, 
 
 1. OpenClaw selects an optional plugin tool.
 2. The `before_tool_call` hook classifies the action as read-only, warning-level, or critical.
-3. The hook applies available fail-closed preflight checks. For OneDrive upload/update, it securely opens the protected artifact and verifies opened-file identity, exact lowercase SHA-256, and byte size before optional `AGENTS.md` discovery. Other OneDrive warning mutations retain exact root authorization and applicable discovery; discovery is a separate read and requires read authority.
+3. The hook applies available fail-closed preflight checks. For OneDrive upload/update, it securely opens the protected artifact and verifies opened-file identity, exact lowercase SHA-256, and byte size before optional `AGENTS.md` discovery. Other OneDrive warning mutations retain exact root authorization and applicable discovery; discovery is a separate read and requires read authority. For To Do `delete_task_exact` and calendar `delete_exact`, the hook requires both read and delete policy authority, exhausts the selected authorized collection before approval, and blocks zero, duplicate, malformed, cyclic, or budget-exhausted searches. It inserts the resolved IDs into the native approval parameters and copy; execution repeats the complete search and checks the same resource immediately before DELETE.
 4. Warning-level mutations require OpenClaw-native approval unless `warningApprovalsRequired` is explicitly `false`. Critical actions always require native approval. The hook returns the exact inspected parameters with an approval and binds host tool-call identity to an execution-time snapshot; composed parameter drift fails closed before the tool implementation proceeds.
 5. The runtime validates action-specific parameters and trusted `toolContext` identity.
 6. Execution validates the default-deny policy supplied in resolved plugin config and authorizes the exact agent, service, operation, and resource.
@@ -20,6 +20,8 @@ The plugin does not own user intent, business policy, data-retention decisions, 
 10. Responses are bounded, normalized, sanitized, and returned. Binary data is streamed to OpenClaw private media or reduced to a digest rather than emitted inline.
 
 Every validation or authorization failure before step 7 avoids plugin-side key selection, vault access, OAuth, and provider calls.
+
+Exact-delete matching is case-sensitive, with no whitespace trimming or Unicode normalization. To Do searches every owned, non-shared list, then every task in each list. Calendar exact delete requires one authorized `calendarId` and matches an event whose start date equals `eventDate` in the explicit `timeZone` (default UTC); other calendars are outside that call's scope. Graph collection continuation is followed to completion, with a 1,000-page safety ceiling per collection; hitting the ceiling or the operation deadline fails closed. Neither shortcut changes the explicit-ID delete actions or adds Graph scopes. A successful DELETE receipt identifies the resolved resource, but Graph DELETE acceptance does not independently prove permanent removal; read back before retrying an uncertain outcome.
 
 ## Trust boundaries
 
