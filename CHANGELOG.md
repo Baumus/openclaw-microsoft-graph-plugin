@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.11.3 - 2026-10-07
+
+- Present the plugin as “Connect Microsoft 365 to OpenClaw” with the attribution “Independent community plugin by Baumus” across ClawHub metadata, README, and Control UI. This is a display-name and copy change only; the package name, plugin ID, permissions, tools, and configuration keys remain unchanged.
+
 ## 3.11.2 - 2026-10-07
 
 - Restore the manifest tool contract required by OpenClaw 2026.9.8. The v3.11.1 package installed but left all Microsoft Graph agent tools unavailable on that host; v3.11.2 restores registration without changing Graph permissions, tool behavior, or policy.

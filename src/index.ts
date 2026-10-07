@@ -1525,7 +1525,7 @@ export async function approvalInventory(policyInput: unknown) {
 }
 
 const plugin = defineToolPlugin({
-  id: "microsoft-graph", name: "Microsoft 365 for OpenClaw", description: "Bring Outlook mail and calendar, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.", activation: { onStartup: true }, configSchema: Config,
+  id: "microsoft-graph", name: "Connect Microsoft 365 to OpenClaw", description: "Independent community plugin by Baumus", activation: { onStartup: true }, configSchema: Config,
   tools: (tool) => {
     const searchSchema = Type.Object({
       rootLabel,
