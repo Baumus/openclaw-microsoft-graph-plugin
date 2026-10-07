@@ -77,4 +77,4 @@ jobs:
         run: npm ci
 
       - name: Exercise workspace staging through native approval preflight
-        run: npx --no-install vitest run --config ./vitest.config.ts src/one-call-staging.integration.test.ts
+        run: npx --no-install vitest run --config ./vitest.config.ts src/stage-workspace-file.test.ts src/one-call-staging.integration.test.ts src/media-write.integration.test.ts src/mutation-validation.integration.test.ts src/vault-authorization.integration.test.ts

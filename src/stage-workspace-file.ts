@@ -1,6 +1,7 @@
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, readdir, readlink } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, readlink, realpath } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { root as secureRoot, type OpenResult } from "@openclaw/fs-safe";
@@ -23,19 +24,60 @@ const RESERVATION_FILE = /^\.workspace-staging-reservation-([0-9a-f-]{36})$/;
 const RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const STAGED_FILE = /^(?:[\p{L}\p{N}._-]{1,60}---)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\.[a-z0-9]{1,16})?$/u;
 const STAGED_TEMP = /^\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[0-9]+\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/;
-const pidNamespace = readlink("/proc/self/ns/pid").catch(() => undefined);
-const bootId = readFile("/proc/sys/kernel/random/boot_id", "utf8").then((value) => value.trim(), () => undefined);
+function systemText(file: string, args: string[]): Promise<string | undefined> {
+  return new Promise((done) => {
+    execFile(file, args, { encoding: "utf8", timeout: 1_000, maxBuffer: 4_096 }, (error, stdout) => {
+      const value = !error && typeof stdout === "string" ? stdout.trim() : "";
+      done(value || undefined);
+    });
+  });
+}
+
+const pidNamespace = process.platform === "darwin"
+  ? Promise.resolve("platform:darwin")
+  : readlink("/proc/self/ns/pid").catch(() => undefined);
+const bootId = process.platform === "darwin"
+  ? systemText("/usr/sbin/sysctl", ["-n", "kern.boottime"]).then((value) => {
+      const seconds = /\bsec\s*=\s*(\d+)/.exec(value ?? "")?.[1];
+      return seconds ? `darwin:${seconds}` : undefined;
+    })
+  : readFile("/proc/sys/kernel/random/boot_id", "utf8").then((value) => value.trim(), () => undefined);
 
 async function processStart(pid: number): Promise<string | undefined> {
   const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(() => undefined);
   const fields = stat?.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
-  return fields?.length && fields.length > 19 && /^\d+$/.test(fields[19]) ? fields[19] : undefined;
+  if (fields?.length && fields.length > 19 && /^\d+$/.test(fields[19])) return fields[19];
+  if (process.platform !== "darwin" || !Number.isSafeInteger(pid) || pid <= 0) return undefined;
+  const value = await systemText("/bin/ps", ["-o", "lstart=", "-p", String(pid)]);
+  return value ? createHash("sha256").update(`darwin:${value}`).digest("hex") : undefined;
+}
+
+function validProcessStart(value: unknown): value is string {
+  return typeof value === "string" && (/^\d+$/.test(value) || /^[0-9a-f]{64}$/.test(value));
+}
+
+export async function workspaceStagingProcessIdentity(pid = process.pid) {
+  return { pidNamespace: await pidNamespace, bootId: await bootId, processStart: await processStart(pid) };
 }
 
 async function stagingAncestors(stateDir: string): Promise<boolean> {
-  const path = join(resolve(stateDir), "media", STAGING_SUBDIR);
-  const parts: string[] = [];
-  for (let current = path; current !== dirname(current); current = dirname(current)) parts.unshift(current);
+  const suppliedRoot = resolve(stateDir);
+  const supplied = await lstat(suppliedRoot).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (!supplied) return false;
+  if (!supplied.isDirectory() || supplied.isSymbolicLink()) throw new Error("workspace_staging_namespace_invalid");
+  const canonicalRoot = await realpath(suppliedRoot);
+  const canonical = await lstat(canonicalRoot);
+  if (!canonical.isDirectory() || canonical.dev !== supplied.dev || canonical.ino !== supplied.ino)
+    throw new Error("workspace_staging_namespace_invalid");
+  const path = join(canonicalRoot, "media", STAGING_SUBDIR);
+  const parts: string[] = [canonicalRoot];
+  for (let current = path; current !== canonicalRoot; current = dirname(current)) {
+    if (current === dirname(current)) throw new Error("workspace_staging_namespace_invalid");
+    parts.push(current);
+  }
   for (const part of parts) {
     const entry = await lstat(part).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return undefined;
@@ -158,7 +200,7 @@ async function recoverQuotaLock(stateDir: string): Promise<void> {
   const currentBoot = await bootId;
   if (!currentBoot || typeof marker.bootId !== "string" || !marker.bootId) return;
   if (marker.bootId === currentBoot) {
-    if (typeof marker.processStart !== "string" || !/^\d+$/.test(marker.processStart)) return;
+    if (!validProcessStart(marker.processStart)) return;
     const currentStart = await processStart(marker.pid as number);
     if (currentStart === marker.processStart || (currentStart === undefined && processAlive(marker.pid as number))) return;
   }
@@ -386,7 +428,7 @@ export async function reconcileWorkspaceStaging(stateDir: string, activeRunId?: 
       const knownBoot = sameProcessScope && typeof lease.bootId === "string" && !!lease.bootId && !!currentBoot;
       const sameBoot = knownBoot && lease.bootId === currentBoot;
       const oldBoot = knownBoot && !sameBoot;
-      const knownOwner = sameBoot && typeof lease.processStart === "string" && /^\d+$/.test(lease.processStart);
+      const knownOwner = sameBoot && validProcessStart(lease.processStart);
       const currentStart = knownOwner ? await processStart(lease.pid as number) : undefined;
       const ownerActive = (knownOwner && currentStart === lease.processStart)
         || (sameProcessScope && !oldBoot && currentStart === undefined && processAlive(lease.pid as number));

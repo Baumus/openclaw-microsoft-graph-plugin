@@ -4,7 +4,7 @@ import { chmod, link, mkdtemp, mkdir, readFile, readlink, readdir, rename, rm, s
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { reconcileWorkspaceStaging, stageWorkspaceFile, validateWorkspaceRelativeFilePath, workspaceFileContentType, WorkspaceStagingStore, WORKSPACE_STAGING_QUOTA_BYTES } from "./stage-workspace-file.js";
+import { reconcileWorkspaceStaging, stageWorkspaceFile, validateWorkspaceRelativeFilePath, workspaceFileContentType, workspaceStagingProcessIdentity, WorkspaceStagingStore, WORKSPACE_STAGING_QUOTA_BYTES } from "./stage-workspace-file.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -37,13 +37,20 @@ function saver(directory: string, fileName = "synthetic-id.pdf") {
 }
 
 async function owner(runId: string, pid = process.pid, processStart?: string) {
-  const stat = await readFile("/proc/self/stat", "utf8").catch(() => undefined);
-  return JSON.stringify({ runId, pid, host: hostname(), pidNamespace: await readlink("/proc/self/ns/pid").catch(() => undefined),
-    bootId: await readFile("/proc/sys/kernel/random/boot_id", "utf8").then((value) => value.trim(), () => undefined),
-    processStart: processStart ?? stat?.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/)[19] });
+  const identity = await workspaceStagingProcessIdentity();
+  return JSON.stringify({ runId, pid, host: hostname(), ...identity,
+    processStart: processStart ?? identity.processStart });
 }
 
 describe("one-call workspace source staging", () => {
+  it("obtains a verifiable macOS boot and process identity for safe stale-owner recovery", async () => {
+    if (process.platform !== "darwin") return;
+    const identity = await workspaceStagingProcessIdentity();
+    expect(identity.pidNamespace).toBe("platform:darwin");
+    expect(identity.bootId).toMatch(/^darwin:\d+$/);
+    expect(identity.processStart).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it("streams a regular nested file with a stable private URI and fingerprint", async () => {
     const directory = await workspace();
     const bytes = Buffer.from("%PDF-1.7\nsynthetic");
@@ -60,6 +67,21 @@ describe("one-call workspace source staging", () => {
     await result.lease.cleanup();
     expect(await readdir(join(directory, "media", "inbound", "baumus-msgraph-workspace-staging", result.sourceMediaUri.split("/")[4]))).toEqual([]);
     expect(workspaceFileContentType("reports/onepager.PDF")).toBe("application/pdf");
+  });
+
+  it("stages through a trusted state root whose parent has a filesystem alias", async () => {
+    const directory = await workspace();
+    const actual = join(directory, "actual");
+    const alias = join(directory, "alias");
+    const stateDir = join(alias, "state");
+    await mkdir(join(actual, "state"), { recursive: true });
+    await symlink(actual, alias);
+    await writeFile(join(directory, "reports", "onepager.pdf"), "synthetic");
+    const store = new WorkspaceStagingStore();
+    const { save } = saver(stateDir);
+    const staged = await stageWorkspaceFile(directory, "reports/onepager.pdf", "application/pdf", save, undefined, store, stateDir);
+    expect(staged.sourceByteSize).toBe(9);
+    await staged.lease.cleanup();
   });
 
   it("rejects absolute, traversal, and ambiguous paths before opening", () => {
@@ -517,7 +539,7 @@ describe("one-call workspace source staging", () => {
     }
     await writeFile(join(namespace, reused, ".workspace-staging-owner"), await owner(reused, process.pid, "0"));
     await writeFile(join(namespace, rebooted, ".workspace-staging-owner"), JSON.stringify({ ...JSON.parse(await owner(rebooted)), bootId: randomUUID() }));
-    await writeFile(join(namespace, legacy, ".workspace-staging-owner"), JSON.stringify({ runId: legacy, pid: process.pid, host: hostname(), pidNamespace: await readlink("/proc/self/ns/pid") }));
+    await writeFile(join(namespace, legacy, ".workspace-staging-owner"), JSON.stringify({ runId: legacy, pid: process.pid, host: hostname(), pidNamespace: (await workspaceStagingProcessIdentity()).pidNamespace }));
     const old = new Date(Date.now() - 9 * 24 * 60 * 60_000);
     await utimes(join(namespace, legacy), old, old);
     await reconcileWorkspaceStaging(stateDir);
