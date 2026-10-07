@@ -4,6 +4,9 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Add approval-bound exact-title To Do task deletion and exact-subject/date calendar event deletion in one agent call when the calendar ID is known. Incomplete or ambiguous searches fail closed.
+- Require a fresh provider ETag and conditional If-Match DELETE after target revalidation; bound exact-search approval preflight below the host hook timeout. Live provider enforcement remains to be verified before release.
+
 ## 3.11.0 - 2026-10-07
 
 - Guide Microsoft account connection from saved, non-secret app identifiers or two clearly labeled fields, with a separate Entra administrator path. Identifiers are stored only in the current browser after a successful device-code start; sign-in and consent remain unverified until the existing flow completes.

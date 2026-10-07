@@ -19,14 +19,14 @@ function setup(policy = graphPolicyFixture()) {
   return { tool, before: (id: string, input: Record<string, unknown> = params) => hooks.before_tool_call({ toolName: tool.name, toolCallId: id, params: input }, context) };
 }
 
-function graphFixture(options: { secondPage?: boolean; malformed?: boolean; currentSubject?: string; deletedBeforeExecute?: boolean } = {}) {
+function graphFixture(options: { secondPage?: boolean; malformed?: boolean; currentSubject?: string; deletedBeforeExecute?: boolean; versionConflict?: boolean; missingVersion?: boolean } = {}) {
   const calls: string[] = [];
   const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = new URL(String(input));
     const path = url.pathname.replace(/^\/v1\.0/, "");
     calls.push(`${init?.method ?? "GET"} ${path}`);
-    const event = (id: string, subject = "Exact") => ({ id, subject, start: { dateTime: "2026-10-07T09:00:00", timeZone: "UTC" } });
-    if (init?.method === "DELETE") return new Response(null, { status: 204 });
+    const event = (id: string, subject = "Exact") => ({ id, subject, start: { dateTime: "2026-10-07T09:00:00", timeZone: "UTC" }, ...(!options.missingVersion ? { "@odata.etag": 'W/"version-1"' } : {}) });
+    if (init?.method === "DELETE") return options.versionConflict ? new Response(JSON.stringify({ error: { code: "PreconditionFailed" } }), { status: 412 }) : new Response(null, { status: 204 });
     if (path.endsWith("/calendarView")) return new Response(JSON.stringify(options.malformed ? {} : url.searchParams.has("$skiptoken")
       ? { value: [event("event-2")] }
       : { value: [event("event-1")], ...(options.secondPage ? { "@odata.nextLink": `https://graph.microsoft.com/v1.0${path}?$skiptoken=page2` } : {}) }), { status: 200 });
@@ -93,6 +93,21 @@ describe("calendar exact-subject/date delete", () => {
       await gate.requireApproval.onResolution("allow-once");
       expect((await tool.execute("success", gate.params)).details).toMatchObject({ ok: true, deleted: true, calendarId: "synthetic-calendar", eventId: "event-1", subject: "Exact", eventDate: "2026-10-07" });
       expect(fixture.calls.filter((call) => call.startsWith("DELETE"))).toEqual(["DELETE /me/calendars/synthetic-calendar/events/event-1"]);
+      expect(fixture.fetchSpy).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ method: "DELETE", headers: expect.objectContaining({ "If-Match": 'W/"version-1"' }) }));
+    } finally { fixture.fetchSpy.mockRestore(); }
+  });
+
+  it.each([
+    ["stale version", { versionConflict: true }, "exact_target_changed", 1],
+    ["missing version", { missingVersion: true }, "exact_target_version_unavailable", 0],
+  ] as const)("fails closed for %s", async (_name, options, error, deletes) => {
+    const { before, tool } = setup();
+    const fixture = graphFixture(options);
+    try {
+      const gate = await before("version-" + _name);
+      await gate.requireApproval.onResolution("allow-once");
+      expect((await tool.execute("version-" + _name, gate.params)).details).toMatchObject({ ok: false, error });
+      expect(fixture.calls.filter((call) => call.startsWith("DELETE"))).toHaveLength(deletes);
     } finally { fixture.fetchSpy.mockRestore(); }
   });
 

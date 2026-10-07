@@ -24,14 +24,14 @@ function setup(policy = graphPolicyFixture()) {
   return { tool, before };
 }
 
-function graphFixture(options: { secondPage?: boolean; secondList?: boolean; malformed?: boolean; cycle?: boolean; noMatch?: boolean; currentTitle?: string; deletedBeforeExecute?: boolean } = {}) {
+function graphFixture(options: { secondPage?: boolean; secondList?: boolean; malformed?: boolean; cycle?: boolean; noMatch?: boolean; currentTitle?: string; deletedBeforeExecute?: boolean; versionConflict?: boolean; missingVersion?: boolean } = {}) {
   const calls: string[] = [];
   const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = new URL(String(input));
     const path = url.pathname.replace(/^\/v1\.0/, "");
     calls.push(`${init?.method ?? "GET"} ${path}`);
     const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200 });
-    if (init?.method === "DELETE") return new Response(null, { status: 204 });
+    if (init?.method === "DELETE") return options.versionConflict ? new Response(JSON.stringify({ error: { code: "PreconditionFailed" } }), { status: 412 }) : new Response(null, { status: 204 });
     if (path === "/me/todo/lists") return json(options.malformed ? {} : {
       value: [{ id: "list-1", isOwner: true, isShared: false }, ...(options.secondList ? [{ id: "list-2", isOwner: true, isShared: false }] : [])],
     });
@@ -40,7 +40,7 @@ function graphFixture(options: { secondPage?: boolean; secondList?: boolean; mal
       : { value: [{ id: "task-1", title: options.noMatch ? "Different" : "Exact" }], ...(options.secondPage || options.cycle ? { "@odata.nextLink": `https://graph.microsoft.com/v1.0${path}?$skiptoken=page2` } : {}) });
     if (path === "/me/todo/lists/list-2/tasks") return json({ value: [{ id: "task-3", title: "Exact" }] });
     if (path === "/me/todo/lists/list-1") return json({ id: "list-1", isOwner: true, isShared: false });
-    if (path === "/me/todo/lists/list-1/tasks/task-1") return options.deletedBeforeExecute ? new Response(JSON.stringify({ error: { code: "ErrorItemNotFound" } }), { status: 404 }) : json({ id: "task-1", title: options.currentTitle ?? "Exact" });
+    if (path === "/me/todo/lists/list-1/tasks/task-1") return options.deletedBeforeExecute ? new Response(JSON.stringify({ error: { code: "ErrorItemNotFound" } }), { status: 404 }) : json({ id: "task-1", title: options.currentTitle ?? "Exact", ...(!options.missingVersion ? { "@odata.etag": 'W/"version-1"' } : {}) });
     throw new Error(`unexpected path ${path}`);
   });
   return { calls, fetchSpy };
@@ -119,6 +119,21 @@ describe("To Do exact-title delete", () => {
       await gate.requireApproval.onResolution("allow-once");
       expect((await tool.execute("success", gate.params)).details).toMatchObject({ ok: true, deleted: true, listId: "list-1", taskId: "task-1", title: "Exact" });
       expect(fixture.calls.filter((call) => call.startsWith("DELETE"))).toEqual(["DELETE /me/todo/lists/list-1/tasks/task-1"]);
+      expect(fixture.fetchSpy).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ method: "DELETE", headers: expect.objectContaining({ "If-Match": 'W/"version-1"' }) }));
+    } finally { fixture.fetchSpy.mockRestore(); }
+  });
+
+  it.each([
+    ["stale version", { versionConflict: true }, "exact_target_changed", 1],
+    ["missing version", { missingVersion: true }, "exact_target_version_unavailable", 0],
+  ] as const)("fails closed for %s", async (_name, options, error, deletes) => {
+    const { before, tool } = setup();
+    const fixture = graphFixture(options);
+    try {
+      const gate = await before("version-" + _name, { action: "delete_task_exact", title: "Exact" });
+      await gate.requireApproval.onResolution("allow-once");
+      expect((await tool.execute("version-" + _name, gate.params)).details).toMatchObject({ ok: false, error });
+      expect(fixture.calls.filter((call) => call.startsWith("DELETE"))).toHaveLength(deletes);
     } finally { fixture.fetchSpy.mockRestore(); }
   });
 

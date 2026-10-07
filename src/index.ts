@@ -26,6 +26,8 @@ const DEFAULT_READ_OUTPUT_BYTES = 262144;
 const DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_READ_OPERATION_TIMEOUT_MS = 30_000;
+const EXACT_DELETE_HOOK_SCAN_TIMEOUT_MS = 30_000;
+const EXACT_DELETE_HOOK_TIMEOUT_MS = 40_000;
 const DEFAULT_CALENDAR_MULTIWRITE_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_CALENDAR_MULTIWRITE_INPUT_BYTES = 4 * 1024 * 1024;
 const MAX_CALENDAR_MULTIWRITE_OPERATIONS = 100;
@@ -224,7 +226,7 @@ export function lifecycleResult(toolName: string, value: unknown): unknown {
   const ok = record.ok !== false;
   const incomplete = record.truncated === true || record.completeness === "partial" || record.completeness === "unknown" || record.outcome === "partial" || record.outcome === "applied_with_warning";
   const code = typeof record.error === "string" ? record.error : ok ? incomplete ? "partial_results" : "ok" : "operation_failed";
-  const uncertain = mutation && !ok && (code === "invalid_provider_response" || !/^(invalid_|unsupported_|access_denied|connector_disabled|trusted_|approval_context_|instruction_|onedrive_agents_instructions_required|workspace_|exactly_one_|exact_search_|exact_target_changed)/.test(code));
+  const uncertain = mutation && !ok && (code === "invalid_provider_response" || !/^(invalid_|unsupported_|access_denied|connector_disabled|trusted_|approval_context_|instruction_|onedrive_agents_instructions_required|workspace_|exactly_one_|exact_search_|exact_target_)/.test(code));
   const operations = Array.isArray(record.operations) ? record.operations as Array<Record<string, unknown>> : undefined;
   const mutationApplied = !mutation ? false : operations ? operations.some((entry) => entry.applied === true) ? true : operations.some((entry) => entry.status === 0) ? "unknown" : false : ok ? true : uncertain ? "unknown" : false;
   const nextAction = !ok && record.action === "multiwrite" ? "Inspect each operation and read back uncertain targets before retrying only unapplied operations." : !ok ? uncertain ? "Read back the exact target before retrying; the remote outcome is unknown." : code === "access_denied" ? "Ask the operator to review this caller's policy; do not retry unchanged." : code.startsWith("approval_context_") ? "Request a new exact call and native approval; the previous approval cannot be reused." : code === "workspace_file_unavailable" ? "Use an existing regular file relative to this agent workspace; links and host-absolute paths are not accepted." : code === "workspace_file_changed" ? "Finish writing the file, then make a fresh call; no OneDrive write was attempted." : code === "workspace_context_unavailable" ? "This tool needs a trusted agent workspace context; ask the OpenClaw operator to check the tool route." : code === "exactly_one_source_required" ? "Pass exactly one of sourceWorkspacePath or sourceMediaUri." : "Correct the request or prerequisite, then make a fresh call." : incomplete && record.action === "multiwrite" ? "Inspect per-operation outcomes and read back unverified targets before retrying." : record.cleanupWarning === STAGING_CLEANUP_DEFERRED ? "The action result is preserved; staged-file cleanup is queued for retry. Do not repeat a completed write." : incomplete ? record.continuation ? "Repeat the same criteria with continuation for the next page." : "Narrow the query or time range; completeness is not proven." : mutation && toolName === "outlook_mail_write" && record.action === "send_draft" ? "Graph accepted the send request; delivery is not proven. Inspect Sent Items before any retry." : "No further action required.";
@@ -235,7 +237,7 @@ function errorCode(error: unknown): string {
   if (error instanceof DOMException && error.name === "AbortError") return "request_aborted";
   if (error instanceof DOMException && error.name === "TimeoutError") return "request_timeout";
   const code = error instanceof Error ? error.message : "internal_error";
-  return /^(access_denied|approval_context_|connector_disabled|trusted_(?:agent_identity|workspace|session_identity)_required|instruction_|onedrive_agents_instructions_required|invalid_|unsupported_|credential_|authentication_|provider_|item_|file_|binary_|request_|workspace_|exactly_one_|exact_search_|exact_target_changed)/.test(code) ? code : "internal_error";
+  return /^(access_denied|approval_context_|connector_disabled|trusted_(?:agent_identity|workspace|session_identity)_required|instruction_|onedrive_agents_instructions_required|invalid_|unsupported_|credential_|authentication_|provider_|item_|file_|binary_|request_|workspace_|exactly_one_|exact_search_|exact_target_)/.test(code) ? code : "internal_error";
 }
 export async function withConcurrency<T>(limit: number, action: () => Promise<T>): Promise<T> {
   if (activeRequests >= limit) throw new Error("request_concurrency_exceeded");
@@ -2632,6 +2634,22 @@ function nextCalendarDate(value: string): string {
   return next;
 }
 
+/** Require a provider version for the final conditional DELETE; never silently fall back to an unconditional mutation. */
+function exactDeleteEtag(item: Record<string, unknown>): string {
+  const value = item["@odata.etag"];
+  if (typeof value !== "string" || !/^(?:W\/)?"[A-Za-z0-9+/_=.-]{1,512}"$/.test(value)) throw new Error("exact_target_version_unavailable");
+  return value;
+}
+
+async function deleteExactVersion(token: string, path: string, etag: string, signal: AbortSignal): Promise<void> {
+  try {
+    await graphRequest(token, path, { method: "DELETE", response: "none", headers: { "If-Match": etag }, signal });
+  } catch (error) {
+    if (error instanceof Error && (error.message === "item_conflict" || error.message === "item_not_found")) throw new Error("exact_target_changed");
+    throw error;
+  }
+}
+
 function exactCalendarEventMatches(event: Record<string, unknown>, subject: string, date: string, zone: string): boolean {
   if (typeof event.id !== "string" || typeof event.subject !== "string" || !event.start || typeof event.start !== "object") throw new Error("invalid_provider_response");
   safeId(event.id);
@@ -2672,7 +2690,7 @@ async function calendarDeleteExact(config: RuntimeConfig, agentId: string | unde
     if (currentId !== p.eventId) throw new Error("exact_target_changed");
     const item = await graphRequest(token, calendarEventPath(p.calendarId as string, currentId), { signal: bounded, headers: { Prefer: `outlook.timezone=\"${p.timeZone}\"` } });
     if (!item || item.id !== currentId || !exactCalendarEventMatches(item, p.subject as string, p.eventDate as string, p.timeZone as string)) throw new Error("exact_target_changed");
-    await graphRequest(token, calendarEventPath(p.calendarId as string, currentId), { method: "DELETE", response: "none", signal: bounded });
+    await deleteExactVersion(token, calendarEventPath(p.calendarId as string, currentId), exactDeleteEtag(item), bounded);
     return { ok: true, action: "delete_exact", deleted: true, calendarId: p.calendarId, eventId: currentId, subject: p.subject, eventDate: p.eventDate, timeZone: p.timeZone };
   }, p.calendarId as string, config.readOperationTimeoutMs ?? DEFAULT_READ_OPERATION_TIMEOUT_MS);
 }
@@ -3019,7 +3037,7 @@ async function todoDeleteTaskExact(config: RuntimeConfig, agentId: string | unde
     assertOwnedTodoList(await graphRequest(token, `/me/todo/lists/${safeId(current.listId)}`, { signal: bounded }));
     const task = await graphRequest(token, todoTaskPath(current.listId, current.taskId), { signal: bounded });
     if (!task || task.id !== current.taskId || task.title !== p.title) throw new Error("exact_target_changed");
-    await graphRequest(token, todoTaskPath(current.listId, current.taskId), { method: "DELETE", response: "none", signal: bounded });
+    await deleteExactVersion(token, todoTaskPath(current.listId, current.taskId), exactDeleteEtag(task), bounded);
     return { ok: true, action: "delete_task_exact", deleted: true, listId: current.listId, taskId: current.taskId, title: p.title };
   }, "me", config.readOperationTimeoutMs ?? DEFAULT_READ_OPERATION_TIMEOUT_MS);
 }
@@ -3166,7 +3184,7 @@ export async function beforeMicrosoftGraphToolCall(
     if (!event.toolCallId) return { block: true, blockReason: "approval_context_tool_call_id_required" };
     try {
       const target = await withService(runtimeConfig, ctx.agentId, "todo", "read", "todo_read", ctx.abortSignal,
-        (token, bounded) => resolveExactTodoTask(token, params.title as string, bounded));
+        (token, bounded) => resolveExactTodoTask(token, params.title as string, bounded), "me", Math.min(runtimeConfig.readOperationTimeoutMs ?? DEFAULT_READ_OPERATION_TIMEOUT_MS, EXACT_DELETE_HOOK_SCAN_TIMEOUT_MS));
       params = { ...params, ...target };
     } catch (error) { return { block: true, blockReason: errorCode(error) }; }
   }
@@ -3175,7 +3193,7 @@ export async function beforeMicrosoftGraphToolCall(
     try {
       params = { ...params, timeZone: params.timeZone ?? "UTC" };
       const eventId = await withService(runtimeConfig, ctx.agentId, "calendar", "read", "calendar_read", ctx.abortSignal,
-        (token, bounded) => resolveExactCalendarEvent(token, params, bounded), params.calendarId as string);
+        (token, bounded) => resolveExactCalendarEvent(token, params, bounded), params.calendarId as string, Math.min(runtimeConfig.readOperationTimeoutMs ?? DEFAULT_READ_OPERATION_TIMEOUT_MS, EXACT_DELETE_HOOK_SCAN_TIMEOUT_MS));
       params = { ...params, eventId };
     } catch (error) { return { block: true, blockReason: errorCode(error) }; }
   }
@@ -3332,7 +3350,7 @@ plugin.register = (api) => {
     // Run after ordinary policy hooks so this plugin's exact original snapshot
     // becomes authoritative. The execution-bound snapshot still fails closed
     // if a same/lower-priority hook attempts a later rewrite.
-    { priority: Number.MIN_SAFE_INTEGER },
+    { priority: Number.MIN_SAFE_INTEGER, timeoutMs: EXACT_DELETE_HOOK_TIMEOUT_MS },
   );
   api.on("session_end", (_event, ctx) => {
     oneDriveAgentsSessionCache.clearSession(ctx.sessionId);
