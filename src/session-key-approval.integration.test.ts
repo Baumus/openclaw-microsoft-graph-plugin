@@ -14,7 +14,15 @@ afterEach(async () => {
   directory = undefined;
 });
 
-async function candidate(warningApprovalsRequired = true) {
+async function candidate(
+  warningApprovalsRequired = true,
+  selectedToolName = "onedrive_upload",
+  selectedParams: Record<string, unknown> = {
+    rootLabel: "synthetic_documents",
+    relativePath: "onepager.pdf",
+    sourceWorkspacePath: "reports/onepager.pdf",
+  },
+) {
   directory = await mkdtemp(join(tmpdir(), "mg-session-key-"));
   const stateDir = join(directory, "state");
   const workspaceDir = join(directory, "workspace");
@@ -25,6 +33,8 @@ async function candidate(warningApprovalsRequired = true) {
   const policy = graphPolicyFixture();
   delete policy.services.onedrive.allowed_roots[0].agents_instructions;
   policy.services.onedrive.allowed_roots[0].agents.main.permissions.read = true;
+  policy.services.onedrive.allowed_roots[0].permissions.delete = true;
+  policy.services.onedrive.allowed_roots[0].agents.main.permissions.delete = true;
   let storedId: string | undefined = "generation-A";
   const getSessionEntry = vi.fn(({ agentId, sessionKey, readConsistency }: { agentId: string; sessionKey: string; readConsistency: string }) => {
     expect({ agentId, sessionKey, readConsistency }).toEqual({ agentId: "main", sessionKey: "agent:main:main", readConsistency: "latest" });
@@ -40,10 +50,8 @@ async function candidate(warningApprovalsRequired = true) {
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   } as never);
   const toolContext = { agentId: "main", sessionKey: "agent:main:main", sessionId: "generation-A", workspaceDir };
-  const tool = factories.map((factory) => factory(toolContext)).find((candidate) => candidate.name === "onedrive_upload");
-  const event = { toolName: "onedrive_upload", toolCallId: `session-key-${Math.random()}`, params: {
-    rootLabel: "synthetic_documents", relativePath: "onepager.pdf", sourceWorkspacePath: "reports/onepager.pdf",
-  } };
+  const tool = factories.map((factory) => factory(toolContext)).find((candidate) => candidate.name === selectedToolName);
+  const event = { toolName: selectedToolName, toolCallId: `session-key-${Math.random()}`, params: selectedParams };
   const hookContext = { agentId: "main", sessionKey: "agent:main:main", workspaceDir };
   const staged = async () => {
     const root = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging");
@@ -116,5 +124,25 @@ describe("host sessionKey-only approval context", () => {
     const { hook, event, hookContext, staged } = await candidate();
     expect(await hook(event, { ...hookContext, sessionId: "generation-B" })).toEqual({ block: true, blockReason: "trusted_session_identity_required" });
     expect(await staged()).toEqual([]);
+  });
+
+  it.each([
+    ["onedrive_root_folder_create", { name: "Gemacode temporary folder" }],
+    ["onedrive_root_folder_delete_exact", { name: "Gemacode temporary folder" }],
+    ["outlook_calendar_event_create", { subject: "Gemacode temporary event", date: "2026-10-09", startTime: "11:00", endTime: "11:30", timeZone: "Europe/Madrid" }],
+    ["outlook_calendar_event_delete_exact", { subject: "Gemacode temporary event", date: "2026-10-09" }],
+    ["microsoft_todo_default_task_create", { title: "Gemacode temporary task" }],
+    ["microsoft_todo_task_delete_exact", { title: "Gemacode temporary task" }],
+  ])("rejects a reset after approval for compact mutation %s", async (toolName, params) => {
+    const { hook, tool, event, hookContext, setStoredId } = await candidate(true, toolName, params);
+    const approval = await hook(event, hookContext);
+    expect(approval.requireApproval).toBeDefined();
+    await approval.requireApproval.onResolution("allow-once");
+    setStoredId("generation-B");
+    expect((await tool.execute(event.toolCallId, approval.params)).details).toMatchObject({
+      ok: false,
+      error: "approval_context_invalid_or_changed",
+      mutationApplied: false,
+    });
   });
 });
