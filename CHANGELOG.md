@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.11.0 - 2026-10-07
+
+- Guide Microsoft account connection from saved, non-secret app identifiers or two clearly labeled fields, with a separate Entra administrator path. Identifiers are stored only in the current browser after a successful device-code start; sign-in and consent remain unverified until the existing flow completes.
+- Show explicit Microsoft device-code steps, pending state, and a user-facing failure handoff with copyable, bounded diagnostics. Keep existing vault, policy, and credential protections unchanged.
+- Add responsive styling, reviewed translations, and DOM tests for the fast path, missing identifiers, and failure path.
+
 ## 3.10.1 - 2026-10-06
 
 - Accept Microsoft's exact `https://www.microsoft.com/link` verification page for personal-account device-code sign-in, while continuing to reject lookalike and altered destinations. Thanks to [@DevilBehindTheSofa](https://github.com/DevilBehindTheSofa) for the clear report and verified workaround in [#28](https://github.com/Baumus/openclaw-microsoft-graph-plugin/issues/28).
