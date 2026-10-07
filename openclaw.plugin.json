@@ -1,8 +1,8 @@
 {
   "id": "microsoft-graph",
   "name": "Connect Microsoft 365 to OpenClaw",
-  "description": "Independent community plugin by Baumus",
-  "version": "3.11.3",
+  "description": "Bring Outlook mail and calendar, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.",
+  "version": "3.11.4",
   "categories": [
     "productivity"
   ],
