@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.11.1 - 2026-10-07
+
+- Remove the unsupported generated tool contract from the plugin manifest while keeping runtime tool registration and supported tool metadata intact. The build now strips that field so future packages remain ClawHub-valid.
+
 ## 3.11.0 - 2026-10-07
 
 - Guide Microsoft account connection from saved, non-secret app identifiers or two clearly labeled fields, with a separate Entra administrator path. Identifiers are stored only in the current browser after a successful device-code start; sign-in and consent remain unverified until the existing flow completes.
