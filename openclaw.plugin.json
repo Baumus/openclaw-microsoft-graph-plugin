@@ -2,7 +2,7 @@
   "id": "microsoft-graph",
   "name": "Microsoft 365 for OpenClaw",
   "description": "Bring Outlook mail and calendar, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.",
-  "version": "3.11.0",
+  "version": "3.12.0",
   "categories": [
     "productivity"
   ],
@@ -572,21 +572,6 @@
       "replaySafe": true,
       "sideEffecting": false
     },
-    "onedrive_root_list": {
-      "optional": true,
-      "replaySafe": true,
-      "sideEffecting": false
-    },
-    "onedrive_root_folder_create": {
-      "optional": true,
-      "replaySafe": false,
-      "sideEffecting": true
-    },
-    "onedrive_root_folder_delete_exact": {
-      "optional": true,
-      "replaySafe": false,
-      "sideEffecting": true
-    },
     "onedrive_read": {
       "optional": true,
       "replaySafe": true,
@@ -671,6 +656,21 @@
       "optional": true,
       "replaySafe": true,
       "sideEffecting": false
+    },
+    "onedrive_root_list": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "onedrive_root_folder_create": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
+    },
+    "onedrive_root_folder_delete_exact": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
     },
     "outlook_calendar_event_create": {
       "optional": true,
