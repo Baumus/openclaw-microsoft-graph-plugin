@@ -91,7 +91,7 @@ describe("microsoft-graph plugin contract", () => {
       description: "Microsoft Graph operator commands",
       hasSubcommands: true,
     }]);
-    expect(manifest.contracts).toBeUndefined();
+    expect(manifest.contracts.tools).toEqual(metadata.tools.map((tool) => tool.name));
     expect(Object.keys(manifest.toolMetadata).sort()).toEqual(metadata.tools.map((tool) => tool.name).sort());
     expect(manifest.configSchema).toEqual(metadata.configSchema);
     expect(manifest.configContracts.secretInputs.paths).toEqual([
