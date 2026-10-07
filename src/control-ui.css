@@ -119,3 +119,16 @@
   .mg-rights { justify-content: flex-start; }
   .mg-ui .mg-button.mg-right { min-height: 40px; }
 }
+
+/* Guided Microsoft sign-in */
+.mg-auth { border-color: color-mix(in srgb, var(--mg-accent) 35%, var(--mg-border)); padding: clamp(20px, 3vw, 30px); }
+.mg-auth h2 { margin: 5px 0 12px; font-size: clamp(1.4rem, 2.2vw, 1.8rem); }
+.mg-auth h3 { margin: 20px 0 8px; }
+.mg-auth .mg-lead { margin: 0 0 16px; }
+.mg-auth .mg-field { max-width: 610px; }
+.mg-auth .mg-status { background: color-mix(in srgb, var(--mg-accent) 6%, var(--mg-panel)); font-weight: 500; }
+.mg-admin-details { margin: 18px 0; padding: 12px 15px; border: 1px solid var(--mg-border); border-radius: 9px; }
+.mg-admin-details summary { cursor: pointer; font-weight: 600; }
+.mg-admin-details[open] summary { margin-bottom: 12px; }
+.mg-admin-details a:not(.mg-button) { color: var(--mg-accent); text-decoration: underline; }
+@media (max-width: 650px) { .mg-auth .mg-button { width: 100%; margin-inline: 0; } .mg-auth-code { max-width: 100%; overflow-wrap: anywhere; } }
