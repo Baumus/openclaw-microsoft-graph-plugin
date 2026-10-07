@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.11.4 - 2026-10-07
+
+- Restore the feature-focused ClawHub subtitle: “Bring Outlook mail and calendar, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.” Keep the display name and README attribution unchanged.
+
 ## 3.11.3 - 2026-10-07
 
 - Present the plugin as “Connect Microsoft 365 to OpenClaw” with the attribution “Independent community plugin by Baumus” across ClawHub metadata, README, and Control UI. This is a display-name and copy change only; the package name, plugin ID, permissions, tools, and configuration keys remain unchanged.
