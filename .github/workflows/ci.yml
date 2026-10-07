@@ -48,11 +48,8 @@ jobs:
       - name: Check generated OpenClaw metadata
         run: npm run plugin:build:check
 
-      - name: Validate OpenClaw plugin
+      - name: Validate ClawHub plugin package
         run: npm run plugin:validate
 
       - name: Check npm package contents
         run: npm run package:check
-
-      - name: Validate ClawHub package
-        run: npx --no-install clawhub package validate .
