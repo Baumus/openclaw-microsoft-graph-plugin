@@ -1,6 +1,6 @@
 {
   "id": "microsoft-graph",
-  "name": "Microsoft 365 for OpenClaw",
+  "name": "Connect Microsoft 365 to OpenClaw",
   "description": "Bring Outlook mail and calendar, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.",
   "version": "3.12.0",
   "categories": [
@@ -526,9 +526,9 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/44319c4a45d301ab20f712de6d431f116c2434aee47cfb64b948ad8fe39b6617/index.js",
+    "entry": "dist/control-ui/26c0675c29ade4f2fdcb02cbad519a66b83b1a2f76810aed38c5e454f15276b9/index.js",
     "styles": [
-      "dist/control-ui/44319c4a45d301ab20f712de6d431f116c2434aee47cfb64b948ad8fe39b6617/index.css"
+      "dist/control-ui/26c0675c29ade4f2fdcb02cbad519a66b83b1a2f76810aed38c5e454f15276b9/index.css"
     ]
   },
   "contracts": {

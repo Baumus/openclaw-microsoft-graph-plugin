@@ -1,8 +1,10 @@
-# Microsoft 365 for OpenClaw
+# Connect Microsoft 365 to OpenClaw
+
+**Independent community plugin by Baumus**
 
 Your Outlook messages, calendar, OneDrive files, and Microsoft To Do tasks are part of your day. Bring the parts you choose into OpenClaw so your agents can help you find information and work with it—under access rules you control.
 
-**Microsoft 365 for OpenClaw** is a community-maintained plugin for one signed-in Microsoft user. Grant named agents specific access to Outlook Mail, Outlook Calendar, OneDrive, and Microsoft To Do. Access is denied by default. Changes require OpenClaw approval by default; sending, deleting, and responding always require call-bound approval. An administrator can turn off warning-level approval, so review that setting before granting write access.
+This plugin connects one signed-in Microsoft user to OpenClaw under administrator-controlled access rules. Grant named agents specific access to Outlook Mail, Outlook Calendar, OneDrive, and Microsoft To Do. Access is denied by default. Changes require OpenClaw approval by default; sending, deleting, and responding always require call-bound approval. An administrator can turn off warning-level approval, so review that setting before granting write access.
 
 For example, an authorized agent can find a file in an approved OneDrive folder, check an upcoming event, find an Outlook message, or review permitted tasks. The plugin does not provide Teams, SharePoint, arbitrary Microsoft Graph access, or a service-principal connection.
 
@@ -31,7 +33,7 @@ Installation alone does not sign you in, grant an agent access, or make an incom
 
 ### 2. Choose access and connect Microsoft
 
-Create the vault-key SecretRef and a default-deny policy for named agents. Begin with one read-only grant. OneDrive access requires immutable drive and item IDs, not just a folder name. Configure and enable the plugin, then follow the setup checklist in **Plugins → Microsoft 365 for OpenClaw**. It shows the next actionable prerequisite before sign-in. Connect the approved Microsoft account only after the policy is saved and applied. Review the Microsoft permissions shown during sign-in.
+Create the vault-key SecretRef and a default-deny policy for named agents. Begin with one read-only grant. OneDrive access requires immutable drive and item IDs, not just a folder name. Configure and enable the plugin, then follow the setup checklist in **Plugins → Connect Microsoft 365 to OpenClaw**. It shows the next actionable prerequisite before sign-in. Connect the approved Microsoft account only after the policy is saved and applied. Review the Microsoft permissions shown during sign-in.
 
 The [detailed configuration guide](#configuration-reference) has the exact key command, policy example, host configuration, and sign-in steps. This plugin uses delegated access for one signed-in user; it does not support application permissions, client secrets, or unattended service-principal access.
 
@@ -99,7 +101,7 @@ openclaw --version
 
 1. Register an application in Microsoft Entra and record its **Application (client) ID**. Select the tenant/account audience appropriate for your organization.
 2. In **Authentication**, enable **Allow public client flows** for your own app registration. This device-code flow needs no redirect URI, HTTPS callback, public endpoint, or client secret. An administrator may need to grant delegated consent first; tenant conditional-access and consent rules remain authoritative.
-3. Configure the policy and vault-key SecretRef below. Then open the Microsoft 365 for OpenClaw plugin page in the OpenClaw Control UI and follow **Connect to Microsoft** below. The Gateway derives requested delegated scopes from the configured policy and stores the refresh token directly in the encrypted vault. No token is copied into a file or command argument.
+3. Configure the policy and vault-key SecretRef below. Then open the Connect Microsoft 365 to OpenClaw plugin page in the OpenClaw Control UI and follow **Connect to Microsoft** below. The Gateway derives requested delegated scopes from the configured policy and stores the refresh token directly in the encrypted vault. No token is copied into a file or command argument.
 
 ### Create the vault-key SecretRef
 
@@ -202,7 +204,7 @@ openclaw plugins enable microsoft-graph
 
 ### Sign in from the browser UI
 
-Open **Plugins → Microsoft 365 for OpenClaw** in an administrator Control UI session. Save the access rules and wait until the page confirms that the Gateway has applied them. Under **Connect to Microsoft**, enter the approved public application's client ID and tenant ID/domain, then select **Start sign-in**. Open the Microsoft link, enter the one-time code shown on this page, and approve the displayed delegated permissions. The page detects completion automatically; you can cancel before authorization finishes.
+Open **Plugins → Connect Microsoft 365 to OpenClaw** in an administrator Control UI session. Save the access rules and wait until the page confirms that the Gateway has applied them. Under **Connect to Microsoft**, enter the approved public application's client ID and tenant ID/domain, then select **Start sign-in**. Open the Microsoft link, enter the one-time code shown on this page, and approve the displayed delegated permissions. The page detects completion automatically; you can cancel before authorization finishes.
 
 The Gateway, not the browser, polls Microsoft's token endpoint, verifies the granted scopes against the applied policy, and writes the refresh token directly to an **empty encrypted local vault**. The device-code flow makes outbound requests to Microsoft; it does not operate or require an inbound OAuth callback service. The UI only receives a one-time code, scoped status, and sanitized errors. It never receives OAuth tokens or the vault key. The code expires within 15 minutes. A CLI alternative remains available from an interactive host terminal:
 
@@ -289,7 +291,7 @@ Apply requires `RESTORE MICROSOFT GRAPH CREDENTIAL`. A `complete` receipt means 
 
 ## Configuration UI (OpenClaw 2026.9.6+)
 
-Administrators can enable **Settings → Labs → Custom plugin UI**, then open **Microsoft 365 for OpenClaw** in the Control UI. The page offers English, German, Spanish, and Arabic; other host locales fall back to English. When a newer security-clean stable release is published on ClawHub, an administrator-only, read-only Gateway check shows an update badge beside the established-connection status. It contacts ClawHub with no Microsoft credentials or policy data, and the badge never installs or activates an update. The page edits OneDrive folder/agent rights, per-agent Calendar/Mail/To Do access, and warning-level approval choices for each service. New OneDrive paths are resolved to immutable drive/item IDs by an admin-only Gateway method. Critical delete, send, and respond actions always retain call-bound approval.
+Administrators can enable **Settings → Labs → Custom plugin UI**, then open **Connect Microsoft 365 to OpenClaw** in the Control UI. The page offers English, German, Spanish, and Arabic; other host locales fall back to English. When a newer security-clean stable release is published on ClawHub, an administrator-only, read-only Gateway check shows an update badge beside the established-connection status. It contacts ClawHub with no Microsoft credentials or policy data, and the badge never installs or activates an update. The page edits OneDrive folder/agent rights, per-agent Calendar/Mail/To Do access, and warning-level approval choices for each service. New OneDrive paths are resolved to immutable drive/item IDs by an admin-only Gateway method. Critical delete, send, and respond actions always retain call-bound approval.
 
 The page validates the policy and submits a revision-checked, policy-only `config.patch`. A supported single-file object-key `$include` is written through by OpenClaw; an unsupported include layout or concurrent change fails closed. The page re-reads the effective policy after saving and shows whether the saved configuration revision has been applied by the Gateway, is still pending, or cannot be confirmed. Pending application is checked automatically for up to one minute, with a manual recheck available. Do not treat “saved” as proof that the Gateway is using the new rules.
 

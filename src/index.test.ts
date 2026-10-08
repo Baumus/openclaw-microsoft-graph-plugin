@@ -210,6 +210,7 @@ describe("microsoft-graph plugin contract", () => {
       hasSubcommands: true,
     }]);
     expect(manifest.contracts.tools).toEqual(metadata.tools.map((tool) => tool.name));
+    expect(Object.keys(manifest.toolMetadata).sort()).toEqual(metadata.tools.map((tool) => tool.name).sort());
     expect(manifest.configSchema).toEqual(metadata.configSchema);
     expect(manifest.configContracts.secretInputs.paths).toEqual([
       { path: "credentialVaultKey", expected: "string", ownerKind: "capability" },

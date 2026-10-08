@@ -55,4 +55,4 @@ jobs:
         run: npm run package:check
 
       - name: Validate ClawHub package
-        run: npx --no-install clawhub package validate .
+        run: npx --no-install clawhub package validate . --openclaw-version 2026.10.1-beta.1
