@@ -2,7 +2,7 @@
   "id": "microsoft-graph",
   "name": "Connect Microsoft 365 to OpenClaw",
   "description": "Bring Outlook mail and calendar, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.",
-  "version": "3.12.0",
+  "version": "3.12.1",
   "categories": [
     "productivity"
   ],
@@ -24,6 +24,11 @@
         "type": "boolean",
         "default": true,
         "description": "Require OpenClaw-native approval for warning-level Microsoft Graph mutations. Missing defaults to true; set false only when policy-authorized warning mutations may proceed without an approval prompt."
+      },
+      "directCriticalMutationsAllowed": {
+        "type": "boolean",
+        "default": false,
+        "description": "Allow the deterministic Gemacode bridge to execute an exact critical mutation without model dispatch. Missing defaults to false; enable only when signed QEL owner policy is the installation approval authority."
       },
       "credentialVaultKey": {
         "type": "object",

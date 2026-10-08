@@ -48,11 +48,11 @@ const NATIVE_EXTERNAL_EFFECT_EXEMPT_TOOLS = new Set([
 
 export const COMPACT_READ_BRIDGE_KEY = Symbol.for("gemacode/microsoft-graph-compact-read/1");
 export const COMPACT_READ_BRIDGE_PROTOCOL = "gemacode-microsoft-graph-compact-read/1";
-export const COMPACT_OPERATION_BRIDGE_KEY = Symbol.for("gemacode/microsoft-graph-compact-operation/3");
-export const COMPACT_OPERATION_BRIDGE_PROTOCOL = "gemacode-microsoft-graph-compact-operation/3";
+export const COMPACT_OPERATION_BRIDGE_KEY = Symbol.for("gemacode/microsoft-graph-compact-operation/4");
+export const COMPACT_OPERATION_BRIDGE_PROTOCOL = "gemacode-microsoft-graph-compact-operation/4";
 
 type CompactReadToolName = "onedrive_root_list" | "outlook_calendar_day_read" | "microsoft_todo_overview_read";
-type CompactMutationToolName = "microsoft_todo_default_task_create" | "outlook_calendar_event_create";
+type CompactMutationToolName = "microsoft_todo_default_task_create" | "outlook_calendar_event_create" | "microsoft_todo_task_delete_exact" | "outlook_calendar_event_delete_exact";
 type CompactOperationToolName = CompactReadToolName | CompactMutationToolName;
 type CompactOperationBridge = {
   protocol: typeof COMPACT_OPERATION_BRIDGE_PROTOCOL;
@@ -73,6 +73,7 @@ const SecretRefOnly = Type.Unsafe<string>({
 const Config = Type.Object({
   enabled: Type.Optional(Type.Boolean({ default: false })),
   warningApprovalsRequired: Type.Optional(Type.Boolean({ default: true, description: "Require OpenClaw-native approval for warning-level Microsoft Graph mutations. Missing defaults to true; set false only when policy-authorized warning mutations may proceed without an approval prompt." })),
+  directCriticalMutationsAllowed: Type.Optional(Type.Boolean({ default: false, description: "Allow the deterministic Gemacode bridge to execute an exact critical mutation without model dispatch. Missing defaults to false; enable only when signed QEL owner policy is the installation approval authority." })),
   credentialVaultKey: Type.Optional(SecretRefOnly),
   nativeBoundaryEnabled: Type.Optional(Type.Boolean({ default: false, description: "Expose the closed authenticated Native OS connected-action socket." })),
   nativeBoundaryKey: Type.Optional(SecretRefOnly),
@@ -94,7 +95,7 @@ const Config = Type.Object({
   oneDriveTransferTimeoutMs: Type.Optional(Type.Integer({ minimum: 30000, maximum: 7 * 24 * 60 * 60 * 1000, default: DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS, description: "Whole-operation deadline for OneDrive private-media downloads and uploads; each Graph request remains bounded by requestTimeoutMs." })),
 }, { additionalProperties: false });
 
-export type RuntimeConfig = { enabled?: boolean; warningApprovalsRequired?: boolean; credentialVaultKey?: unknown; nativeBoundaryEnabled?: boolean; nativeBoundaryKey?: unknown; nativeBoundaryAgentId?: string; nativeBoundarySocketPath?: string; nativeExecutionRequired?: boolean; nativeExecutionPublicKey?: unknown; nativeExecutionSocketPath?: string; nativeExecutionSocketOwnerUid?: number; policy?: GraphPolicy; requestTimeoutMs?: number; readOperationTimeoutMs?: number; calendarMultiwriteTimeoutMs?: number; maxConcurrent?: number; maxReadBytes?: number; maxReadOutputBytes?: number; maxAttachmentDownloadBytes?: number; attachmentDownloadTimeoutMs?: number; oneDriveTransferTimeoutMs?: number };
+export type RuntimeConfig = { enabled?: boolean; warningApprovalsRequired?: boolean; directCriticalMutationsAllowed?: boolean; credentialVaultKey?: unknown; nativeBoundaryEnabled?: boolean; nativeBoundaryKey?: unknown; nativeBoundaryAgentId?: string; nativeBoundarySocketPath?: string; nativeExecutionRequired?: boolean; nativeExecutionPublicKey?: unknown; nativeExecutionSocketPath?: string; nativeExecutionSocketOwnerUid?: number; policy?: GraphPolicy; requestTimeoutMs?: number; readOperationTimeoutMs?: number; calendarMultiwriteTimeoutMs?: number; maxConcurrent?: number; maxReadBytes?: number; maxReadOutputBytes?: number; maxAttachmentDownloadBytes?: number; attachmentDownloadTimeoutMs?: number; oneDriveTransferTimeoutMs?: number };
 type OneDriveApprovalRoot = Pick<AllowedRoot, "label" | "drive_id" | "item_id">;
 type Logger = { info: (message: string) => void; warn: (message: string) => void };
 let activeRequests = 0;
@@ -778,15 +779,26 @@ export async function executeCompactMicrosoftOperation(
   config: RuntimeConfig,
   request: { toolCallId: string; toolName: CompactOperationToolName; agentId: string; params: Record<string, unknown>; signal?: AbortSignal },
 ): Promise<unknown> {
-  if (request.toolName !== "microsoft_todo_default_task_create" && request.toolName !== "outlook_calendar_event_create") {
+  const mutationTools = new Set<CompactMutationToolName>([
+    "microsoft_todo_default_task_create",
+    "outlook_calendar_event_create",
+    "microsoft_todo_task_delete_exact",
+    "outlook_calendar_event_delete_exact",
+  ]);
+  if (!mutationTools.has(request.toolName as CompactMutationToolName)) {
     return executeCompactMicrosoftRead(config, request as Parameters<typeof executeCompactMicrosoftRead>[1]);
   }
-  if (config.warningApprovalsRequired !== false) throw new Error("native_approval_required");
+  const critical = request.toolName === "microsoft_todo_task_delete_exact" || request.toolName === "outlook_calendar_event_delete_exact";
+  if (critical ? config.directCriticalMutationsAllowed !== true : config.warningApprovalsRequired !== false) throw new Error("native_approval_required");
   if (typeof request.agentId !== "string" || !request.agentId) throw new Error("trusted_agent_identity_required");
   if (typeof request.toolCallId !== "string" || !request.toolCallId) throw new Error("tool_call_identity_required");
   const params = request.toolName === "outlook_calendar_event_create"
     ? exactCompactReadParams(request.params, ["subject", "date", "startTime", "endTime", "timeZone"])
-    : exactCompactReadParams(request.params, ["title", "dueDateTime", "timeZone"]);
+    : request.toolName === "outlook_calendar_event_delete_exact"
+      ? exactCompactReadParams(request.params, ["subject", "date", "timeZone"])
+      : request.toolName === "microsoft_todo_task_delete_exact"
+        ? exactCompactReadParams(request.params, ["title"])
+        : exactCompactReadParams(request.params, ["title", "dueDateTime", "timeZone"]);
   if (request.toolName === "outlook_calendar_event_create") {
     if (typeof params.subject !== "string" || !params.subject.trim() || params.subject.length > 512) throw new Error("invalid_compact_mutation_request");
     if (typeof params.date !== "string" || typeof params.startTime !== "string" || typeof params.endTime !== "string") throw new Error("invalid_compact_mutation_request");
@@ -797,11 +809,17 @@ export async function executeCompactMicrosoftOperation(
     const start = calendarWindowDateTime(`${params.date}T${params.startTime}:00`, zone);
     const end = calendarWindowDateTime(`${params.date}T${params.endTime}:00`, zone);
     if (new Date(start).getTime() >= new Date(end).getTime()) throw new Error("invalid_calendar_window");
+  } else if (request.toolName === "outlook_calendar_event_delete_exact") {
+    if (typeof params.subject !== "string" || !params.subject.trim() || params.subject.length > 512) throw new Error("invalid_compact_mutation_request");
+    if (typeof params.date !== "string" || typeof params.timeZone !== "string" || !params.timeZone) throw new Error("invalid_compact_mutation_request");
+    calendarDayReadParams(params.date, params.timeZone);
   } else {
     if (typeof params.title !== "string" || !params.title.trim()) throw new Error("invalid_compact_mutation_request");
-    if (params.dueDateTime !== undefined && typeof params.dueDateTime !== "string") throw new Error("invalid_compact_mutation_request");
-    if (params.timeZone !== undefined && typeof params.timeZone !== "string") throw new Error("invalid_compact_mutation_request");
-    if (params.timeZone !== undefined && params.dueDateTime === undefined) throw new Error("invalid_datetime_timezone");
+    if (request.toolName === "microsoft_todo_default_task_create") {
+      if (params.dueDateTime !== undefined && typeof params.dueDateTime !== "string") throw new Error("invalid_compact_mutation_request");
+      if (params.timeZone !== undefined && typeof params.timeZone !== "string") throw new Error("invalid_compact_mutation_request");
+      if (params.timeZone !== undefined && params.dueDateTime === undefined) throw new Error("invalid_datetime_timezone");
+    }
   }
 
   const permit = await consumeNativeExecutionPermit(config, request.toolName, request.toolCallId, params);
@@ -809,7 +827,11 @@ export async function executeCompactMicrosoftOperation(
   try {
     value = request.toolName === "outlook_calendar_event_create"
       ? await calendarEventCreate(config, request.agentId, undefined, params, request.signal)
-      : await todoDefaultTaskCreate(config, request.agentId, undefined, params, request.signal);
+      : request.toolName === "outlook_calendar_event_delete_exact"
+        ? await calendarEventDeleteExact(config, request.agentId, undefined, params, request.signal)
+        : request.toolName === "microsoft_todo_task_delete_exact"
+          ? await todoTaskDeleteExact(config, request.agentId, undefined, params, request.signal)
+          : await todoDefaultTaskCreate(config, request.agentId, undefined, params, request.signal);
   } catch (error) {
     if (permit) await completeNativeExecutionPermit(config, permit, {
       ok: false,
@@ -3020,7 +3042,18 @@ async function calendarEventDeleteExact(config: RuntimeConfig, agentId: string |
   const matches = (Array.isArray(read.items) ? read.items : []).filter((item) => item.subject === p.subject);
   if (matches.length === 0) throw new Error("item_not_found");
   if (matches.length !== 1 || typeof matches[0]?.id !== "string") throw new Error("ambiguous_resource");
-  return calendarWrite(config, agentId, workspaceDir, { action: "delete", eventId: matches[0].id }, signal);
+  const resourceId = matches[0].id;
+  const result = await calendarWrite(config, agentId, workspaceDir, { action: "delete", eventId: resourceId }, signal) as Record<string, any>;
+  try {
+    await calendarRead(config, agentId, { action: "get_event", eventId: resourceId, timeZone: p.timeZone }, signal);
+    throw new Error("provider_write_unverified");
+  } catch (error) {
+    if (errorCode(error) !== "item_not_found") throw error;
+  }
+  return {
+    ...result,
+    providerVerification: { verified: true, method: "read_after_delete", resourceId, checkedFields: ["absence"] },
+  };
 }
 
 async function oneDriveRootFolderCreate(
@@ -3496,7 +3529,18 @@ async function todoTaskDeleteExact(config: RuntimeConfig, agentId: string | unde
   }
   if (matches.length === 0) throw new Error("item_not_found");
   if (matches.length !== 1) throw new Error("ambiguous_resource");
-  return todoWrite(config, agentId, workspaceDir, { action: "delete_task", ...matches[0] }, signal);
+  const target = matches[0];
+  const result = await todoWrite(config, agentId, workspaceDir, { action: "delete_task", ...target }, signal) as Record<string, any>;
+  try {
+    await todoRead(config, agentId, { action: "get_task", listId: target.listId, taskId: target.taskId }, signal);
+    throw new Error("provider_write_unverified");
+  } catch (error) {
+    if (errorCode(error) !== "item_not_found") throw error;
+  }
+  return {
+    ...result,
+    providerVerification: { verified: true, method: "read_after_delete", resourceId: target.taskId, listId: target.listId, checkedFields: ["absence"] },
+  };
 }
 
 const nativeConnectedParameterChecks = {

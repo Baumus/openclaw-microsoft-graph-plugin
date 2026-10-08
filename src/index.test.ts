@@ -115,6 +115,18 @@ describe("microsoft-graph plugin contract", () => {
       agentId: "main",
       params: { subject: "Prueba", date: "2026-10-09", startTime: "09:00", endTime: "09:15", timeZone: "Europe/Madrid" },
     })).rejects.toThrow("native_approval_required");
+    await expect(executeCompactMicrosoftOperation({ directCriticalMutationsAllowed: false } as any, {
+      toolCallId: "compact-delete-1",
+      toolName: "microsoft_todo_task_delete_exact",
+      agentId: "main",
+      params: { title: "Prueba" },
+    })).rejects.toThrow("native_approval_required");
+    await expect(executeCompactMicrosoftOperation({ directCriticalMutationsAllowed: false } as any, {
+      toolCallId: "compact-delete-2",
+      toolName: "outlook_calendar_event_delete_exact",
+      agentId: "main",
+      params: { subject: "Prueba", date: "2026-10-09", timeZone: "Europe/Madrid" },
+    })).rejects.toThrow("native_approval_required");
   });
 
   it("publishes and retracts the versioned in-process compact-operation bridge", async () => {
