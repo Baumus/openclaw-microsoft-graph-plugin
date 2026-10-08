@@ -15,6 +15,11 @@ All notable changes to this project are documented here.
   the Native execution gate and are not network services.
 - Keep package, OpenClaw manifest and installation metadata on one exact
   version so compatibility and provenance checks can reject mixed installs.
+- Require exact read-after-write verification by provider resource ID for
+  compact Microsoft To Do and Outlook Calendar creations.
+- Return the verified provider resource and destination list metadata through
+  compact operation protocol v3 so callers cannot treat a write response alone
+  as proof that the resource exists.
 
 ## 3.11.4 - 2026-10-07
 
@@ -42,7 +47,6 @@ All notable changes to this project are documented here.
 
 - Accept Microsoft's exact `https://www.microsoft.com/link` verification page for personal-account device-code sign-in, while continuing to reject lookalike and altered destinations. Thanks to [@DevilBehindTheSofa](https://github.com/DevilBehindTheSofa) for the clear report and verified workaround in [#28](https://github.com/Baumus/openclaw-microsoft-graph-plugin/issues/28).
 - Replace the removed `infra-runtime` SDK import with the existing direct `@openclaw/fs-safe` dependency for protected local-file access.
-
 ## 3.10.0 - 2026-10-06
 
 - Show a read-only update badge beside the established-connection status when ClawHub reports a newer, security-clean stable plugin release. The administrator-scoped Gateway check sends no credentials or policy data, is bounded and cached, and never installs an update.

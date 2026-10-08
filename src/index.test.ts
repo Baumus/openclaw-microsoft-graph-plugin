@@ -97,6 +97,24 @@ describe("microsoft-graph plugin contract", () => {
       agentId: "main",
       params: { title: "Pagar Inglés", timeZone: "Europe/Madrid" },
     })).rejects.toThrow("invalid_datetime_timezone");
+    await expect(executeCompactMicrosoftOperation({ warningApprovalsRequired: false } as any, {
+      toolCallId: "compact-write-3",
+      toolName: "outlook_calendar_event_create",
+      agentId: "main",
+      params: { subject: "Prueba", date: "2026-02-30", startTime: "09:00", endTime: "09:15", timeZone: "Europe/Madrid" },
+    })).rejects.toThrow("invalid_date");
+    await expect(executeCompactMicrosoftOperation({ warningApprovalsRequired: false } as any, {
+      toolCallId: "compact-write-4",
+      toolName: "outlook_calendar_event_create",
+      agentId: "main",
+      params: { subject: "Prueba", date: "2026-10-09", startTime: "09:15", endTime: "09:00", timeZone: "Europe/Madrid" },
+    })).rejects.toThrow("invalid_calendar_window");
+    await expect(executeCompactMicrosoftOperation({ warningApprovalsRequired: true } as any, {
+      toolCallId: "compact-write-5",
+      toolName: "outlook_calendar_event_create",
+      agentId: "main",
+      params: { subject: "Prueba", date: "2026-10-09", startTime: "09:00", endTime: "09:15", timeZone: "Europe/Madrid" },
+    })).rejects.toThrow("native_approval_required");
   });
 
   it("publishes and retracts the versioned in-process compact-operation bridge", async () => {

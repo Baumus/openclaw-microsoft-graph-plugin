@@ -48,11 +48,11 @@ const NATIVE_EXTERNAL_EFFECT_EXEMPT_TOOLS = new Set([
 
 export const COMPACT_READ_BRIDGE_KEY = Symbol.for("gemacode/microsoft-graph-compact-read/1");
 export const COMPACT_READ_BRIDGE_PROTOCOL = "gemacode-microsoft-graph-compact-read/1";
-export const COMPACT_OPERATION_BRIDGE_KEY = Symbol.for("gemacode/microsoft-graph-compact-operation/2");
-export const COMPACT_OPERATION_BRIDGE_PROTOCOL = "gemacode-microsoft-graph-compact-operation/2";
+export const COMPACT_OPERATION_BRIDGE_KEY = Symbol.for("gemacode/microsoft-graph-compact-operation/3");
+export const COMPACT_OPERATION_BRIDGE_PROTOCOL = "gemacode-microsoft-graph-compact-operation/3";
 
 type CompactReadToolName = "onedrive_root_list" | "outlook_calendar_day_read" | "microsoft_todo_overview_read";
-type CompactMutationToolName = "microsoft_todo_default_task_create";
+type CompactMutationToolName = "microsoft_todo_default_task_create" | "outlook_calendar_event_create";
 type CompactOperationToolName = CompactReadToolName | CompactMutationToolName;
 type CompactOperationBridge = {
   protocol: typeof COMPACT_OPERATION_BRIDGE_PROTOCOL;
@@ -768,8 +768,9 @@ export async function executeCompactMicrosoftRead(
 
 /**
  * Execute the small, versioned operation surface used by Gemacode's
- * deterministic lane. Read operations retain the v1 behavior; the only v2
- * mutation is creation in the unique owned default To Do list. A deployment
+ * deterministic lane. Read operations retain the v1 behavior; v3 mutations
+ * are creation in the unique owned default To Do list and creation in the
+ * caller's default Outlook calendar. A deployment
  * that still requires OpenClaw's interactive warning approval must keep the
  * normal tool path because a pre-model hook cannot display that approval UI.
  */
@@ -777,22 +778,38 @@ export async function executeCompactMicrosoftOperation(
   config: RuntimeConfig,
   request: { toolCallId: string; toolName: CompactOperationToolName; agentId: string; params: Record<string, unknown>; signal?: AbortSignal },
 ): Promise<unknown> {
-  if (request.toolName !== "microsoft_todo_default_task_create") {
+  if (request.toolName !== "microsoft_todo_default_task_create" && request.toolName !== "outlook_calendar_event_create") {
     return executeCompactMicrosoftRead(config, request as Parameters<typeof executeCompactMicrosoftRead>[1]);
   }
   if (config.warningApprovalsRequired !== false) throw new Error("native_approval_required");
   if (typeof request.agentId !== "string" || !request.agentId) throw new Error("trusted_agent_identity_required");
   if (typeof request.toolCallId !== "string" || !request.toolCallId) throw new Error("tool_call_identity_required");
-  const params = exactCompactReadParams(request.params, ["title", "dueDateTime", "timeZone"]);
-  if (typeof params.title !== "string" || !params.title.trim()) throw new Error("invalid_compact_mutation_request");
-  if (params.dueDateTime !== undefined && typeof params.dueDateTime !== "string") throw new Error("invalid_compact_mutation_request");
-  if (params.timeZone !== undefined && typeof params.timeZone !== "string") throw new Error("invalid_compact_mutation_request");
-  if (params.timeZone !== undefined && params.dueDateTime === undefined) throw new Error("invalid_datetime_timezone");
+  const params = request.toolName === "outlook_calendar_event_create"
+    ? exactCompactReadParams(request.params, ["subject", "date", "startTime", "endTime", "timeZone"])
+    : exactCompactReadParams(request.params, ["title", "dueDateTime", "timeZone"]);
+  if (request.toolName === "outlook_calendar_event_create") {
+    if (typeof params.subject !== "string" || !params.subject.trim() || params.subject.length > 512) throw new Error("invalid_compact_mutation_request");
+    if (typeof params.date !== "string" || typeof params.startTime !== "string" || typeof params.endTime !== "string") throw new Error("invalid_compact_mutation_request");
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(params.startTime) || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(params.endTime)) throw new Error("invalid_compact_mutation_request");
+    const zone = params.timeZone === undefined ? Intl.DateTimeFormat().resolvedOptions().timeZone : params.timeZone;
+    if (typeof zone !== "string" || !zone) throw new Error("invalid_compact_mutation_request");
+    calendarDayReadParams(params.date, zone);
+    const start = calendarWindowDateTime(`${params.date}T${params.startTime}:00`, zone);
+    const end = calendarWindowDateTime(`${params.date}T${params.endTime}:00`, zone);
+    if (new Date(start).getTime() >= new Date(end).getTime()) throw new Error("invalid_calendar_window");
+  } else {
+    if (typeof params.title !== "string" || !params.title.trim()) throw new Error("invalid_compact_mutation_request");
+    if (params.dueDateTime !== undefined && typeof params.dueDateTime !== "string") throw new Error("invalid_compact_mutation_request");
+    if (params.timeZone !== undefined && typeof params.timeZone !== "string") throw new Error("invalid_compact_mutation_request");
+    if (params.timeZone !== undefined && params.dueDateTime === undefined) throw new Error("invalid_datetime_timezone");
+  }
 
   const permit = await consumeNativeExecutionPermit(config, request.toolName, request.toolCallId, params);
   let value: unknown;
   try {
-    value = await todoDefaultTaskCreate(config, request.agentId, undefined, params, request.signal);
+    value = request.toolName === "outlook_calendar_event_create"
+      ? await calendarEventCreate(config, request.agentId, undefined, params, request.signal)
+      : await todoDefaultTaskCreate(config, request.agentId, undefined, params, request.signal);
   } catch (error) {
     if (permit) await completeNativeExecutionPermit(config, permit, {
       ok: false,
@@ -2969,13 +2986,33 @@ async function calendarWrite(config: RuntimeConfig, agentId: string | undefined,
 
 async function calendarEventCreate(config: RuntimeConfig, agentId: string | undefined, workspaceDir: string | undefined, p: any, signal?: AbortSignal) {
   const zone = p.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
-  return calendarWrite(config, agentId, workspaceDir, {
+  const writeParams = {
     action: "create",
     subject: p.subject,
     startDateTime: `${p.date}T${p.startTime}:00`,
     endDateTime: `${p.date}T${p.endTime}:00`,
     timeZone: zone,
-  }, signal);
+  };
+  const result = await calendarWrite(config, agentId, workspaceDir, writeParams, signal) as Record<string, any>;
+  const resourceId = typeof result.event?.id === "string" && result.event.id.length <= 512 ? result.event.id : undefined;
+  if (!resourceId) throw new Error("provider_write_unverified");
+  const readback = await calendarRead(config, agentId, {
+    action: "get_event",
+    eventId: resourceId,
+    timeZone: zone,
+    includeBody: true,
+  }, signal) as Record<string, any>;
+  const receipt = verifiedEventReceipt("create", calendarEventPayload(writeParams), readback.item) as Record<string, any>;
+  if (readback.item?.id !== resourceId || receipt.verification?.matched !== true) throw new Error("provider_write_unverified");
+  return {
+    ...receipt,
+    providerVerification: {
+      verified: true,
+      method: "read_after_write",
+      resourceId,
+      checkedFields: receipt.verification.checkedFields,
+    },
+  };
 }
 
 async function calendarEventDeleteExact(config: RuntimeConfig, agentId: string | undefined, workspaceDir: string | undefined, p: any, signal?: AbortSignal) {
@@ -3400,24 +3437,50 @@ async function todoWrite(config: RuntimeConfig, agentId: string | undefined, wor
   } : undefined);
 }
 
-async function defaultTodoListId(config: RuntimeConfig, agentId: string | undefined, signal?: AbortSignal): Promise<string> {
+async function defaultTodoList(config: RuntimeConfig, agentId: string | undefined, signal?: AbortSignal): Promise<{ id: string; displayName: string }> {
   const result = await todoRead(config, agentId, { action: "list_lists", limit: MAX_RESULTS }, signal) as { items?: Array<Record<string, unknown>> };
-  const lists = (Array.isArray(result.items) ? result.items : []).filter((item) => item.isOwner === true && item.isShared !== true && typeof item.id === "string");
+  const lists = (Array.isArray(result.items) ? result.items : []).filter((item) => item.isOwner === true && item.isShared !== true && typeof item.id === "string" && typeof item.displayName === "string");
   const defaults = lists.filter((item) => item.wellknownListName === "defaultList");
   const selected = defaults.length === 1 ? defaults[0] : defaults.length === 0 && lists.length === 1 ? lists[0] : undefined;
   if (!selected) throw new Error(defaults.length === 0 && lists.length === 0 ? "item_not_found" : "list_selection_required");
-  return String(selected.id);
+  return { id: String(selected.id), displayName: String(selected.displayName) };
 }
 
 async function todoDefaultTaskCreate(config: RuntimeConfig, agentId: string | undefined, workspaceDir: string | undefined, p: any, signal?: AbortSignal) {
-  const listId = await defaultTodoListId(config, agentId, signal);
-  return todoWrite(config, agentId, workspaceDir, {
+  const list = await defaultTodoList(config, agentId, signal);
+  const result = await todoWrite(config, agentId, workspaceDir, {
     action: "create_task",
-    listId,
+    listId: list.id,
     title: p.title,
     ...(p.dueDateTime !== undefined ? { dueDateTime: p.dueDateTime } : {}),
     ...(p.timeZone !== undefined ? { timeZone: p.timeZone } : {}),
-  }, signal);
+  }, signal) as Record<string, any>;
+  const resourceId = typeof result.item?.id === "string" && result.item.id.length <= 512 ? result.item.id : undefined;
+  if (!resourceId) throw new Error("provider_write_unverified");
+  const readback = await todoRead(config, agentId, { action: "get_task", listId: list.id, taskId: resourceId }, signal) as Record<string, any>;
+  const task = readback.item;
+  if (!task || task.id !== resourceId || task.title !== p.title) throw new Error("provider_write_unverified");
+  if (p.dueDateTime !== undefined) {
+    const actualDateTime = task.dueDateTime?.dateTime;
+    const actualTimeZone = task.dueDateTime?.timeZone;
+    if (typeof actualDateTime !== "string" || typeof actualTimeZone !== "string") throw new Error("provider_write_unverified");
+    const expected = wallClockEpoch(p.dueDateTime, p.timeZone ?? "UTC");
+    const actual = wallClockEpoch(actualDateTime, actualTimeZone);
+    if (expected === undefined || actual === undefined || actual !== expected) throw new Error("provider_write_unverified");
+  }
+  return {
+    ...result,
+    item: task,
+    list,
+    providerVerification: {
+      verified: true,
+      method: "read_after_write",
+      resourceId,
+      listId: list.id,
+      listName: list.displayName,
+      checkedFields: p.dueDateTime === undefined ? ["id", "title"] : ["id", "title", "dueDateTime"],
+    },
+  };
 }
 
 async function todoTaskDeleteExact(config: RuntimeConfig, agentId: string | undefined, workspaceDir: string | undefined, p: any, signal?: AbortSignal) {
