@@ -1416,7 +1416,11 @@ export function mutationApprovalText(toolName: string, rawParams: unknown): { ti
             : action === "add_attachment" ? "Adds file content to a remote draft."
               : "Changes remote mailbox state or message properties.";
   } else if (toolName === "microsoft_todo_write") {
-    const list = approvalDisplayValue(params.listId, action === "create_list" ? "new list" : "unspecified list");
+    // Task creation must identify the entire concrete target, including opaque-ID suffixes.
+    // safeId bounds and validates the raw ID; display that raw identity, not its URL encoding.
+    const list = action === "create_task" && typeof params.listId === "string"
+      ? (safeId(params.listId), params.listId)
+      : approvalDisplayValue(params.listId, action === "create_list" ? "new list" : "unspecified list");
     const task = approvalDisplayValue(params.taskId, action === "create_task" ? "new task" : "unspecified task");
     target = `To Do list "${list}"${action.includes("task") || params.taskId !== undefined ? `, task "${task}"` : ""}`;
     risk = action.startsWith("delete") ? "Deletes remote To Do data; recovery is provider-dependent."

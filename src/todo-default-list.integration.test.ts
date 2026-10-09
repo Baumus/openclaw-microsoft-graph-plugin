@@ -118,6 +118,25 @@ describe("existing To Do write default selector", () => {
     expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+  it("displays full long default-list IDs with distinguishable suffixes, preserving exact binding and private task text", async () => {
+    const { hook, tool, ctx, event } = runtime();
+    const firstId = "A".repeat(100) + "+first=";
+    const secondId = "A".repeat(100) + "+second=";
+    const { fetchSpy } = provider([{ value: [defaultList(firstId)] }, { value: [defaultList(secondId)] }]);
+    const first = event();
+    const firstGate = await hook(first, ctx);
+    const second = event();
+    const secondGate = await hook(second, ctx);
+    expect(firstGate.requireApproval.description).toContain(`list "${firstId}"`);
+    expect(secondGate.requireApproval.description).toContain(`list "${secondId}"`);
+    expect(firstGate.requireApproval.description).not.toContain(secondId);
+    expect(firstGate.requireApproval.description).not.toContain(input.title);
+    expect(firstGate.params.listId).toBe(firstId);
+    await firstGate.requireApproval.onResolution("allow-once");
+    expect((await tool.execute(first.toolCallId, { ...first.params, ...firstGate.params })).details.ok).toBe(true);
+    expect(String(fetchSpy.mock.calls[3][0])).toContain(`/${encodeURIComponent(firstId)}/tasks`);
+    await secondGate.requireApproval.onResolution("deny");
+  });
   it("uses the actual installed host runner to clear the semantic selector and bind the exact target despite a prior rewrite", async () => {
     // Same private-host discovery convention as hook-composition.integration.test.ts.
     const dist = process.env.OPENCLAW_TEST_HOST_DIST ?? dirname(fileURLToPath(import.meta.resolve("openclaw")));
