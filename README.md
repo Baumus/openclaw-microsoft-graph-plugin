@@ -268,6 +268,16 @@ Apply requires `RESTORE MICROSOFT GRAPH CREDENTIAL`. A `complete` receipt means 
 - Unknown actions, malformed resources, missing grants, missing credentials, unsafe files, and unsupported filesystem conditions fail closed.
 - Process-local access-token, continuation, instruction, and warning allow-always trust is lost on restart. Retry from a fresh read/status check rather than assuming an interrupted mutation failed.
 
+## Creating a task in the default To Do list
+
+Use the existing `microsoft_todo_write` tool with `action: "create_task"`, `title`, and exactly one of `listId` or `listSelector: "default"`:
+
+```json
+{ "action": "create_task", "listSelector": "default", "title": "Prepare meeting notes" }
+```
+
+The default selector requires independently allowed To Do `read` and `create` operations. Before native approval, the plugin validates the task payload and follows at most 20 safe list pages / 500 lists to identify the unique owned, non-shared list whose Microsoft `wellknownListName` is `defaultList`. Missing, ambiguous, unsafe, or incomplete discovery fails closed; list names and arbitrary sole lists are never used as fallback. Approval identifies and binds the concrete list ID, and execution uses that same target even if the account's default changes. The existing owner check remains; no post-write GET is added. Known `listId` calls do not discover lists or require separate discovery read access. The selector is not accepted for other actions. Warning approval and per-service overrides continue to apply.
+
 ## Configuration UI (OpenClaw 2026.9.6+)
 
 Administrators can enable **Settings → Labs → Custom plugin UI**, then open **Connect Microsoft 365 to OpenClaw** in the Control UI. The page offers English, German, Spanish, and Arabic; other host locales fall back to English. When a newer security-clean stable release is published on ClawHub, an administrator-only, read-only Gateway check shows an update badge beside the established-connection status. It contacts ClawHub with no Microsoft credentials or policy data, and the badge never installs or activates an update. The page edits OneDrive folder/agent rights, per-agent Calendar/Mail/To Do access, and warning-level approval choices for each service. New OneDrive paths are resolved to immutable drive/item IDs by an admin-only Gateway method. Critical delete, send, and respond actions always retain call-bound approval.
