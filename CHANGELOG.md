@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.12.0 - 2026-10-09
+
+- Extend the existing Microsoft To Do write tool with explicit actual-default-list task creation. Safe bounded discovery requires independent read/create authorization, resolves the owned non-shared default before native approval, and binds execution to that exact list. Known-ID writes are unchanged; no new tool or post-write readback is introduced.
+- Include the macOS workspace-staging repair from #38: canonical state-root identity checks, Darwin owner identity, targeted regressions, and actual macOS CI coverage.
+
 ## 3.11.4 - 2026-10-07
 
 - Restore the feature-focused ClawHub subtitle: “Bring Outlook mail and calendar, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.” Keep the display name and README attribution unchanged.

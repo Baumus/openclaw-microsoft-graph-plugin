@@ -594,7 +594,7 @@ const ACTION_SCHEMA_GUIDANCE: Readonly<Record<string, string>> = {
   outlook_mail_read: "list_folders: no ID or parentFolderId; list/search_messages: folder/folderId or mailbox-wide; get_message/list_attachments: messageId; download_attachment: messageId and attachmentId. Folder and message IDs come from preceding read actions; follow continuation.",
   outlook_mail_write: "create_draft: subject and body; update_draft/update_properties: messageId and changed fields; reply/forward draft: messageId and content; copy/move: messageId and exactly one destination or destinationFolderId; mark_read: messageId and isRead; add_attachment: messageId and private media; send_draft/delete: messageId. Native approval remains sole authority.",
   microsoft_todo_read: "list_lists: no ID; search_lists: search; list/search_tasks: listId from list_lists; get_task/child lists: listId and taskId; get_attachment: also attachmentId. Follow continuation where offered; narrow capped search.",
-  microsoft_todo_write: "create_list: title; update/delete_list: listId; create_task: listId and title; update/delete_task: listId and taskId; checklist/linked-resource/attachment actions: listId, taskId and the relevant child ID for update/delete. Native approval is separate from deprecated chat fields.",
+  microsoft_todo_write: "create_list: title; update/delete_list: listId; create_task: title and exactly one of listId or listSelector default; the actual owned non-shared default list is resolved before approval (requires read and create); update/delete_task: listId and taskId; checklist/linked-resource/attachment actions: listId, taskId and the relevant child ID for update/delete. Native approval is separate from deprecated chat fields.",
 };
 const APPROVAL_BEARING_TOOLS = new Set(["onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete", "outlook_calendar_write", "outlook_mail_write", "microsoft_todo_write"]);
 const transportTimeoutMs = Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_OUTER_TOOL_TIMEOUT_MS, description: "Outer OpenClaw tool-call budget in milliseconds (maximum 600000). For native approval, pass 180000 or more; include expected transfer time. This is transport metadata, not Graph data or approval authority. A 24-hour transfer cannot fit this host cap." }));
@@ -1109,6 +1109,7 @@ const todoWriteSchema = Type.Object({
   action: Type.Union([Type.Literal("create_list"), Type.Literal("update_list"), Type.Literal("delete_list"), Type.Literal("create_task"), Type.Literal("update_task"), Type.Literal("delete_task"), Type.Literal("add_checklist"), Type.Literal("update_checklist"), Type.Literal("delete_checklist"), Type.Literal("add_linked_resource"), Type.Literal("update_linked_resource"), Type.Literal("delete_linked_resource"), Type.Literal("add_attachment"), Type.Literal("delete_attachment")]),
   chatConfirmed,
   chatConfirmationToken,
+  listSelector: Type.Optional(Type.Literal("default", { description: "create_task only: choose the actual owned non-shared Microsoft default list. Mutually exclusive with listId; requires independent To Do read and create access. Resolved to an exact listId before approval." })),
   listId: Type.Optional(resourceId), taskId: Type.Optional(resourceId), checklistItemId: Type.Optional(resourceId), linkedResourceId: Type.Optional(resourceId), attachmentId: Type.Optional(resourceId), title: Type.Optional(shortText),
   bodyHtml, categories: categoryList, recurrence: Type.Optional(Type.Union([recurrenceInput, Type.Null()])), isReminderOn: Type.Optional(Type.Boolean()), completedDateTime: Type.Optional(Type.Union([dateTime, Type.Null()])),
   status: Type.Optional(Type.Union([Type.Literal("notStarted"), Type.Literal("inProgress"), Type.Literal("completed"), Type.Literal("waitingOnOthers"), Type.Literal("deferred")])),
@@ -1149,7 +1150,7 @@ export const WRITE_ACTION_FIELDS = {
   },
   todo: {
     create_list: ["action", "title"], update_list: ["action", "listId", "title"], delete_list: ["action", "listId"],
-    create_task: ["action", "listId", ...TODO_TASK_WRITE_FIELDS], update_task: ["action", "listId", "taskId", ...TODO_TASK_WRITE_FIELDS], delete_task: ["action", "listId", "taskId"],
+    create_task: ["action", "listId", "listSelector", ...TODO_TASK_WRITE_FIELDS], update_task: ["action", "listId", "taskId", ...TODO_TASK_WRITE_FIELDS], delete_task: ["action", "listId", "taskId"],
     add_checklist: ["action", "listId", "taskId", "title", "checklistIsChecked"],
     update_checklist: ["action", "listId", "taskId", "checklistItemId", "title", "checklistIsChecked", "checklistCheckedDateTime"],
     delete_checklist: ["action", "listId", "taskId", "checklistItemId"],
@@ -1655,7 +1656,7 @@ const plugin = defineToolPlugin({
       tool({ name: "outlook_mail_read", label: "Outlook Mail Read", optional: true, description: "Bounded own-mailbox message reads, KQL/filter search, selected stable message fields, attachment metadata, and direct file downloads.", parameters: mailReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_read", mailReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailRead(config, toolContext.agentId, params, signal)) }),
       tool({ name: "outlook_mail_write", label: "Outlook Mail Write", optional: true, description: "Own-mailbox draft fields, reply/reply-all/forward drafts, copy/move, private-media attachments up to 150 MB, send, and delete. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: mailWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_write", mailWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "microsoft_todo_read", label: "Microsoft To Do Read", optional: true, description: "Bounded own-account list/task reads and client-side search, including checklist, linked-resource, and attachment collections.", parameters: todoReadSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_read", todoReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "microsoft_todo_write", label: "Microsoft To Do Write", optional: true, description: "Owned non-shared list/task settings, checklist, linked-resource, and private-media attachment mutations up to 25 MB. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: todoWriteSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_write", todoWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
+      tool({ name: "microsoft_todo_write", label: "Microsoft To Do Write", optional: true, description: 'Create tasks with an exact listId or listSelector:"default" (default selection requires read and create access and resolves before approval). Owned non-shared list/task settings, checklist, linked-resource, and private-media attachment mutations up to 25 MB. Warning-level actions use configurable native approval; critical actions require native allow-once approval.', parameters: todoWriteSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_write", todoWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "onedrive_agents_instructions", label: "OneDrive AGENTS.md Instructions", optional: true, description: "Batch-discover the bounded root-to-directory AGENTS.md chain for a centrally trusted OneDrive root. Ordinary OneDrive tools invoke this preflight automatically and require a session-bound acknowledgement before proceeding.", parameters: agentsInstructionsSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_agents_instructions", agentsInstructionsSchema, toolContext.agentId, toolContext.sessionId, api.logger, ({ rootLabel, relativeDirectory = "", acknowledgement }, signal) => oneDriveAgentsInstructions(config, { agentId: toolContext.agentId, sessionId: toolContext.sessionId }, { rootLabel, relativeDirectory, acknowledgement }, signal)) }),
       tool({ name: "microsoft_graph_capabilities", label: "Microsoft Graph Capabilities", optional: true, description: TOOL_GUIDANCE.microsoft_graph_capabilities, parameters: Type.Object({}, { additionalProperties: false }), factory: ({ config, toolContext, api }) => concrete("microsoft_graph_capabilities", Type.Object({}, { additionalProperties: false }), toolContext.agentId, toolContext.sessionId, api.logger, async () => callerCapabilities(config, toolContext.agentId)) }),
     ];
@@ -2801,6 +2802,43 @@ export function assertOwnedTodoList(value: unknown): void {
 const TODO_TASK_FIELDS = ["id", "title", "body", "bodyLastModifiedDateTime", "status", "importance", "startDateTime", "dueDateTime", "reminderDateTime", "isReminderOn", "completedDateTime", "recurrence", "categories", "hasAttachments", "createdDateTime", "lastModifiedDateTime"];
 const TODO_LIST_FIELDS = ["id", "displayName", "isOwner", "isShared", "wellknownListName"];
 
+/** Complete, bounded default-list discovery. Never infer defaults from names or an arbitrary sole list. */
+async function resolveDefaultTodoList(config: RuntimeConfig, agentId: string | undefined, signal?: AbortSignal): Promise<string> {
+  return withService(config, agentId, "todo", "read", "todo_read", signal, async (token, bounded) => {
+    const prefix = "/me/todo/lists";
+    let path: string | undefined = `${prefix}?$top=${MAX_RESULTS}`;
+    const seenPaths = new Set<string>();
+    const seenIds = new Set<string>();
+    let scanned = 0;
+    let selected: string | undefined;
+    for (let pageNumber = 0; path !== undefined && pageNumber < 20; pageNumber += 1) {
+      if (seenPaths.has(path)) throw new Error("invalid_default_todo_list_incomplete");
+      seenPaths.add(path);
+      const data = await graphRequest(token, path, { signal: bounded });
+      if (!Array.isArray(data?.value) || data.value.length > MAX_RESULTS) throw new Error("invalid_provider_response");
+      const page = boundedCollectionPage(data, TODO_LIST_FIELDS, MAX_RESULTS, prefix);
+      scanned += page.items.length;
+      if (scanned > MAX_TODO_SCAN) throw new Error("invalid_default_todo_list_incomplete");
+      for (const list of page.items) {
+        if (typeof list.id !== "string") throw new Error("invalid_provider_response");
+        safeId(list.id);
+        if (seenIds.has(list.id)) throw new Error("invalid_default_todo_list_incomplete");
+        seenIds.add(list.id);
+        if (list.wellknownListName !== "defaultList") continue;
+        assertOwnedTodoList(list);
+        // Discovery must prove non-sharing, rather than treating a missing flag as false.
+        if (list.isShared !== false) throw new Error("access_denied");
+        if (selected !== undefined) throw new Error("invalid_default_todo_list_ambiguous");
+        selected = list.id;
+      }
+      path = page.providerNextLink;
+    }
+    if (path !== undefined) throw new Error("invalid_default_todo_list_incomplete");
+    if (selected === undefined) throw new Error("invalid_default_todo_list_missing");
+    return selected;
+  });
+}
+
 export function todoTaskMatches(entry: any, p: any): boolean {
   for (const field of ["status", "importance", "isReminderOn", "hasAttachments"]) if (p[field] !== undefined && entry?.[field] !== p[field]) return false;
   if (Array.isArray(p.categories) && p.categories.some((category: string) => !Array.isArray(entry?.categories) || !entry.categories.includes(category))) return false;
@@ -2898,7 +2936,10 @@ function planTodoWrite(p: any) {
   const linkedPlan = p.action === "add_linked_resource" ? linkedResourcePayload(p, true) : p.action === "update_linked_resource" ? linkedResourcePayload(p, false) : undefined;
   const needsList = p.action !== "create_list";
   const needsTask = !new Set(["create_list", "update_list", "delete_list", "create_task"]).has(p.action);
-  const listId = needsList ? String(p.listId) : undefined;
+  const defaultList = p.listSelector !== undefined;
+  if (defaultList && (p.action !== "create_task" || p.listSelector !== "default" || p.listId !== undefined)) throw new Error("invalid_todo_list_target");
+  if (p.action === "create_task" && !defaultList && p.listId === undefined) throw new Error("invalid_resource_id");
+  const listId = needsList && !defaultList ? String(p.listId) : undefined;
   const taskId = needsTask ? String(p.taskId) : undefined;
   if (listId !== undefined) safeId(listId);
   if (taskId !== undefined) safeId(taskId);
@@ -2920,6 +2961,8 @@ function planTodoWrite(p: any) {
 
 async function todoWrite(config: RuntimeConfig, agentId: string | undefined, workspaceDir: string | undefined, p: any, signal?: AbortSignal) {
   const { operation, linkedPlan, listId, taskId, taskPlan, checklistPlan } = planTodoWrite(p);
+  // Semantic selectors must already be resolved by the native preflight; never rediscover after approval.
+  if (p.listSelector !== undefined) throw new Error("approval_context_invalid_or_changed");
   let attachmentPlan: AttachmentWritePlan | undefined;
   return withService(config, agentId, "todo", operation, "todo_write", signal, async (token, bounded) => {
     if (p.action === "create_list") return { ok: true, action: p.action, item: await graphRequest(token, "/me/todo/lists", { method: "POST", body: { displayName: p.title }, signal: bounded }) };
@@ -3003,6 +3046,14 @@ export async function beforeMicrosoftGraphToolCall(
   catch (error) { return { block: true, blockReason: errorCode(error) }; }
   const schemaParams = Object.fromEntries(Object.entries(callParams(event.params)).filter(([, value]) => value !== undefined));
   if (event.params && !TOOL_PARAMETER_CHECKS.get(event.toolName)?.(schemaParams)) return { block: true, blockReason: "invalid_tool_parameters" };
+  // Resolve only after complete payload/schema and policy validation, under independently allowed read access.
+  // Explicit undefined clears the selector when the host shallow-merges overrides into the original call.
+  if (event.toolName === "microsoft_todo_write" && params.listSelector === "default") {
+    if (!event.toolCallId) return { block: true, blockReason: "approval_context_tool_call_id_required" };
+    try {
+      params = { ...params, listSelector: undefined, listId: await resolveDefaultTodoList(runtimeConfig, ctx.agentId, ctx.abortSignal) };
+    } catch (error) { return { block: true, blockReason: errorCode(error) }; }
+  }
   let ownedLease: WorkspaceStagingLease | undefined;
   let leaseBound = false;
   const cleanupUnboundLease = async (): Promise<boolean> => {
