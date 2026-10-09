@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.11.4 - 2026-10-07
+
+- Restore the feature-focused ClawHub subtitle: “Bring Outlook mail and calendar, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.” Keep the display name and README attribution unchanged.
+
+## 3.11.3 - 2026-10-07
+
+- Present the plugin as “Connect Microsoft 365 to OpenClaw” with the attribution “Independent community plugin by Baumus” across ClawHub metadata, README, and Control UI. This is a display-name and copy change only; the package name, plugin ID, permissions, tools, and configuration keys remain unchanged.
+
+## 3.11.2 - 2026-10-07
+
+- Restore the manifest tool contract required by OpenClaw 2026.9.8. The v3.11.1 package installed but left all Microsoft Graph agent tools unavailable on that host; v3.11.2 restores registration without changing Graph permissions, tool behavior, or policy.
+
+## 3.11.1 - 2026-10-07
+
+- Remove the unsupported generated tool contract from the plugin manifest while keeping runtime tool registration and supported tool metadata intact. The build now strips that field so future packages remain ClawHub-valid.
+
 ## 3.11.0 - 2026-10-07
 
 - Guide Microsoft account connection from saved, non-secret app identifiers or two clearly labeled fields, with a separate Entra administrator path. Identifiers are stored only in the current browser after a successful device-code start; sign-in and consent remain unverified until the existing flow completes.

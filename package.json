@@ -1,6 +1,6 @@
 {
   "name": "@baumus/openclaw-microsoft-graph",
-  "version": "3.11.0",
+  "version": "3.11.4",
   "description": "Bring Outlook mail and calendar, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.",
   "type": "module",
   "main": "./dist/index.js",
@@ -33,9 +33,9 @@
     "test": "vitest run --config ./vitest.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "npm run typecheck && esbuild src/index.ts --bundle --platform=node --format=esm --target=node24 --packages=external --outfile=dist/index.js",
-    "plugin:build": "npm run build && openclaw plugins build --root . --entry ./dist/index.js && node scripts/strip-unsupported-contracts.mjs",
-    "plugin:build:check": "openclaw plugins build --root . --entry ./dist/index.js && node scripts/strip-unsupported-contracts.mjs && git diff --exit-code -- openclaw.plugin.json package.json",
-    "plugin:validate": "clawhub package validate . --openclaw-version 2026.10.1-beta.1",
+    "plugin:build": "npm run build && openclaw plugins build --root . --entry ./dist/index.js",
+    "plugin:build:check": "openclaw plugins build --check --root . --entry ./dist/index.js",
+    "plugin:validate": "openclaw plugins validate --json --root . --entry ./dist/index.js",
     "package:check": "node scripts/check-package-contents.mjs",
     "prepack": "npm run build"
   },
@@ -101,7 +101,7 @@
     },
     "install": {
       "clawhubSpec": "clawhub:@baumus/openclaw-microsoft-graph",
-      "npmSpec": "@baumus/openclaw-microsoft-graph@3.11.0",
+      "npmSpec": "@baumus/openclaw-microsoft-graph@3.11.4",
       "defaultChoice": "clawhub",
       "minHostVersion": ">=2026.9.6"
     },

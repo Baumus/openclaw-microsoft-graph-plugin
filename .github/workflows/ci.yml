@@ -48,11 +48,14 @@ jobs:
       - name: Check generated OpenClaw metadata
         run: npm run plugin:build:check
 
-      - name: Validate ClawHub plugin package
+      - name: Validate OpenClaw plugin
         run: npm run plugin:validate
 
       - name: Check npm package contents
         run: npm run package:check
+
+      - name: Validate ClawHub package
+        run: npx --no-install clawhub package validate . --openclaw-version 2026.10.1-beta.1
   macos-staging:
     name: macOS staging (Node.js 24.16.0)
     runs-on: macos-15
