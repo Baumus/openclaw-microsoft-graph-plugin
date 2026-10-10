@@ -1,13 +1,27 @@
+import { createHash } from "node:crypto";
+import { canonicalPolicy } from "./config-policy-identity.js";
 import { requiredPolicyScopes } from "./credential-cli.js";
 import { validatePolicy } from "./policy.js";
 import { tokenForAuthorizedOperation } from "./credential.js";
 import { graphRequest } from "./graph.js";
 
 type HandlerContext = { params: unknown; respond(ok: boolean, payload?: unknown, error?: unknown): void };
-type GatewayApi = { registerGatewayMethod(method: string, handler: (context: HandlerContext) => void | Promise<void>, options: { scope: "operator.admin" }): void };
+type GatewayApi = { version?: string; registerGatewayMethod(method: string, handler: (context: HandlerContext) => void | Promise<void>, options: { scope: "operator.admin" }): void };
 
 /** Admin-only, read-only validation. Never resolves or returns credential material. */
 export function registerConfigurationUiMethods(api: GatewayApi, config?: { policy?: unknown; credentialVaultKey?: unknown; requestTimeoutMs?: number }, stateDir?: () => string): void {
+  // Capture this generation, not a later mutated config object. No policy or
+  // credential values leave this method, and no provider access is performed.
+  const activeVersion = api.version ?? null;
+  const digest = (value: unknown) => createHash("sha256").update(canonicalPolicy(validatePolicy(value))).digest("hex");
+  let activePolicyHash: string | undefined;
+  try { if (config?.policy) activePolicyHash = digest(config.policy); } catch { /* Invalid/missing active policy stays unconfirmed. */ }
+  api.registerGatewayMethod("microsoft-graph.configuration.applicationStatus", ({ params, respond }) => {
+    if (!params || typeof params !== "object" || Array.isArray(params) || Object.keys(params).length) {
+      respond(false, undefined, { code: "INVALID_REQUEST", message: "Invalid application status parameters" }); return;
+    }
+    respond(true, { activePolicyHash: activePolicyHash ?? null, activeVersion });
+  }, { scope: "operator.admin" });
   api.registerGatewayMethod("microsoft-graph.configuration.validate", ({ params, respond }) => {
     try {
       if (!params || typeof params !== "object" || Array.isArray(params)
@@ -15,7 +29,7 @@ export function registerConfigurationUiMethods(api: GatewayApi, config?: { polic
       const serialized = JSON.stringify((params as { policy: unknown }).policy);
       if (serialized.length > 256_000) throw new Error("invalid_rpc_parameters");
       const policy = validatePolicy((params as { policy: unknown }).policy);
-      respond(true, { valid: true, requiredScopes: requiredPolicyScopes(policy) });
+      respond(true, { valid: true, requiredScopes: requiredPolicyScopes(policy), policyHash: digest(policy) });
     } catch {
       respond(false, undefined, { code: "INVALID_REQUEST", message: "Invalid Microsoft Graph policy" });
     }

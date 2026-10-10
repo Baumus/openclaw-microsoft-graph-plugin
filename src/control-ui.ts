@@ -2,6 +2,7 @@ import { defineControlUiPlugin, type ControlUiHost } from "openclaw/plugin-sdk/c
 import "./control-ui.css";
 import { localize, format, setLocale, isRtl } from "./control-ui-i18n.js";
 import { isMicrosoftDeviceVerificationUri } from "./device-verification.js";
+import { canonicalPolicy } from "./config-policy-identity.js";
 import { isConnectionEstablished } from "./control-ui-status.js";
 
 type Grant = { operations: string[]; resources?: string[] };
@@ -13,6 +14,16 @@ type UpdateStatus = { updateAvailable: boolean; latestVersion?: string };
 type DeviceStatus = { state: "pending" | "created" | "failed"; error?: string; scopes?: string[] };
 type CredentialReply<T> = { ok: true; value: T } | { ok: false; error: string };
 type ConfigSnapshot = { hash: string; config: { plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; parsed?: { plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; configRevisionHash?: string; appliedConfigHash?: string };
+type SavePhase = "idle" | "validating" | "saving" | "applying" | "pending" | "unknown" | "failed" | "conflict" | "applied";
+type SaveOperation = { target: Policy; baseline: Policy; targetHash?: string; phase: SavePhase; issued: boolean; settled: boolean; epoch: number; reloadAttempted?: boolean; reloadPending?: boolean; applicationFailed?: boolean; rejectedBeforeWrite?: boolean };
+// Private drafts live only in authenticated host memory, never browser storage.
+const operationsByHost = new WeakMap<ControlUiHost, SaveOperation>();
+const contextByHost = new WeakMap<ControlUiHost, { step: number; selectedAgent: string; credential?: CredentialStatus["credential"] }>();
+// Core INVALID_REQUEST is a pre-commit validation/conflict rejection. A timeout,
+// disconnect or UNAVAILABLE may follow a persisted write and is never retry proof.
+function isPreCommitRejection(error: unknown): boolean {
+  return !!error && typeof error === "object" && (error as { code?: unknown }).code === "INVALID_REQUEST";
+}
 const id = "microsoft-graph";
 const appIdsStorageKey = "microsoft-graph.app-ids.v1";
 const validClientId = (value: string) => /^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$/.test(value);
@@ -87,6 +98,31 @@ class ConfigurationPage {
   private editingAccess?: { rootLabel: string; agentId: string; permissions: Record<"read" | "write" | "delete", boolean> };
   private removedServiceGrants: Record<string, Grant> = {};
   private busy = false;
+  private operation?: SaveOperation;
+  private activePolicyHash?: string;
+  private savedPolicyHash?: string;
+  private activeProofAvailable = false;
+  private statusInFlight = false;
+  private statusEpoch = 0;
+  private validationEpoch = 0;
+  private readonly guardEvent = (event: Event) => {
+    if (!this.locked) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("[data-safe-status], summary")) return;
+    if (target?.closest("button, input, select, textarea, a")) { event.preventDefault(); event.stopImmediatePropagation(); }
+  };
+  private readonly warnBeforeUnload = (event: BeforeUnloadEvent) => {
+    if (this.operation && ["validating", "saving", "unknown"].includes(this.operation.phase)) { event.preventDefault(); event.returnValue = ""; }
+  };
+  private action(label: string, onClick: () => void, variant = "secondary") { return button(label, () => { if (!this.locked) onClick(); }, variant); }
+  private field(parent: HTMLElement, label: string, value: string, set: (value: string) => void, hint?: string) { return field(parent, label, value, next => { if (!this.locked) set(next); }, hint); }
+  private checkbox(parent: HTMLElement, label: string, checked: boolean, set: (value: boolean) => void) { return checkbox(parent, label, checked, next => { if (!this.locked) set(next); }); }
+  private async read<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([this.host.request<T>(method, params), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("status_timeout")), 15000); })]); }
+    finally { if (timer) clearTimeout(timer); }
+  }
+  private get locked() { return this.busy || !!this.operation && !["idle", "failed", "applied"].includes(this.operation.phase); }
   private error = "";
   private success = "";
   private statusError = "";
@@ -109,23 +145,32 @@ class ConfigurationPage {
   private authBusy = false;
   private readonly unsubscribe: () => void;
   constructor(private container: HTMLElement, private host: ControlUiHost, private signal: AbortSignal) {
+    this.operation = operationsByHost.get(host);
+    const context = contextByHost.get(host);
+    if (context) { this.step = context.step; this.selectedAgent = context.selectedAgent; this.credential = context.credential; }
+    this.container.addEventListener("click", this.guardEvent, true);
+    this.container.addEventListener("change", this.guardEvent, true);
+    this.container.addEventListener("input", this.guardEvent, true);
+    window.addEventListener("beforeunload", this.warnBeforeUnload);
     const stored = savedAppIds();
     if (stored) { this.authClientId = stored.clientId; this.authTenant = stored.tenant; }
-    this.unsubscribe = host.subscribe(() => { setLocale(host.locale); if (this.authorized) void this.checkForUpdate(); if (!this.snapshot && !this.busy && this.authorized) void this.load(); else this.render(); });
+    this.unsubscribe = host.subscribe(() => { setLocale(host.locale); if (this.authorized) void this.checkForUpdate(); if (!this.snapshot && !this.busy && this.authorized) void this.load();
+      else { this.render(); if (this.authorized && this.snapshot && !this.busy && !this.statusInFlight) void this.checkApplication(); } });
     void this.load();
     void this.checkForUpdate();
     this.render();
   }
-  dispose() { this.disposed = true; if (this.authTimer) clearTimeout(this.authTimer); this.stopStatusChecks(); this.unsubscribe(); this.container.replaceChildren(); }
+  dispose() { contextByHost.set(this.host, { step: this.step, selectedAgent: this.selectedAgent, credential: this.credential }); this.disposed = true; this.statusEpoch++; this.container.removeEventListener("click", this.guardEvent, true); this.container.removeEventListener("change", this.guardEvent, true); this.container.removeEventListener("input", this.guardEvent, true); window.removeEventListener("beforeunload", this.warnBeforeUnload); if (this.authTimer) clearTimeout(this.authTimer); this.stopStatusChecks(); this.unsubscribe(); this.container.replaceChildren(); }
   private async checkForUpdate() {
     if (!this.authorized || this.updateCheckStarted || this.disposed) return;
     this.updateCheckStarted = true;
     try {
+      if (this.disposed || !this.authorized) return;
       const result = await this.host.request<UpdateStatus>("microsoft-graph.updateStatus", {});
       if (!this.disposed && !this.signal.aborted && result.updateAvailable === true && typeof result.latestVersion === "string") { this.updateStatus = result; this.render(); }
     } catch { /* Version information is optional; never block configuration. */ }
   }
-  private get dirty() { return !!this.initial && JSON.stringify(this.initial) !== JSON.stringify(this.policy); }
+  private get dirty() { return !!this.initial && canonicalPolicy(this.initial) !== canonicalPolicy(this.policy); }
   private get authorized() { return this.host.connection.connected && this.host.connection.canAdmin; }
   private get signInReady() {
     const entry = this.snapshot?.config?.plugins?.entries?.[id]?.config;
@@ -135,40 +180,70 @@ class ConfigurationPage {
     return !!entry?.credentialVaultKey && grants && !this.dirty && !this.statusError && this.applicationStatus === "applied";
   }
   private get applicationStatus(): "applied" | "pending" | "unknown" {
+    if (this.savedPolicyHash && this.activePolicyHash) return this.savedPolicyHash === this.activePolicyHash ? "applied" : "pending";
+    if (this.activeProofAvailable) return "unknown";
+    // Older backends can only prove the whole saved revision is active.
     const { configRevisionHash, appliedConfigHash } = this.snapshot ?? {};
-    if (!configRevisionHash || !appliedConfigHash) return "unknown";
-    return configRevisionHash === appliedConfigHash ? "applied" : "pending";
+    return configRevisionHash && appliedConfigHash && configRevisionHash === appliedConfigHash ? "applied" : "unknown";
   }
   private stopStatusChecks() { if (this.statusTimer) clearTimeout(this.statusTimer); this.statusTimer = undefined; this.statusChecksRemaining = 0; }
   private scheduleStatusCheck() {
-    if (this.disposed || this.signal.aborted || this.applicationStatus !== "pending" || this.statusChecksRemaining <= 0 || this.statusTimer) return;
+    if (this.disposed || this.signal.aborted || this.statusChecksRemaining <= 0 || this.statusTimer) return;
     this.statusTimer = setTimeout(() => { this.statusTimer = undefined; void this.checkApplication(); }, 5000);
   }
-  private async checkApplication() {
-    if (!this.authorized || !this.snapshot || !this.initial || this.disposed || this.signal.aborted) return;
-    if (this.busy) { this.scheduleStatusCheck(); return; }
+  private async readActivePolicy() {
     try {
-      const snap = await this.host.request<ConfigSnapshot>("config.get", {});
-      if (this.disposed || this.signal.aborted) return;
-      if (JSON.stringify(snap.config?.plugins?.entries?.[id]?.config?.policy) !== JSON.stringify(this.initial)) {
-        this.stopStatusChecks();
-        this.statusError = "Die Regeln wurden außerhalb dieser Seite geändert. Bitte neu laden, um den aktuellen Stand zu sehen.";
-        this.render();
-        return;
-      }
-      this.snapshot = snap;
-      this.statusError = "";
-      if (this.applicationStatus !== "pending") this.stopStatusChecks();
-      else { if (this.statusChecksRemaining === 0) this.statusChecksRemaining = 12; this.statusChecksRemaining--; this.scheduleStatusCheck(); }
-    } catch { this.stopStatusChecks(); this.statusError = "Statusprüfung fehlgeschlagen. Verbindung prüfen und erneut versuchen."; }
-    this.render();
+      const reply = await this.read<{ activePolicyHash: string | null }>("microsoft-graph.configuration.applicationStatus");
+      return { hash: typeof reply.activePolicyHash === "string" && /^[a-f0-9]{64}$/.test(reply.activePolicyHash) ? reply.activePolicyHash : undefined, available: true };
+    }
+    catch { return { hash: undefined, available: false }; }
   }
-  private watchApplication() { this.stopStatusChecks(); if (this.applicationStatus === "pending") { this.statusChecksRemaining = 12; this.scheduleStatusCheck(); } }
+  private async checkApplication() {
+    if (!this.authorized || !this.snapshot || !this.initial || this.disposed || this.signal.aborted || this.statusInFlight) return;
+    const epoch = this.statusEpoch;
+    this.statusInFlight = true; this.render();
+    try {
+      const snap = await this.read<ConfigSnapshot>("config.get");
+      const active = await this.readActivePolicy();
+      if (this.disposed || this.signal.aborted || epoch !== this.statusEpoch) return;
+      const expected = this.operation?.target ?? this.initial;
+      const saved = snap.config?.plugins?.entries?.[id]?.config?.policy;
+      if (canonicalPolicy(saved) !== canonicalPolicy(expected)) {
+        if (this.operation?.issued && !this.operation.settled && canonicalPolicy(saved) === canonicalPolicy(this.operation.baseline)) {
+          this.operation.phase = "saving";
+        } else {
+          this.stopStatusChecks();
+          if (this.operation?.rejectedBeforeWrite && canonicalPolicy(saved) === canonicalPolicy(this.operation.baseline)) {
+            this.snapshot = snap; this.operation.phase = "failed"; this.statusError = "";
+          } else {
+            this.statusError = "Die Regeln wurden außerhalb dieser Seite geändert. Der Entwurf bleibt erhalten.";
+            if (this.operation) this.operation.phase = this.operation.issued && canonicalPolicy(saved) === canonicalPolicy(this.operation.baseline) ? "unknown" : "conflict";
+          }
+        }
+      } else {
+        this.snapshot = snap; this.activePolicyHash = active.hash; this.activeProofAvailable = active.available; this.statusError = "";
+        if (this.operation) { this.initial = clone(expected); this.savedPolicyHash = this.operation.targetHash; this.operation.phase = this.applicationStatus === "applied" ? "applied" : this.operation.reloadPending || this.statusChecksRemaining > 0 ? "applying" : "pending"; }
+        if (this.applicationStatus === "applied") this.stopStatusChecks();
+      }
+    } catch {
+      if (epoch === this.statusEpoch && !this.disposed) { this.statusError = "Verbindung unterbrochen. Der Status wird nach Wiederverbindung geprüft."; if (this.operation && !["applied", "applying", "pending"].includes(this.operation.phase)) this.operation.phase = "unknown"; }
+    } finally {
+      this.statusInFlight = false;
+      if (epoch !== this.statusEpoch && !this.disposed && this.operation) this.scheduleStatusCheck();
+      if (epoch === this.statusEpoch && !this.disposed) {
+        if (this.statusChecksRemaining > 0) { this.statusChecksRemaining--; this.scheduleStatusCheck(); }
+        if (this.operation && this.statusChecksRemaining === 0 && this.operation.phase === "applying") this.operation.phase = "pending";
+        if (this.operation && this.statusChecksRemaining === 0 && this.operation.phase === "saving") this.operation.phase = "unknown";
+        this.render();
+      }
+    }
+  }
+  private watchApplication() { this.stopStatusChecks(); if (this.applicationStatus !== "applied" || this.operation?.issued && !["applied", "failed", "conflict"].includes(this.operation.phase)) { this.statusChecksRemaining = 12; this.scheduleStatusCheck(); } }
   private async load() {
     if (!this.authorized || this.busy) return;
     this.busy = true; this.error = ""; this.render();
     try {
-      const snap = await this.host.request<ConfigSnapshot>("config.get", {});
+      const snap = await this.read<ConfigSnapshot>("config.get");
       if (this.disposed || this.signal.aborted) return;
       const pluginEntry = snap.config?.plugins?.entries?.[id];
       const entry = pluginEntry?.config ?? {};
@@ -177,47 +252,120 @@ class ConfigurationPage {
       this.included = !!authored && typeof authored === "object" && "$include" in authored;
       this.includeName = this.included ? String((authored as { $include: unknown }).$include) : "";
       const policy = entry.policy as Policy | undefined;
-      this.policy = policy ? clone(policy) : blankPolicy(); this.initial = clone(this.policy);
+      this.initial = policy ? clone(policy) : blankPolicy();
+      this.policy = this.operation && this.operation.phase !== "applied" ? clone(this.operation.target) : clone(this.initial);
       this.snapshot = snap;
       this.watchApplication();
       await this.refreshCredential();
-      this.selectedAgent = this.host.agents.rows[0]?.id ?? ""; this.removedServiceGrants = {};
-      try { const baseline = await this.host.request<{ requiredScopes: string[] }>("microsoft-graph.configuration.validate", { policy: this.policy }); this.initialScopes = baseline.requiredScopes; this.scopes = baseline.requiredScopes; } catch { this.initialScopes = []; this.scopes = []; }
+      this.selectedAgent ||= this.host.agents.rows[0]?.id ?? ""; this.removedServiceGrants = {};
+      try { const baseline = await this.host.request<{ requiredScopes: string[]; policyHash?: string }>("microsoft-graph.configuration.validate", { policy: this.initial }); this.initialScopes = baseline.requiredScopes; this.scopes = baseline.requiredScopes; this.savedPolicyHash = baseline.policyHash; } catch { this.initialScopes = []; this.scopes = []; }
+      const active = await this.readActivePolicy(); this.activePolicyHash = active.hash; this.activeProofAvailable = active.available;
+      if (!this.operation && this.applicationStatus === "pending") {
+        this.operation = { target: clone(this.initial), baseline: clone(this.initial), targetHash: this.savedPolicyHash, phase: "pending", issued: true, settled: true, epoch: this.statusEpoch };
+        operationsByHost.set(this.host, this.operation);
+      }
+      if (this.operation) { this.statusChecksRemaining = 12; void this.checkApplication(); }
+      else this.watchApplication();
     } catch { this.error = "Configuration could not be loaded. Check administrator access and Gateway connection."; }
     finally { this.busy = false; this.render(); }
   }
   private render() {
     if (this.disposed || this.signal.aborted) return;
     setLocale(this.host.locale);
+    if (this.dirty && this.operation?.phase === "applied") { operationsByHost.delete(this.host); this.operation = undefined; }
     const main = el("main", "mg-ui"); main.dir = isRtl() ? "rtl" : "ltr"; const header = el("header", "mg-header");
     append(header, el("div", "mg-eyebrow", "Plugins / Connect Microsoft 365 to OpenClaw"), el("h1", "", "Connect Microsoft 365 to OpenClaw"), el("p", "mg-lead", "Lege fest, welcher Agent auf welche Microsoft-Daten zugreifen darf und wann eine Freigabe nötig ist."));
     append(main, header);
-    if (!this.host.connection.connected) { append(main, el("p", "mg-message", "Verbinde dich mit dem Gateway, um die Regeln zu bearbeiten.")); this.container.replaceChildren(main); return; }
+    if (!this.host.connection.connected) { append(main, el("p", "mg-message", this.operation ? "Verbindung unterbrochen. Der Status wird nach Wiederverbindung geprüft." : "Verbinde dich mit dem Gateway, um die Regeln zu bearbeiten.")); this.container.replaceChildren(main); return; }
     if (!this.host.connection.canAdmin) { append(main, el("p", "mg-message", "Zum Anzeigen und Ändern dieser Regeln brauchst du Administratorrechte.")); this.container.replaceChildren(main); return; }
     if (!this.snapshot) { append(main, el("p", "mg-message", this.error || "Regeln werden geladen…")); this.container.replaceChildren(main); return; }
     this.renderSetup(main);
     this.renderSignIn(main);
     const rail = el("nav", "mg-steps"); rail.setAttribute("aria-label", localize("Konfigurationsschritte"));
-    ["OneDrive", "Dienste", "Freigaben", "Prüfen"].forEach((name, index) => { const tab = button(`${index + 1}  ${localize(name)}`, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost"); tab.disabled = this.busy; tab.setAttribute("aria-current", index === this.step ? "step" : "false"); append(rail, tab); }); append(main, rail);
+    ["OneDrive", "Dienste", "Freigaben", "Prüfen"].forEach((name, index) => { const tab = this.action(`${index + 1}  ${localize(name)}`, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost"); tab.disabled = this.locked; tab.setAttribute("aria-current", index === this.step ? "step" : "false"); append(rail, tab); }); append(main, rail);
     if (this.included && (this.dirty || !!this.error)) append(main, el("p", "mg-banner", format("Policy-Quelle: {name}. Änderungen werden beim Speichern in diese Datei geschrieben.", { name: this.includeName })));
-    const application = this.statusError === "Die Regeln wurden außerhalb dieser Seite geändert. Bitte neu laden, um den aktuellen Stand zu sehen." ? "unknown" : this.applicationStatus;
-    if (application !== "applied" || this.statusError) {
-      const status = el("div", "mg-warning");
-      status.setAttribute("role", "status");
-      append(status, el("strong", "", application === "pending" ? "Regeln gespeichert – Anwendung noch ausstehend" : "Anwendung der Regeln nicht bestätigt"));
-      append(status, el("p", "mg-status-detail", application === "pending" ? (this.statusChecksRemaining > 0 ? "Der Gateway hat die gespeicherte Version noch nicht übernommen. Diese Seite prüft den Status automatisch; bis dahin können die bisherigen Regeln gelten." : "Die Anwendung ist weiterhin nicht bestätigt. Die bisherigen Regeln können noch gelten; prüfe den Status erneut.") : "Der Gateway liefert derzeit keinen eindeutigen Anwendungsstatus. Die gespeicherten Regeln können bereits gelten, sind hier aber nicht bestätigt."));
-      if (this.statusError) append(status, el("p", "mg-status-detail", this.statusError));
-      const recheck = button("Anwendung erneut prüfen", () => { void this.checkApplication(); }, "secondary"); recheck.disabled = this.busy; append(status, recheck);
-      append(main, status);
-    }
+    this.renderSaveStatus(main);
     const body = el("section", "mg-body"); if (this.step === 0) this.renderOneDrive(body); else if (this.step === 1) this.renderServices(body); else if (this.step === 2) this.renderApprovals(body); else this.renderReview(body); append(main, body);
     if (this.error) append(main, el("p", "mg-error", this.error)); if (this.success) append(main, el("p", "mg-success", this.success));
     const footer = el("footer", "mg-footer"); append(footer, el("span", "mg-dirty", this.dirty ? "Ungespeicherte Änderungen" : "Keine ungespeicherten Änderungen"));
-    if (this.dirty) append(footer, button("Änderungen verwerfen", () => { if (window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { this.policy = clone(this.initial!); this.error = ""; this.success = ""; this.render(); } }, "ghost"));
-    if (this.step > 0) append(footer, button("Zurück", () => { this.step--; this.render(); }));
-    if (this.step < 3) append(footer, button("Weiter", () => { this.step++; this.render(); if (this.step === 3) void this.validate(); }, "primary"));
-    if (this.step === 3 && this.dirty) append(footer, button("Änderungen speichern", () => { void this.save(); }, "primary"));
-    append(main, footer); this.container.replaceChildren(main);
+    if (this.dirty) append(footer, this.action("Änderungen verwerfen", () => { if (window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { this.policy = clone(this.initial!); this.error = ""; this.success = ""; this.render(); } }, "ghost"));
+    if (this.step > 0) append(footer, this.action("Zurück", () => { this.step--; this.render(); }));
+    if (this.step < 3) append(footer, this.action("Weiter", () => { this.step++; this.render(); if (this.step === 3) void this.validate(); }, "primary"));
+    if (this.step === 3 && this.dirty) { const save = this.action(this.operation?.phase === "validating" || this.operation?.phase === "saving" ? "Speichert …" : "Speichern und anwenden", () => { void this.save(); }, "primary"); save.disabled = this.authBusy || this.authState === "pending"; append(footer, save); }
+    if (this.step === 3 && this.dirty && !this.operation) append(footer, el("p", "mg-save-hint", "Wir speichern die Regeln und wenden sie automatisch an. Die Verbindung kann dabei kurz unterbrochen werden."));
+    if (this.operation && !["failed", "applied"].includes(this.operation.phase)) {
+      const saving = ["validating", "saving"].includes(this.operation.phase);
+      append(footer, el("span", "mg-footer-status", saving ? "Speichert …" : this.operation.phase === "applying" ? "Wendet an …" : "Status noch nicht bestätigt"));
+      if (["pending", "unknown", "conflict"].includes(this.operation.phase)) this.appendStatusButton(footer);
+    }
+    append(main, footer);
+    main.setAttribute("aria-busy", String(this.busy || this.operation?.phase === "saving" || this.operation?.phase === "applying"));
+    if (this.locked) for (const control of main.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>("button:not([data-safe-status]), input, select, textarea")) control.disabled = true;
+    const focused = this.container.contains(document.activeElement) ? (document.activeElement as HTMLElement) : undefined;
+    const controls = [...this.container.querySelectorAll<HTMLElement>("button, input, select, textarea, summary, [tabindex]")];
+    const focusIndex = focused ? controls.indexOf(focused) : -1;
+    const focusText = focused?.textContent;
+    const focusLabel = focused?.closest("label")?.textContent;
+    const selection = focused instanceof HTMLInputElement ? [focused.selectionStart, focused.selectionEnd] : undefined;
+    this.container.replaceChildren(main);
+    if (focused) {
+      const candidates = [...main.querySelectorAll<HTMLElement>("button, input, select, textarea, summary, [tabindex]")];
+      const replacement = candidates.find(node => node.tagName === focused.tagName && (focusLabel ? node.closest("label")?.textContent === focusLabel : node.textContent === focusText)) ?? candidates[focusIndex];
+      if (replacement && !(replacement as HTMLButtonElement).disabled) { replacement.focus({ preventScroll: true }); if (selection && replacement instanceof HTMLInputElement && selection[0] !== null && selection[1] !== null) try { replacement.setSelectionRange(selection[0]!, selection[1]!); } catch { /* Checkbox inputs have no selection. */ } }
+      else if (this.operation) main.querySelector<HTMLElement>(".mg-save-status")?.focus({ preventScroll: true });
+    }
+
+  }
+  private async applySavedPolicy() {
+    const operation = this.operation;
+    if (!operation || !operation.issued || !operation.settled || operation.reloadPending || !["applying", "pending"].includes(operation.phase) || !this.authorized || this.disposed) return;
+    operation.reloadPending = true; operation.reloadAttempted = true; operation.phase = "applying"; this.render();
+    try {
+      // Recheck the exact target. Do not rewrite config (including SecretRefs),
+      // force a restart, or interrupt admitted work to make the badge green.
+      const fresh = await this.read<ConfigSnapshot>("config.get");
+      if (this.disposed || this.signal.aborted || !this.authorized || this.operation !== operation) return;
+      if (canonicalPolicy(fresh.config?.plugins?.entries?.[id]?.config?.policy) !== canonicalPolicy(operation.target)) { operation.phase = "conflict"; return; }
+      const result = await this.host.request<{ ok?: boolean; restartRequired?: boolean }>("plugins.reload", { plugins: [{ pluginId: id }], waitForDrain: true });
+      if (!result.ok || result.restartRequired) { operation.applicationFailed = true; operation.phase = "pending"; }
+    } catch { operation.applicationFailed = true; operation.phase = "pending"; }
+    finally {
+      operation.reloadPending = false;
+      if (operation.phase === "applying") operation.phase = "pending";
+      if (!this.disposed && this.operation === operation) { this.watchApplication(); await this.checkApplication(); this.render(); }
+    }
+  }
+  private appendStatusButton(parent: HTMLElement) {
+    const check = button(this.operation?.phase === "unknown" ? "Speicherstatus prüfen" : "Status prüfen", () => { void this.checkApplication(); });
+    check.dataset.safeStatus = "true"; check.disabled = this.statusInFlight || !this.authorized; append(parent, check);
+  }
+  private renderSaveStatus(main: HTMLElement) {
+    const phase = this.operation?.phase;
+    if (!phase && this.applicationStatus === "applied" && !this.statusError) return;
+    const status = el("section", phase === "applied" ? "mg-save-status mg-success" : phase === "failed" ? "mg-save-status mg-error" : "mg-save-status mg-warning");
+    status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite"); status.tabIndex = -1;
+    let title = "Gespeichert. Aktivierung noch nicht bestätigt.";
+    let detail = "Die bisherigen Regeln können noch gelten. Beim Wiederöffnen wird der Stand geprüft. Wenn die Verbindung während der Anwendung abbricht, kann ein neuer Anwendungsversuch nötig sein.";
+    if (phase === "validating" || phase === "saving") { title = "Deine Änderungen werden gespeichert …"; detail = phase === "validating" ? "Zugriffe werden geprüft. Bitte warte; weitere Änderungen sind vorübergehend gesperrt." : "Bitte warte. Wir bestätigen zuerst, dass deine Änderungen gespeichert sind."; }
+    else if (phase === "applying") { title = "Gespeichert. Änderungen werden jetzt angewendet …"; detail = "Die Aktivierung wird automatisch geprüft. Die bisherigen Regeln können noch gelten."; }
+    else if (phase === "applied") { title = "Gespeichert und aktiv"; detail = "Die gespeicherten Microsoft-Regeln gelten jetzt. Du kannst wieder Änderungen bearbeiten."; }
+    else if (phase === "unknown") { title = "Speichern noch nicht bestätigt"; detail = "Prüfung pausiert. Prüfe zuerst den Speicherstatus; wir speichern nicht erneut. Dein Entwurf bleibt in dieser Ansicht erhalten."; }
+    else if (phase === "failed") { title = "Nicht gespeichert. Dein Entwurf ist noch da."; detail = "Korrigiere die Ursache und versuche es erneut."; }
+    else if (phase === "conflict") { title = "Die Regeln wurden inzwischen anderswo geändert."; detail = "Dein Entwurf bleibt erhalten. Lade den aktuellen Stand neu, bevor du weitere Änderungen speicherst."; }
+    append(status, el("strong", "", title), el("p", "mg-status-detail", detail));
+    if (this.operation?.applicationFailed && ["pending", "applying"].includes(phase ?? "")) append(status, el("p", "mg-status-detail", "Die automatische Anwendung konnte nicht abgeschlossen werden. Deine Regeln sind gespeichert; laufende Arbeit wird nicht abgebrochen."));
+    if (this.operation?.reloadPending) append(status, el("p", "mg-status-detail", "Anwendung wurde angefordert. Wir prüfen, wann die gespeicherten Regeln aktiv sind."));
+    if (this.statusError) append(status, el("p", "mg-status-detail", this.statusError));
+    if (!phase || ["pending", "unknown", "conflict"].includes(phase)) this.appendStatusButton(status);
+    if (["pending", "applying"].includes(phase ?? "") && this.operation?.settled && !this.operation.reloadPending) {
+      const apply = button("Gespeicherte Regeln anwenden", () => { void this.applySavedPolicy(); }); apply.dataset.safeStatus = "true"; apply.disabled = this.statusInFlight || this.busy; append(status, apply);
+      append(status, el("p", "mg-hint", "Dabei werden nur die gespeicherten Regeln übernommen, nicht erneut gespeichert. Laufende Arbeit wird nicht abgebrochen."));
+    }
+    if (phase === "pending") {
+      const overview = button("Übersicht anzeigen", () => { this.step = 0; this.render(); }); overview.dataset.safeStatus = "true"; append(status, overview);
+    }
+    if (phase === "conflict") { const reload = button("Aktuellen Stand laden", () => { if (window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { operationsByHost.delete(this.host); this.operation = undefined; this.statusEpoch++; void this.load(); } }); reload.dataset.safeStatus = "true"; reload.disabled = this.busy || this.statusInFlight; append(status, reload); }
+    append(main, status);
   }
   private renderSetup(main: HTMLElement) {
     const configured = this.snapshot?.config?.plugins?.entries?.[id]?.config?.credentialVaultKey !== undefined;
@@ -240,7 +388,7 @@ class ConfigurationPage {
       append(main, row);
       return;
     }
-    if (configured && grants && this.applicationStatus === "applied" && !this.statusError && this.credential?.result === "missing") return;
+    if (configured && grants && this.credential?.result === "missing") return;
     const card = el("section", "mg-section mg-setup");
     append(card, el("h2", "", "Einrichtung"));
     const steps = [
@@ -263,9 +411,9 @@ class ConfigurationPage {
     else next = "Konto verbunden. Prüfe mit einem berechtigten Agenten einen Lesezugriff; erst dann ist der Ablauf einsatzbereit.";
     append(card, el("p", connected ? "mg-status" : "mg-hint", next));
     if (!configured) { const link = el("a", "mg-button secondary", "Vault-Anleitung öffnen"); link.href = "https://clawhub.ai/packages/@baumus/openclaw-microsoft-graph"; link.target = "_blank"; link.rel = "noopener noreferrer"; append(card, link); }
-    else if (!grants && !this.dirty) append(card, button("Zugriff festlegen", () => { this.step = 1; this.render(); }, "primary"));
-    else if (this.dirty) append(card, button("Zum Prüfen", () => { this.step = 3; this.render(); void this.validate(); }, "primary"));
-    else if (grants && this.applicationStatus === "applied" && !connected && this.credential?.result === "missing") append(card, button("Mit Microsoft verbinden", () => { this.container.querySelector("#microsoft-connect")?.scrollIntoView({ behavior: "smooth", block: "start" }); }, "primary"));
+    else if (!grants && !this.dirty) append(card, this.action("Zugriff festlegen", () => { this.step = 1; this.render(); }, "primary"));
+    else if (this.dirty) append(card, this.action("Zum Prüfen", () => { this.step = 3; this.render(); void this.validate(); }, "primary"));
+    else if (grants && this.applicationStatus === "applied" && !connected && this.credential?.result === "missing") append(card, this.action("Mit Microsoft verbinden", () => { this.container.querySelector("#microsoft-connect")?.scrollIntoView({ behavior: "smooth", block: "start" }); }, "primary"));
     append(main, card);
   }
   private async credentialCall<T>(method: string, params: Record<string, unknown>): Promise<T> {
@@ -278,7 +426,7 @@ class ConfigurationPage {
     try {
       const status = await this.credentialCall<CredentialStatus>("microsoft-graph.credentials.status", {});
       if (!this.disposed && !this.signal.aborted) this.credential = status.credential;
-    } catch { if (!this.disposed && !this.signal.aborted) this.credential = { result: "unavailable" }; }
+    } catch { if (!this.disposed && !this.signal.aborted && this.credential?.result !== "valid") this.credential = { result: "unavailable" }; }
   }
   private signInError(code: string): string {
     const messages: Record<string, string> = {
@@ -343,9 +491,9 @@ class ConfigurationPage {
       append(card, el("p", "mg-hint", "Öffnet einen neuen Tab. Diese Seite bleibt offen."));
       const code = el("p", "mg-auth-code", this.device.userCode); code.setAttribute("aria-label", localize("Microsoft-Anmeldecode"));
       append(card, el("h3", "", "Code auf der Microsoft-Seite eingeben"), code, el("p", "mg-hint", "Nur auf der Microsoft-Seite eingeben; nicht im Chat teilen."));
-      append(card, button("Code kopieren", () => { if (!navigator.clipboard?.writeText) { this.authError = "Kopieren nicht möglich. Markiere den Code und gib ihn bei Microsoft ein."; this.render(); return; } void navigator.clipboard.writeText(this.device!.userCode).catch(() => { this.authError = "Kopieren nicht möglich. Markiere den Code und gib ihn bei Microsoft ein."; this.render(); }); }));
+      append(card, this.action("Code kopieren", () => { if (!navigator.clipboard?.writeText) { this.authError = "Kopieren nicht möglich. Markiere den Code und gib ihn bei Microsoft ein."; this.render(); return; } void navigator.clipboard.writeText(this.device!.userCode).catch(() => { this.authError = "Kopieren nicht möglich. Markiere den Code und gib ihn bei Microsoft ein."; this.render(); }); }));
       append(card, el("h3", "", "Hier auf das Ergebnis warten"), el("p", "mg-hint", "Status: Anmeldung ausstehend. Diese Seite erkennt den Abschluss, falls Microsoft ihn liefert. Der Code läuft nach spätestens 15 Minuten ab."));
-      const cancel = button("Anmeldung abbrechen", () => { void this.cancelAuth(); }, "ghost"); cancel.disabled = this.authBusy; append(card, cancel);
+      const cancel = this.action("Anmeldung abbrechen", () => { void this.cancelAuth(); }, "ghost"); cancel.disabled = this.authBusy; append(card, cancel);
     } else if (this.authState === "failed" && this.authFailureCode !== "device_authorization_cancelled") {
       append(card, el("h2", "", "Anmeldung nicht abgeschlossen"), el("p", "mg-error", "Wir konnten die Anmeldung nicht als abgeschlossen erkennen."));
       append(card, el("p", "", this.authError || "Wir kennen die Ursache noch nicht. Bitte deinen Admin um Hilfe."));
@@ -354,25 +502,25 @@ class ConfigurationPage {
       const details = el("details", "mg-admin-details"); append(details, el("summary", "", "Für den Admin"));
       const logLink = el("a", "", "Anmeldeprotokolle öffnen"); logLink.href = "https://entra.microsoft.com/#view/Microsoft_AAD_IAM/SignInLogsBlade"; logLink.target = "_blank"; logLink.rel = "noopener noreferrer";
       append(details, el("p", "mg-hint", "Einwilligung, Kontotyp und Richtlinie prüfen."), logLink); append(card, details);
-      const copy = button("Fehlerangaben für Admin kopieren", () => {
+      const copy = this.action("Fehlerangaben für Admin kopieren", () => {
         const info = [`Microsoft-Anmeldung: nicht abgeschlossen`, `Zeitpunkt (UTC): ${this.authFailureAt || new Date().toISOString()}`, `Fehlercode: ${this.authFailureCode || "nicht verfügbar"}`, `Organisation: ${this.authTenant || "nicht angegeben"}`].join("\n");
         if (!navigator.clipboard?.writeText) { this.authError = "Kopieren nicht möglich. Teile Zeitpunkt und Fehlercode manuell."; this.render(); return; }
         void navigator.clipboard.writeText(info).catch(() => { this.authError = "Kopieren nicht möglich. Teile Zeitpunkt und Fehlercode manuell."; this.render(); });
       }); append(card, copy);
-      append(card, button("Erneut anmelden", () => { this.authState = "idle"; this.authError = ""; this.render(); }, "ghost"));
+      append(card, this.action("Erneut anmelden", () => { this.authState = "idle"; this.authError = ""; this.render(); }, "ghost"));
     } else {
       const stored = savedAppIds();
       if (stored && !this.editAppIds) {
         append(card, el("h2", "", "Konto verbinden"), el("p", "mg-lead", "App-Kennungen sind in diesem Browser gespeichert. Anmeldung und Freigabe prüfen wir beim Verbinden."));
         append(card, el("p", "mg-status", "Microsoft-Konto · Anmeldung noch nicht geprüft"));
         append(card, el("p", "mg-hint", "Du musst nichts kopieren. Danach öffnest du den Microsoft-Link und gibst dort den angezeigten Code ein."));
-        const start = button("Mit Microsoft verbinden", () => { void this.startAuth(); }, "primary"); start.disabled = this.authBusy || !this.signInReady; append(card, start);
-        append(card, button("Andere App verwenden oder Einrichtung ändern", () => { this.editAppIds = true; this.render(); }, "ghost"));
+        const start = this.action("Mit Microsoft verbinden", () => { void this.startAuth(); }, "primary"); start.disabled = this.authBusy || !this.signInReady; append(card, start);
+        append(card, this.action("Andere App verwenden oder Einrichtung ändern", () => { this.editAppIds = true; this.render(); }, "ghost"));
       } else {
         append(card, el("h2", "", "Konto verbinden"), el("p", "mg-lead", "Bitte deinen Admin um Anwendungs-ID und Verzeichnis-ID. Ein Client Secret, Kennwort oder Einmalcode gehört nicht hierher."));
-        const client = field(card, "Anwendungs-ID (App-ID)", this.authClientId, value => { this.authClientId = value; }); client.placeholder = "00000000-0000-0000-0000-000000000000";
-        const tenant = field(card, "Verzeichnis-ID (Tenant-ID) oder Domain", this.authTenant, value => { this.authTenant = value; }); tenant.placeholder = "example.onmicrosoft.com";
-        const start = button("Anmeldung starten", () => { this.authClientId = client.value.trim(); this.authTenant = tenant.value.trim(); void this.startAuth(); }, "primary"); start.disabled = this.authBusy || !this.signInReady; append(card, start);
+        const client = this.field(card, "Anwendungs-ID (App-ID)", this.authClientId, value => { this.authClientId = value; }); client.placeholder = "00000000-0000-0000-0000-000000000000";
+        const tenant = this.field(card, "Verzeichnis-ID (Tenant-ID) oder Domain", this.authTenant, value => { this.authTenant = value; }); tenant.placeholder = "example.onmicrosoft.com";
+        const start = this.action("Anmeldung starten", () => { this.authClientId = client.value.trim(); this.authTenant = tenant.value.trim(); void this.startAuth(); }, "primary"); start.disabled = this.authBusy || !this.signInReady; append(card, start);
         const admin = el("details", "mg-admin-details");
         append(admin, el("summary", "", "Hinweis für Admins · App einrichten"));
         append(admin, el("p", "mg-hint", "Microsoft Entra → App-Registrierungen → deine App → Übersicht. Dort Anwendungs-ID und Verzeichnis-ID ablesen."));
@@ -393,7 +541,7 @@ class ConfigurationPage {
     return this.selectedAgent || roster[0]?.id || "";
   }
   private async addFolder() {
-    if (this.busy) return;
+    if (this.locked) return;
     const path = this.newFolderPath.trim();
     if (!path.startsWith("/")) { this.error = "Bitte einen Ordnerpfad ab / eingeben."; this.render(); return; }
     this.busy = true; this.error = ""; this.render();
@@ -418,10 +566,10 @@ class ConfigurationPage {
     append(body, heading);
     const add = el("section", "mg-add-folder");
     append(add, el("h3", "", "Ordner hinzufügen"), el("p", "mg-hint", "Pfad in deinem OneDrive. Der Ordner wird vor dem Hinzufügen geprüft."));
-    const input = field(add, "Ordnerpfad", this.newFolderPath, value => { this.newFolderPath = value; });
+    const input = this.field(add, "Ordnerpfad", this.newFolderPath, value => { this.newFolderPath = value; });
     input.placeholder = "/Projects/Clients";
-    input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); this.newFolderPath = input.value.trim(); void this.addFolder(); } });
-    const addButton = button("Ordner prüfen und hinzufügen", () => { this.newFolderPath = input.value.trim(); void this.addFolder(); }, "primary"); addButton.disabled = this.busy;
+    input.addEventListener("keydown", event => { if (event.key === "Enter" && !this.locked) { event.preventDefault(); this.newFolderPath = input.value.trim(); void this.addFolder(); } });
+    const addButton = this.action("Ordner prüfen und hinzufügen", () => { this.newFolderPath = input.value.trim(); void this.addFolder(); }, "primary"); addButton.disabled = this.busy;
     append(add, addButton); append(body, add);
     if (!roots.length) { append(body, el("p", "mg-message", "Noch kein OneDrive-Ordner freigegeben.")); return; }
     const grid = el("div", "mg-root-grid");
@@ -440,7 +588,7 @@ class ConfigurationPage {
         const rights = el("div", "mg-rights");
         for (const [op, label] of [["read", "Lesen"], ["write", "Schreiben"], ["delete", "Löschen"]] as const) {
           const enabled = grant.permissions[op] === true;
-          const badge = button(`${enabled ? "✓" : "–"} ${localize(label)}`, () => {
+          const badge = this.action(`${enabled ? "✓" : "–"} ${localize(label)}`, () => {
             grant.permissions[op] = !enabled;
             if (!Object.values(grant.permissions).some(Boolean)) delete root.agents[agentId];
             for (const right of ["read", "write", "delete"] as const)
@@ -462,13 +610,13 @@ class ConfigurationPage {
       else {
         const available = this.host.agents.rows.filter(agent => !agents.some(([agentId]) => agentId === agent.id));
         if (available.length) {
-          const addAgent = button("+ Agent hinzufügen", () => { this.editingAccess = { rootLabel: root.label, agentId: available[0]!.id, permissions: { read: false, write: false, delete: false } }; this.render(); }, "ghost mg-add-agent");
+          const addAgent = this.action("+ Agent hinzufügen", () => { this.editingAccess = { rootLabel: root.label, agentId: available[0]!.id, permissions: { read: false, write: false, delete: false } }; this.render(); }, "ghost mg-add-agent");
           addAgent.dataset.root = root.label; append(card, addAgent);
         }
         else if (!this.host.agents.rows.length) append(card, el("p", "mg-hint", "Keine Agenten gefunden."));
       }
       const actions = el("div", "mg-root-actions");
-      append(actions, button("Ordner für alle Agenten entfernen", () => { if (window.confirm(format("Den Ordner {path} für alle Agenten entfernen?", { path: root.path }))) { roots.splice(index, 1); if (this.editingAccess?.rootLabel === root.label) this.editingAccess = undefined; this.render(); } }, "danger"));
+      append(actions, this.action("Ordner für alle Agenten entfernen", () => { if (window.confirm(format("Den Ordner {path} für alle Agenten entfernen?", { path: root.path }))) { roots.splice(index, 1); if (this.editingAccess?.rootLabel === root.label) this.editingAccess = undefined; this.render(); } }, "danger"));
       append(card, actions); append(grid, card);
     }
     append(body, grid);
@@ -485,11 +633,11 @@ class ConfigurationPage {
     select.addEventListener("change", () => { editing.agentId = select.value; }); append(label, select); append(panel, label);
     const rights = el("div", "mg-editor-rights");
     for (const [op, label] of [["read", "Lesen"], ["write", "Schreiben"], ["delete", "Löschen"]] as const)
-      checkbox(rights, label, editing.permissions[op], value => { editing.permissions[op] = value; });
+      this.checkbox(rights, label, editing.permissions[op], value => { editing.permissions[op] = value; });
     append(panel, rights, el("p", "mg-hint", "Ohne ausgewähltes Recht wird der Agent aus diesem Bereich entfernt."));
     const actions = el("div", "mg-editor-actions");
-    append(actions, button("Abbrechen", () => { this.editingAccess = undefined; this.render(); }, "ghost"));
-    append(actions, button("In Entwurf übernehmen", () => {
+    append(actions, this.action("Abbrechen", () => { this.editingAccess = undefined; this.render(); }, "ghost"));
+    append(actions, this.action("In Entwurf übernehmen", () => {
       if (Object.values(editing.permissions).some(Boolean)) root.agents[editing.agentId] = { permissions: { ...editing.permissions } };
       else delete root.agents[editing.agentId];
       for (const op of ["read", "write", "delete"] as const) root.permissions[op] = Object.values(root.agents).some(agent => agent.permissions[op] === true);
@@ -504,7 +652,7 @@ class ConfigurationPage {
     for (const service of ["calendar", "mail", "todo"] as const) {
       const card = el("fieldset", "mg-section"); append(card, el("legend", "", serviceNames[service]));
       const grants = this.policy.services[service].agents; const existing = grants[agentId];
-      checkbox(card, format("{service} nutzen", { service: localize(serviceNames[service]) }), !!existing, checked => {
+      this.checkbox(card, format("{service} nutzen", { service: localize(serviceNames[service]) }), !!existing, checked => {
         const key = `${service}:${agentId}`;
         if (checked) grants[agentId] = existing ?? this.removedServiceGrants[key] ?? { operations: [...operations[service]] };
         else { if (existing) this.removedServiceGrants[key] = clone(existing); delete grants[agentId]; }
@@ -521,7 +669,7 @@ class ConfigurationPage {
       append(card, el("p", "", "Unkritisch · Lesen und Suchen: keine Rückfrage."));
       const configured = this.policy.rules.warningApprovalsByService ?? {};
       const baseline = this.snapshot?.config?.plugins?.entries?.[id]?.config?.warningApprovalsRequired !== false;
-      checkbox(card, "Warn-Aktionen · Erstellen oder Ändern: vorher fragen", configured[service] ?? baseline, checked => {
+      this.checkbox(card, "Warn-Aktionen · Erstellen oder Ändern: vorher fragen", configured[service] ?? baseline, checked => {
         this.policy.rules.warningApprovalsByService = { ...configured, [service]: checked }; this.render();
       });
       const critical = service === "onedrive" ? "Löschen" : service === "calendar" ? "Löschen oder auf Termine antworten" : service === "mail" ? "Löschen oder E-Mail senden" : "Löschen";
@@ -538,53 +686,66 @@ class ConfigurationPage {
     const approvals = this.policy.rules.warningApprovalsByService ?? {};
     for (const service of ["onedrive", "calendar", "mail", "todo"] as const) if (approvals[service] === false) append(body, el("p", "mg-warning", format("{service}: Warn-Aktionen dürfen ohne Rückfrage ausgeführt werden. Kritische Aktionen benötigen weiterhin eine Freigabe.", { service: localize(serviceNames[service]) })));
     if (!this.dirty) { append(body, el("p", "", "Keine Änderungen zum Speichern.")); return; }
-    if (JSON.stringify(this.initial) !== JSON.stringify(this.policy)) checkbox(body, "Ich habe die Zugriffsänderungen geprüft, auch entzogene Rechte", this.confirmedRemoval, v => { this.confirmedRemoval = v; });
+    if (JSON.stringify(this.initial) !== JSON.stringify(this.policy)) this.checkbox(body, "Ich habe die Zugriffsänderungen geprüft, auch entzogene Rechte", this.confirmedRemoval, v => { this.confirmedRemoval = v; });
 
   }
-  private async validate(): Promise<boolean> {
+  private async validate(candidate = this.policy): Promise<boolean> {
+    const epoch = ++this.validationEpoch;
     this.error = "";
     const roster = new Set(this.host.agents.rows.map(a => a.id));
-    for (const service of ["calendar", "mail", "todo"] as const) for (const agent of Object.keys(this.policy.services[service].agents)) if (!roster.has(agent)) { this.error = format("Unknown configured agent: {agent}", { agent }); this.render(); return false; }
-    for (const root of this.policy.services.onedrive.allowed_roots) for (const agent of Object.keys(root.agents)) if (!roster.has(agent)) { this.error = format("Unknown configured agent: {agent}", { agent }); this.render(); return false; }
-    try { const result = await this.host.request<{ valid: boolean; requiredScopes: string[] }>("microsoft-graph.configuration.validate", { policy: this.policy }); this.scopes = result.requiredScopes; this.render(); return result.valid; }
-    catch { this.error = "Policy validation failed. Check root labels, paths, IDs, and grant resources."; this.render(); return false; }
+    for (const service of ["calendar", "mail", "todo"] as const) for (const agent of Object.keys(candidate.services[service].agents)) if (!roster.has(agent)) { this.error = format("Unknown configured agent: {agent}", { agent }); this.render(); return false; }
+    for (const root of candidate.services.onedrive.allowed_roots) for (const agent of Object.keys(root.agents)) if (!roster.has(agent)) { this.error = format("Unknown configured agent: {agent}", { agent }); this.render(); return false; }
+    try { const result = await this.read<{ valid: boolean; requiredScopes: string[]; policyHash?: string }>("microsoft-graph.configuration.validate", { policy: candidate }); if (epoch !== this.validationEpoch || this.disposed) return false; this.scopes = result.requiredScopes; if (this.operation && candidate === this.operation.target) this.operation.targetHash = result.policyHash; this.render(); return result.valid; }
+    catch { if (epoch !== this.validationEpoch || this.disposed) return false; this.error = "Policy validation failed. Check root labels, paths, IDs, and grant resources."; this.render(); return false; }
   }
   private async save() {
-    if (!this.dirty || this.busy || !this.snapshot) return;
-    if (JSON.stringify(this.initial) !== JSON.stringify(this.policy) && !this.confirmedRemoval) { this.error = "Bitte die Zugriffsänderungen vor dem Speichern bestätigen."; this.render(); return; }
-    this.stopStatusChecks(); this.statusError = "";
+    if (!this.dirty || this.locked || !this.snapshot || !this.initial || this.authBusy || this.authState === "pending") return;
+    if (!this.confirmedRemoval) { this.error = "Bitte die Zugriffsänderungen vor dem Speichern bestätigen."; this.render(); return; }
+    this.stopStatusChecks(); this.statusEpoch++; this.statusError = "";
+    const operation: SaveOperation = { target: clone(this.policy), baseline: clone(this.initial), phase: "validating", issued: false, settled: false, epoch: this.statusEpoch };
+    this.operation = operation; operationsByHost.set(this.host, operation);
     this.busy = true; this.error = ""; this.success = ""; this.render();
     try {
-      if (!(await this.validate())) return;
+      if (!(await this.validate(operation.target))) { operation.phase = "failed"; return; }
+      if (this.disposed || this.signal.aborted || !this.authorized) { operation.phase = "failed"; return; }
       const newScopes = this.scopes.filter(scope => !this.initialScopes.includes(scope));
-      if (this.pluginEnabled && newScopes.length) { this.error = format("Cannot save while the plugin is enabled: new delegated scopes require independent consent verification ({scopes}).", { scopes: newScopes.join(", ") }); return; }
-      const fresh = await this.host.request<ConfigSnapshot>("config.get", {});
-      if (fresh.hash !== this.snapshot.hash) { this.error = "Configuration changed since this draft loaded. Reload and reapply your changes."; return; }
+      if (this.pluginEnabled && newScopes.length) { this.error = format("Cannot save while the plugin is enabled: new delegated scopes require independent consent verification ({scopes}).", { scopes: newScopes.join(", ") }); operation.phase = "failed"; return; }
+      const fresh = await this.read<ConfigSnapshot>("config.get");
+      if (this.disposed || this.signal.aborted || !this.authorized) { operation.phase = "failed"; return; }
+      if (fresh.hash !== this.snapshot.hash || canonicalPolicy(fresh.config?.plugins?.entries?.[id]?.config?.policy) !== canonicalPolicy(operation.baseline)) { this.error = "Configuration changed since this draft loaded. Reload and reapply your changes."; operation.phase = "conflict"; return; }
       const freshAuthored = fresh.parsed?.plugins?.entries?.[id]?.config?.policy;
       const freshInclude = freshAuthored && typeof freshAuthored === "object" && "$include" in freshAuthored ? String((freshAuthored as { $include: unknown }).$include) : "";
-      if (freshInclude !== this.includeName) { this.error = "Die Policy-Quelle wurde geändert. Bitte neu laden."; return; }
+      if (freshInclude !== this.includeName) { this.error = "Die Policy-Quelle wurde geändert. Bitte neu laden."; operation.phase = "conflict"; return; }
       const replacements: string[] = [];
-      const patchPolicy = collectDiff(this.initial, this.policy, "plugins.entries.microsoft-graph.config.policy", replacements);
-      const patch: Record<string, unknown> = {}; if (patchPolicy !== undefined) patch.policy = patchPolicy;
-      const raw = JSON.stringify({ plugins: { entries: { [id]: { config: patch } } } });
-      const result = await this.host.request<{ changedPaths?: string[] }>("config.patch", { raw, baseHash: fresh.hash, replacePaths: replacements, note: "Microsoft Graph configuration UI save" });
-      const verify = await this.host.request<ConfigSnapshot>("config.get", {});
-      const applied = verify.config?.plugins?.entries?.[id]?.config;
-      if (JSON.stringify(applied?.policy) !== JSON.stringify(this.policy)) { this.error = "Configuration write returned, but the effective values could not be verified. Reload before retrying."; return; }
-      this.snapshot = verify; this.initial = clone(this.policy);
-      this.watchApplication();
-      void result;
+      const patchPolicy = collectDiff(operation.baseline, operation.target, "plugins.entries.microsoft-graph.config.policy", replacements);
+      const raw = JSON.stringify({ plugins: { entries: { [id]: { config: { policy: patchPolicy } } } } });
+      operation.phase = "saving"; operation.issued = true; this.render();
+      // Observe persistence independently: Core may drain admitted work before
+      // replying to config.patch. Timeout is never evidence that no write occurred.
+      this.statusChecksRemaining = 12; this.scheduleStatusCheck();
+      const patch = this.host.request("config.patch", { raw, baseHash: fresh.hash, replacePaths: replacements, note: "Microsoft Graph configuration UI save" });
+      const settled = patch.then(() => { operation.settled = true; }, error => { operation.settled = true; operation.rejectedBeforeWrite = isPreCommitRejection(error);  });
+      void settled.then(async () => {
+        if (this.disposed || this.operation !== operation) return;
+        await this.checkApplication();
+        if (["applying", "pending"].includes(operation.phase) && !operation.reloadAttempted && this.applicationStatus === "pending") void this.applySavedPolicy();
+      });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([settled, new Promise<void>(resolve => { timeout = setTimeout(resolve, 15000); })]);
+      if (timeout) clearTimeout(timeout);
+      if (this.operation !== operation || this.disposed) return;
+      this.busy = false;
+      await this.checkApplication();
+      if (operation.phase === "saving" && operation.settled) operation.phase = "unknown";
+      if (["applying", "pending"].includes(operation.phase) && operation.settled && !operation.reloadAttempted && this.applicationStatus === "pending") void this.applySavedPolicy();
     } catch {
-      try {
-        const verify = await this.host.request<ConfigSnapshot>("config.get", {});
-        if (JSON.stringify(verify.config?.plugins?.entries?.[id]?.config?.policy) === JSON.stringify(this.policy)) {
-          this.snapshot = verify; this.initial = clone(this.policy);
-          this.watchApplication();
-        } else this.error = "Speichern nicht bestätigt. Der Entwurf bleibt erhalten; bitte vor einem erneuten Versuch neu laden.";
-      } catch { this.error = "Speicherzustand unbekannt. Bitte Gateway-Status prüfen und die Seite neu laden."; }
+      if (!operation.issued) { operation.phase = "failed"; this.error = "Policy validation failed. Check root labels, paths, IDs, and grant resources."; }
+      else { operation.phase = "unknown"; this.busy = false; await this.checkApplication(); }
+    } finally {
+      this.busy = false; this.render();
     }
-    finally { this.busy = false; if (this.applicationStatus === "pending" && !this.statusTimer && this.statusChecksRemaining === 0) this.watchApplication(); this.render(); }
   }
+
 }
 
 export default defineControlUiPlugin({ id, activate(host) {

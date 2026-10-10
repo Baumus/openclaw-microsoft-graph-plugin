@@ -10,13 +10,13 @@ const complete = {
 };
 
 describe("Control UI connection status", () => {
-  it("only collapses setup after every saved prerequisite is confirmed", () => {
+  it("keeps confirmed account setup through pending policy activation without claiming a read", () => {
     expect(isConnectionEstablished(complete)).toBe(true);
     expect(isConnectionEstablished({ ...complete, secretRefConfigured: false })).toBe(false);
     expect(isConnectionEstablished({ ...complete, savedGrantPresent: false })).toBe(false);
-    expect(isConnectionEstablished({ ...complete, applicationStatus: "pending" })).toBe(false);
-    expect(isConnectionEstablished({ ...complete, applicationStatus: "unknown" })).toBe(false);
-    expect(isConnectionEstablished({ ...complete, statusError: true })).toBe(false);
+    expect(isConnectionEstablished({ ...complete, applicationStatus: "pending" })).toBe(true);
+    expect(isConnectionEstablished({ ...complete, applicationStatus: "unknown" })).toBe(true);
+    expect(isConnectionEstablished({ ...complete, statusError: true })).toBe(true);
     for (const credentialResult of ["missing", "quarantined", "unavailable"] as const) {
       expect(isConnectionEstablished({ ...complete, credentialResult })).toBe(false);
     }
