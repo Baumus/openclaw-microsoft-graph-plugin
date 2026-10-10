@@ -132,3 +132,12 @@
 .mg-admin-details[open] summary { margin-bottom: 12px; }
 .mg-admin-details a:not(.mg-button) { color: var(--mg-accent); text-decoration: underline; }
 @media (max-width: 650px) { .mg-auth .mg-button { width: 100%; margin-inline: 0; } .mg-auth-code { max-width: 100%; overflow-wrap: anywhere; } }
+
+/* Saving stays visible at the current review position without blocking reading. */
+.mg-save-status { margin-block: 20px; scroll-margin-top: 16px; }
+.mg-save-status > strong { display: block; font-size: 1.08rem; }
+.mg-save-status:focus { outline: 3px solid var(--mg-accent); outline-offset: 3px; }
+.mg-footer-status { font-weight: 650; overflow-wrap: anywhere; }
+.mg-save-hint { flex-basis: 100%; margin: 4px 0; color: var(--mg-muted); font-size: .83rem; line-height: 1.45; }
+.mg-save-status .mg-button { margin-inline-end: 8px; margin-block-start: 8px; }
+@media (max-width: 650px) { .mg-save-status .mg-button { width: 100%; margin-inline-end: 0; } .mg-footer-status { flex-basis: 100%; } }

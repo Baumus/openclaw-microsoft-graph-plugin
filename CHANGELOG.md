@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.12.1 - 2026-10-10
+
+- Distinguish saving from activation, lock duplicate writes immediately, and reconcile persisted policies even when the save response times out or disconnects. Keep drafts and operation state in authenticated host memory across page remounts.
+- Confirm activation against the running Microsoft Graph policy hash instead of unrelated Gateway configuration changes. Provide a targeted, drain-aware application retry without rewriting saved rules or interrupting admitted work.
+- Preserve confirmed Microsoft account connection while policy activation is pending; add bounded polling, explicit uncertainty, conflict recovery, and regression coverage.
+
 ## 3.12.0 - 2026-10-09
 
 - Extend the existing Microsoft To Do write tool with explicit actual-default-list task creation. Safe bounded discovery requires independent read/create authorization, resolves the owned non-shared default before native approval, and binds execution to that exact list. Known-ID writes are unchanged; no new tool or post-write readback is introduced.

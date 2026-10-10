@@ -9,7 +9,5 @@ export function isConnectionEstablished(status: {
 }): boolean {
   return status.secretRefConfigured
     && status.savedGrantPresent
-    && status.applicationStatus === "applied"
-    && status.credentialResult === "valid"
-    && !status.statusError;
+    && status.credentialResult === "valid";
 }

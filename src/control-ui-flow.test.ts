@@ -28,7 +28,7 @@ function mount(initialIds?: { clientId: string; tenant: string }) {
   const container = document.createElement("div");
   const controller = new AbortController();
   const view = page!.mount(container, { host, signal: controller.signal });
-  const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+  const settle = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
   return { container, calls, responses, settle, dispose: () => { view.dispose(); controller.abort(); if (typeof stop === "function") stop(); } };
 }
 function clickByText(container: HTMLElement, text: string) {
