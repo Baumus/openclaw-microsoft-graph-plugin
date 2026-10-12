@@ -29,7 +29,16 @@ Review the [ClawHub listing](https://clawhub.ai/packages/@baumus/openclaw-micros
 openclaw plugins install clawhub:@baumus/openclaw-microsoft-graph
 ```
 
-Installation alone does not sign you in, grant an agent access, or make an incomplete configuration usable. Existing installations should review changes before updating; this guide does not silently upgrade them.
+**Upgrade with an existing connection:** after an enabled plugin is activated and the Gateway starts, the plugin automatically checks this exact host's complete user directory. Exactly one canonical personal user (excluding the technical `gateway-owner` and resolving merged aliases) receives the existing valid connection with its nonwidening rights. **No Control UI, personal login, administrator role, confirmation button, session binding or worker configuration is required.** Merely extracting an archive is not activation; admission remains fail-closed while startup setup is pending. The encrypted legacy backup is retained.
+
+**New installations, multiple users or an unprovable directory:** no account is guessed. Use the explicit setup routine:
+
+1. Open this Gateway's Control UI. Enable **Settings → Labs → Custom plugin UI** if Microsoft pages are absent.
+2. Check **Settings → Profile → Identity** for your verified personal profile. A shared `gateway-owner`/dashboard token or display-name change is not personal authentication. Use the administrator-configured identity-bearing login route.
+3. Choose **Microsoft-Einrichtung** or **Mein Microsoft-Konto**. Save personal rights and sign into Microsoft for a new connection. Explicit legacy migration requires administrator authority; **Limited access → Request admin** grants authority, not identity.
+4. Verify the [first permitted read](#3-verify-your-first-request) with the intended account authority. Unknown/quarantined credentials remain incomplete; no global fallback exists.
+
+`openclaw microsoft-graph accounts` prints guidance only. The bounded automatic upgrade uses the supported post-ready `gateway_start` hook and a lifetime-owned scheduler, not an authenticated installer callback or a browser wizard. See [the supported-host and snapshot boundaries](docs/MULTI_USER.md#automatic-single-user-assistant-snapshot-semantics). Existing installations should review changes before updating; this guide does not change the running installation.
 
 ### 2. Choose access and connect Microsoft
 
@@ -45,7 +54,7 @@ Wait until the Control UI confirms that the Gateway has applied your rules. Run 
 
 - Every operation is checked against a credential-free, default-deny per-agent policy before plugin-side key selection, vault I/O, OAuth, or Graph access.
 - Warning-level mutations require OpenClaw-native call approval by default. Operators may explicitly set `warningApprovalsRequired: false`; critical delete, send, and respond operations always retain native call-bound approval.
-- Every execution context has one fixed personal delegated account, selected by explicit binding/worker or the bounded authenticated single-user assistant. Accounts, policy/consent, refresh locks, approvals and caches are separated. There is no implicit global account fallback; token exchanges request only the operation-specific scope.
+- Every execution context has one fixed personal delegated account, selected by explicit binding/worker or the bounded host-startup single-user assistant. Accounts, policy/consent, refresh locks, approvals and caches are separated. There is no implicit global account fallback; token exchanges request only the operation-specific scope.
 - One AES-256-GCM encrypted vault record, one fail-closed lock, and one authenticated quarantine marker protect the rotating refresh-token lifecycle.
 - Access-token caching is bounded and transactional: a token associated with a rotated refresh token is admitted only after durable vault replacement and verification.
 - Every refresh durably publishes authenticated `in_flight` state before OAuth dispatch; uncertainty transitions it to `quarantined`, and either state blocks another exchange until verified completion, explicit recovery, or reauthorization.
@@ -185,7 +194,7 @@ openclaw plugins enable microsoft-graph
 
 Open **Mein Microsoft-Konto** in the authenticated Control UI. Create your own account, choose account-specific agent rights within the administrator's policy ceiling, save them, and sign in using the approved Microsoft app and your device code. Team sharing and unattended-worker consent are separate default-off choices. Select a controllable session and explicitly bind your account or an owner-shared account. The plugin does not infer account ownership from request text or the most recent speaker.
 
-On supported single-user installations, loading **Mein Microsoft-Konto** as the authenticated sole administrator automatically preserves the existing connection and nonwidening rights; no manual session/worker configuration is needed. This candidate uses fresh whole-host directory snapshots, not an instant-revocation catalog lease. Other installations retain the explicit self-migration operation. See [MULTI_USER.md](docs/MULTI_USER.md) for exact supported-host, bootstrap and safety boundaries. No production migration or activation has been performed. Legacy global credential RPCs and token-export CLI commands are not registered in version 4. Use `openclaw microsoft-graph accounts` for setup guidance.
+On supported single-user installations, post-ready Gateway startup automatically preserves the existing connection and nonwidening rights; no manual session/worker configuration is needed. This candidate uses fresh whole-host directory snapshots, not an instant-revocation catalog lease. Other installations retain the explicit self-migration operation. See [MULTI_USER.md](docs/MULTI_USER.md) for exact supported-host, bootstrap and safety boundaries. No production migration or activation has been performed. Legacy global credential RPCs and token-export CLI commands are not registered in version 4. Use `openclaw microsoft-graph accounts` for setup guidance.
 
 Verify a read-only request in each of two separately bound sessions, then a denied unbound/foreign-account request. Synthetic tests are not a production OAuth canary. The source candidate does not modify live configuration or credentials.
 

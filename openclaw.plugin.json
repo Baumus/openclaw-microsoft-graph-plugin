@@ -737,10 +737,21 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/d3d2410030665a81553276196abe3a3734db20b0fa4625518793d5d7a903f370/index.js",
+    "entry": "dist/control-ui/94b1585c5d3c5c5be6b1c7a0611563dea0d1ece1bd171edbab76370b9329ed21/index.js",
     "styles": [
-      "dist/control-ui/d3d2410030665a81553276196abe3a3734db20b0fa4625518793d5d7a903f370/index.css"
+      "dist/control-ui/94b1585c5d3c5c5be6b1c7a0611563dea0d1ece1bd171edbab76370b9329ed21/index.css"
     ]
+  },
+  "uiCapabilities": [
+    "page",
+    "navigation",
+    "action"
+  ],
+  "uiHints": {
+    "enabled": {
+      "label": "Enable Microsoft Graph",
+      "help": "Enabled upgrades automatically preserve an existing valid connection at Gateway startup on a proven supported single-user host, without UI/login/button. New, multi-user or unprovable installations use Microsoft-Einrichtung / Mein Microsoft-Konto; enable custom plugin UI and verify personal identity for explicit setup. Run openclaw microsoft-graph accounts for guidance."
+    }
   },
   "contracts": {
     "tools": [

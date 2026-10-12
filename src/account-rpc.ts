@@ -166,18 +166,18 @@ export function registerAccountMethods(api: OpenClawPluginApi, store: AccountSto
 }
 
 /** The only migration writer; both paths retain the unchanged encrypted legacy vault. */
-export async function migrateLegacyAccount(store: AccountStore, config: { credentialVaultKey?: unknown }, id: string, current: () => void, snapshot?: DirectorySnapshot) {
+export async function migrateLegacyAccount(store: AccountStore, config: { credentialVaultKey?: unknown }, id: string, current: () => void, snapshot?: DirectorySnapshot, hostBootstrap?: { signal: AbortSignal; requireEmptyRegistry: true }) {
   const fresh = async () => {
     current();
     if (snapshot) {
-      const latest = await store.directory?.read();
+      const latest = await store.directory?.read(hostBootstrap?.signal);
       // Record an actually observed mismatch even when the actor is cancelled
       // while the read finishes. Cancellation must never erase a safety fact.
       if (!latest || latest.soleProfileId !== id || latest.digest !== snapshot.digest) throw new Error("graph_single_user_topology_changed");
       current();
     }
   };
-  const a = await store.provision(id, current);
+  const a = await store.provision(id, current, hostBootstrap?.requireEmptyRegistry);
   const path = store.accountPath(id, a.generation);
   const sourceLock = await acquireVaultLock(store.root, "migrate-source");
   try {
@@ -196,6 +196,7 @@ export async function migrateLegacyAccount(store: AccountStore, config: { creden
       return await store.mutate(async r => {
         const account = Object.values(r.accounts).find(x => x.profileId === id)!;
         if (account.generation !== a.generation) throw new Error("graph_account_conflict");
+        if (hostBootstrap && (Object.keys(r.accounts).length !== 1 || Object.keys(r.sessions).length || r.legacyMigration || r.automatic || JSON.stringify(account) !== JSON.stringify(a))) throw new Error("graph_account_conflict");
         if (snapshot && r.automatic?.invalidated) throw new Error("graph_single_user_topology_changed");
         if (snapshot && r.legacyMigration && !r.automatic) throw new Error("graph_account_conflict");
         await fresh();

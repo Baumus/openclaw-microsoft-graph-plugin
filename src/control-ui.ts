@@ -9,7 +9,7 @@ import { isConnectionEstablished } from "./control-ui-status.js";
 type Grant = { operations: string[]; resources?: string[] };
 type Root = { label: string; path: string; drive_id: string; item_id: string; include_descendants: true; agents_instructions?: "trusted"; permissions: Record<"read" | "write" | "delete", boolean>; agents: Record<string, { permissions: Partial<Record<"read" | "write" | "delete", boolean>> }> };
 type Policy = { version: 2; rules: { default: "deny"; warningApprovalsByService?: Partial<Record<"onedrive" | "calendar" | "mail" | "todo", boolean>> }; services: { onedrive: { allowed_roots: Root[] }; calendar: { agents: Record<string, Grant> }; mail: { agents: Record<string, Grant> }; todo: { agents: Record<string, Grant> } } };
-type CredentialStatus = { policyVersion: 2; credential: { result: "missing" | "valid" | "quarantined" | "unavailable" } };
+type CredentialStatus = { profileId?: string; account?: { connected: boolean } | null; credential: { result: "missing" | "valid" | "quarantined" | "unavailable" } };
 type DeviceStart = { sessionId: string; userCode: string; verificationUri: string; expiresAt: string; scopes: string[] };
 type UpdateStatus = { updateAvailable: boolean; latestVersion?: string };
 type DeviceStatus = { state: "pending" | "created" | "failed"; error?: string; scopes?: string[] };
@@ -133,6 +133,8 @@ class ConfigurationPage {
   private statusChecksRemaining = 0;
   private authTimer?: ReturnType<typeof setTimeout>;
   private credential?: CredentialStatus["credential"];
+  private personalProfileId?: string;
+  private personalSetupError = "";
   private updateStatus?: UpdateStatus;
   private updateCheckStarted = false;
   private authClientId = "";
@@ -373,8 +375,8 @@ class ConfigurationPage {
     const savedPolicy = this.initial ?? blankPolicy();
     const grants = savedPolicy.services.onedrive.allowed_roots.some(root => Object.values(root.agents).some(agent => Object.values(agent.permissions).some(Boolean)))
       || (["calendar", "mail", "todo"] as const).some(service => Object.keys(savedPolicy.services[service].agents).length > 0);
-    const connected = this.credential?.result === "valid";
-    if (isConnectionEstablished({ secretRefConfigured: configured, savedGrantPresent: grants, applicationStatus: this.applicationStatus, credentialResult: this.credential?.result, statusError: !!this.statusError })) {
+    const connected = this.credential?.result === "valid" && !!this.personalProfileId && this.personalProfileId !== "gateway-owner";
+    if (isConnectionEstablished({ secretRefConfigured: configured, savedGrantPresent: grants, applicationStatus: this.applicationStatus, credentialResult: connected ? "valid" : undefined, statusError: !!this.statusError })) {
       const status = el("p", "mg-success mg-connected", "Verbindung hergestellt");
       status.setAttribute("role", "status");
       status.setAttribute("aria-label", localize("Verbindung hergestellt. Ein Lesezugriff durch einen berechtigten Agenten wurde nicht geprüft."));
@@ -389,14 +391,14 @@ class ConfigurationPage {
       append(main, row);
       return;
     }
-    if (configured && grants && this.credential?.result === "missing") return;
     const card = el("section", "mg-section mg-setup");
-    append(card, el("h2", "", "Einrichtung"));
+    append(card, el("h2", "", "Einrichtung noch nicht abgeschlossen"), el("p", "mg-hint", "Die Paketinstallation allein verbindet noch kein persönliches Konto. Schließe die persönliche Einrichtung ab, bevor du Microsoft-Aufträge startest."));
     const steps = [
       ["Vault-SecretRef vorhanden", configured],
       ["Mindestens ein Agentenzugriff gespeichert", grants],
       ["Regeln im Gateway angewendet", grants && this.applicationStatus === "applied" && !this.statusError],
-      ["Microsoft-Konto verbunden", connected],
+      ["Persönliches OpenClaw-Profil bestätigt", !!this.personalProfileId && this.personalProfileId !== "gateway-owner"],
+      ["Persönliches Microsoft-Konto verbunden", connected],
     ] as const;
     const list = el("ol", "mg-setup-list");
     for (const [label, done] of steps) append(list, el("li", done ? "mg-setup-done" : "", `${done ? "✓" : "○"} ${localize(label)}`));
@@ -406,15 +408,18 @@ class ConfigurationPage {
     else if (!grants && !this.dirty) next = "Nächster Schritt: Einen Agentenzugriff auswählen und die Regeln speichern.";
     else if (this.dirty) next = "Nächster Schritt: Änderungen unter Prüfen speichern.";
     else if (this.applicationStatus !== "applied") next = "Nächster Schritt: Warten, bis das Gateway die gespeicherten Regeln angewendet hat.";
-    else if (this.credential?.result === "quarantined") next = "Der Zugang ist gesperrt. Stelle ihn über die Administrator-Wiederherstellung wieder her.";
-    else if (this.credential?.result === "unavailable") next = "Der Zugangsstatus ist nicht verfügbar. Prüfe SecretRef und Gateway-Verbindung.";
-    else if (!connected) next = "Nächster Schritt: Unten mit Microsoft verbinden.";
+    else if (this.credential?.result === "quarantined") next = "Die Verbindung ist gesperrt. Öffne Mein Microsoft-Konto und verbinde dich neu; die Einrichtung überschreibt keinen gesperrten Zugang.";
+    else if (this.credential?.result === "unavailable") next = this.personalSetupError || "Der Zugangsstatus ist nicht verfügbar. Prüfe SecretRef und Gateway-Verbindung.";
+    else if (this.personalSetupError) next = this.personalSetupError;
+    else if (!connected) next = "Nächster Schritt: Mein Microsoft-Konto öffnen. Beim Upgrade wird eine geeignete bestehende Verbindung dort automatisch übernommen; bei einer Neuinstallation richtest du dort dein persönliches Konto ein.";
     else next = "Konto verbunden. Prüfe mit einem berechtigten Agenten einen Lesezugriff; erst dann ist der Ablauf einsatzbereit.";
     append(card, el("p", connected ? "mg-status" : "mg-hint", next));
     if (!configured) { const link = el("a", "mg-button secondary", "Vault-Anleitung öffnen"); link.href = "https://clawhub.ai/packages/@baumus/openclaw-microsoft-graph"; link.target = "_blank"; link.rel = "noopener noreferrer"; append(card, link); }
     else if (!grants && !this.dirty) append(card, this.action("Zugriff festlegen", () => { this.step = 1; this.render(); }, "primary"));
     else if (this.dirty) append(card, this.action("Zum Prüfen", () => { this.step = 3; this.render(); void this.validate(); }, "primary"));
-    else if (grants && this.applicationStatus === "applied" && !connected && this.credential?.result === "missing") append(card, this.action("Mit Microsoft verbinden", () => { this.container.querySelector("#microsoft-connect")?.scrollIntoView({ behavior: "smooth", block: "start" }); }, "primary"));
+    const accountLink = el("a", "mg-button primary", "Persönliche Einrichtung abschließen");
+    accountLink.href = this.host.navigation.pageHref({ id: "accounts" });
+    append(card, accountLink);
     append(main, card);
   }
   private async credentialCall<T>(method: string, params: Record<string, unknown>): Promise<T> {
@@ -426,8 +431,17 @@ class ConfigurationPage {
   private async refreshCredential() {
     try {
       const status = await this.host.request<CredentialStatus>("microsoft-graph.accounts.status", {});
-      if (!this.disposed && !this.signal.aborted) this.credential = status.credential;
-    } catch { if (!this.disposed && !this.signal.aborted && this.credential?.result !== "valid") this.credential = { result: "unavailable" }; }
+      if (!this.disposed && !this.signal.aborted) {
+        this.personalProfileId = status.profileId;
+        this.personalSetupError = status.profileId === "gateway-owner" ? "Du bist als gemeinsamer Gateway-Eigentümer verbunden, nicht als persönlicher Benutzer. Prüfe Einstellungen → Profil → Identität und verwende den vom Administrator eingerichteten persönlichen Anmeldeweg. Ein Dashboard-Token oder das Umbenennen des Profils genügt nicht." : "";
+        this.credential = status.profileId && status.profileId !== "gateway-owner" && status.account?.connected ? status.credential : { result: status.profileId === "gateway-owner" ? "unavailable" : "missing" };
+      }
+    } catch {
+      if (!this.disposed && !this.signal.aborted) {
+        this.personalProfileId = undefined; this.credential = { result: "unavailable" };
+        this.personalSetupError = "Persönliche Identität oder Kontostatus nicht bestätigt. Öffne Mein Microsoft-Konto und prüfe Einstellungen → Profil → Identität. Administratorrechte allein ersetzen keine persönliche Anmeldung.";
+      }
+    }
   }
   private signInError(code: string): string {
     const messages: Record<string, string> = {
@@ -754,6 +768,7 @@ export default defineControlUiPlugin({ id, activate(host) {
   const pageId = "configure";
   const disposers = [
     host.ui.registerPage({ id: "accounts", label: "Mein Microsoft-Konto", mount(container, context) { const view = new AccountPage(container, context.host, context.signal); return { dispose: () => view.dispose() }; } }),
+    host.ui.registerAction({ id: "setup", label: "Microsoft-Einrichtung", placement: "header", run({ host }) { host.navigation.openPage({ id: "accounts" }); } }),
     host.ui.registerNavigation({ id: "accounts", label: "Mein Microsoft-Konto", page: { id: "accounts" }, icon: "user", order: 79 }),
     host.ui.registerPage({ id: pageId, label: "Connect Microsoft 365 to OpenClaw", mount(container, context) { const view = new ConfigurationPage(container, context.host, context.signal); return { dispose: () => view.dispose() }; } }),
     host.ui.registerNavigation({ id: "configure", label: "Connect Microsoft 365 to OpenClaw", page: { id: pageId }, icon: "settings", order: 80 }),

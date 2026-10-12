@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
 import { type WorkerBindings } from "./accounts.js";
+import { registerAccountBootstrap } from "./account-bootstrap.js";
 import { createAccountRuntime } from "./account-runtime.js";
 import { registerAccountMethods } from "./account-rpc.js";
 import { accountScope, currentAccountIdentity, captureAccountGuard } from "./account-scope.js";
@@ -3239,6 +3240,7 @@ plugin.register = (api) => {
       registerAccountMethods(api, accountStore, runtimeConfig);
     }
   }
+  if (accountStore) registerAccountBootstrap(api, accountStore, runtimeConfig);
   const warningApprovalTrustStore = new WarningApprovalTrustStore();
   api.on(
     "before_tool_call",

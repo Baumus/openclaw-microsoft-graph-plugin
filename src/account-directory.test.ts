@@ -42,6 +42,14 @@ describe("supported full-host directory oracle", () => {
       expect(options.requireProcessTreeExtinction).toBe(true);
     }
   });
+  it("completes bounded same-host safety proof after a full roster arrives during drain", async () => {
+    vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", undefined); vi.stubEnv("OPENCLAW_GATEWAY_PORT", undefined);
+    const r = api(), abort = new AbortController(); let calls = 0;
+    r.run.mockImplementation(async () => { const stdout = JSON.stringify(++calls === 2 ? JSON.parse(raw([row("gateway-owner"), row("A"), row("B")])) : { hostInstanceId: "same-host" }); if (calls === 2) abort.abort(); return { stdout, stderr: "", code: 0, killed: false, signal: null, termination: "exit" }; });
+    const snapshot = await createAccountDirectory(r.host as any, "same-host").read(abort.signal);
+    expect(snapshot.soleProfileId).toBeUndefined(); expect(abort.signal.aborted).toBe(true); expect(calls).toBe(3);
+    expect((r.run.mock.calls as any)[0][1].signal).toBe(abort.signal); expect((r.run.mock.calls as any)[2][1].signal).toBeUndefined();
+  });
   it("rejects foreign instance, truncation, timeout, runtime/schema and configuration changes", async () => {
     vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", undefined); vi.stubEnv("OPENCLAW_GATEWAY_PORT", undefined);
     const foreign = api([{ hostInstanceId: "foreign" }]); await expect(createAccountDirectory(foreign.host as any, "same-host").read()).rejects.toThrow("graph_single_user_directory_unavailable"); expect(foreign.run).toHaveBeenCalledTimes(1);

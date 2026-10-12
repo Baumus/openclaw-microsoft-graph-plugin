@@ -144,9 +144,12 @@ export class AccountStore {
       this.registry = next; if (topologyError) throw topologyError; return structuredClone(value as T);
     } finally { await lock.release(); }
   }
-  async provision(profileId: string, assertCurrent: () => void): Promise<Account> {
+  async provision(profileId: string, assertCurrent: () => void, requireEmptyRegistry = false): Promise<Account> {
     validProfile(profileId);
-    return this.mutate(r => r.accounts[profileKey(profileId)] ??= { profileId, generation: 1, revision: 1, connected: false, shared: false, unattended: false, policy: blankAccountPolicy() }, assertCurrent);
+    return this.mutate(r => {
+      if (requireEmptyRegistry && (Object.keys(r.accounts).length || Object.keys(r.sessions).length || r.legacyMigration || r.automatic)) throw new Error("graph_account_conflict");
+      return r.accounts[profileKey(profileId)] ??= { profileId, generation: 1, revision: 1, connected: false, shared: false, unattended: false, policy: blankAccountPolicy() };
+    }, assertCurrent);
   }
   async update(profileId: string, expectedRevision: number, policy: GraphPolicy, shared: boolean, unattended: boolean, assertCurrent: () => void): Promise<Account> {
     validProfile(profileId); validatePolicy(policy); assertPolicyCeiling(policy, this.ceilingFor(profileId));

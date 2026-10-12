@@ -29,6 +29,7 @@ export class AccountPage {
   constructor(private container: HTMLElement, private host: ControlUiHost, private signal: AbortSignal) {
     this.unsubscribe = host.subscribe(() => {
       if (!host.connection.connected) { this.status = undefined; this.session = undefined; this.policy = undefined; this.render(); }
+      else if (!this.status && !this.busy) { void this.load(); }
       else if (this.sessionSelection !== host.sessions.selectedKey) { this.session = undefined; this.sessionSelection = host.sessions.selectedKey; void this.refreshSession(); }
     });
     this.sessionSelection = host.sessions.selectedKey;
@@ -48,16 +49,12 @@ export class AccountPage {
   private async load() {
     const epoch = ++this.epoch;
     try {
-      if (this.host.connection.canAdmin) {
-        try { await this.request("automatic-migration"); }
-        catch { this.notice = "Automatische Einbenutzer-Übernahme derzeit nicht verfügbar. Die ausdrückliche persönliche Einrichtung bleibt verfügbar; es gibt keinen globalen Rückfall."; }
-      }
       const status = await this.request<Status>("status");
       if (!this.active() || epoch !== this.epoch) return;
       this.status = status; this.policy = status.account ? clone(status.account.policy) : undefined;
       this.shared = status.account?.shared ?? false; this.unattended = status.account?.unattended ?? false;
       await this.refreshSession();
-    } catch (error) { if (this.active() && epoch === this.epoch) this.error = (error as { message?: string })?.message ?? "Persönliches Konto konnte nicht geladen werden"; }
+    } catch (error) { if (this.active() && epoch === this.epoch) { this.status = undefined; this.session = undefined; this.policy = undefined; this.error = (error as { message?: string })?.message ?? "Persönliches Konto konnte nicht geladen werden"; } }
     if (this.active()) this.render();
   }
   private target() {
@@ -104,9 +101,23 @@ export class AccountPage {
   render() {
     if (!this.active()) return;
     const main = node("main"); main.className = "mg-page"; main.append(node("h1", "Mein Microsoft-Konto"));
-    main.append(node("p", "Deine persönliche Verbindung, ihre Agentrechte und das Konto der ausgewählten Session werden getrennt verwaltet. Bei einer nachgewiesenen Einbenutzer-Installation übernimmt der Assistent die bestehende Verbindung automatisch. Mehrbenutzer-Nutzung benötigt ausdrückliche Freigaben; private Ausgabegarantien für gemeinsame Sessions sind hier nicht nachgewiesen."));
+    main.append(node("p", "Deine persönliche Verbindung, ihre Agentrechte und das Konto der ausgewählten Session werden getrennt verwaltet. Bei einer nachgewiesenen Einbenutzer-Installation übernimmt der Gateway-Start die bestehende Verbindung automatisch, ohne diese Seite oder eine persönliche Anmeldung vorauszusetzen. Mehrbenutzer-Nutzung benötigt ausdrückliche Freigaben; private Ausgabegarantien für gemeinsame Sessions sind hier nicht nachgewiesen."));
     if (!this.host.connection.connected) { main.append(node("p", "Mit OpenClaw verbinden, um dein Konto zu verwalten.")); this.container.replaceChildren(main); return; }
-    if (!this.status) { main.append(node("p", this.error || "Persönliches Konto wird geladen …")); this.container.replaceChildren(main); return; }
+    if (!this.status) {
+      main.append(node("p", this.error ? "Einrichtung nicht abgeschlossen: Persönliche Identität oder Kontostatus konnte nicht bestätigt werden. Prüfe Einstellungen → Profil → Identität. Ein Dashboard-Token und Administratorrechte allein sind keine persönliche Anmeldung." : "Persönliches Konto wird geladen …"));
+      if (this.error) { main.append(node("small", this.error), button("Einrichtung erneut prüfen", () => { void this.load(); })); }
+      this.container.replaceChildren(main); return;
+    }
+    if (this.status.profileId === "gateway-owner") {
+      main.append(node("h2", "Persönliche Anmeldung erforderlich"), node("p", "Einrichtung nicht abgeschlossen: Dieser Browser ist als gemeinsamer Gateway-Eigentümer verbunden, nicht als dein persönlicher Benutzer. Ein Dashboard-Token oder das Umbenennen des Profils ordnet die Microsoft-Verbindung nicht deiner Person zu."), node("p", "Prüfe Einstellungen → Profil → Identität. Verwende den vom Administrator eingerichteten persönlichen Anmeldeweg (zum Beispiel einen identitätsgeprüften Tailscale- oder SSO-Zugang). Ist kein solcher Zugang eingerichtet, muss der Administrator ihn zuerst konfigurieren. Unter Limited access → Request admin kannst du anschließend Administratorrechte anfordern, falls sie für die Übernahme fehlen."), button("Einrichtung erneut prüfen", () => { void this.load(); }));
+      this.container.replaceChildren(main); return;
+    }
+    main.append(node("p", `Bestätigtes persönliches OpenClaw-Profil: ${this.status.profileId}`));
+    const setupReady = this.status.account?.connected === true && this.status.credential.result === "valid";
+    const setup = node("section"); setup.setAttribute("role", "status");
+    setup.append(node("h2", setupReady ? "Persönliche Verbindung eingerichtet" : "Einrichtung noch nicht abgeschlossen"), node("p", setupReady ? "Die Verbindung ist deinem bestätigten Profil zugeordnet. Ein erfolgreicher Lesezugriff und die Kontobindung der jeweiligen Session sind damit noch nicht geprüft." : "Beim Upgrade übernimmt der Assistent eine geeignete bestehende Verbindung für den nachgewiesenen einzigen persönlichen Benutzer. Bei einer Neuinstallation richtest du unten dein Konto ein, speicherst Agentrechte und meldest dich bei Microsoft an."));
+    if (!setupReady && !this.host.connection.canAdmin) setup.append(node("p", "Nur für die ausdrückliche manuelle Übernahme einer bisherigen installationsweiten Verbindung brauchst du zusätzlich Administratorrechte: Limited access → Request admin. Deine persönliche Neuanmeldung benötigt diese Übernahme nicht."));
+    main.append(setup);
     const automatic = this.status.automatic?.profileId === this.status.profileId && !this.status.automatic.invalidated;
     main.append(node("p", automatic ? "Automatische Einbenutzer-Übernahme aktiv: Bestehende Agentrechte gelten für Sessions, Jobs und normale Delegation ohne zusätzliche Kontobindung. Das vollständige Benutzerverzeichnis wird vor neuen Vorgängen und an sensiblen asynchronen Grenzen erneut geprüft. Bereits versendete Microsoft-Anfragen können nicht zurückgerufen werden." : this.status.warning));
     if (this.status.automatic?.invalidated) main.append(node("p", "Automatischer Zugriff bleibt nach einer Benutzerverzeichnis- oder Kontorechteänderung ausgeschaltet. Nutze jetzt ausdrückliche Freigaben und feste Kontobindungen."));

@@ -7,7 +7,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 
 /** A fresh whole-host snapshot, NOT an atomic catalog lease. */
 export type DirectorySnapshot = { soleProfileId?: string; digest: string };
-export type AccountDirectory = { read: () => Promise<DirectorySnapshot> };
+export type AccountDirectory = { read: (signal?: AbortSignal) => Promise<DirectorySnapshot> };
 const fail = () => new Error("graph_single_user_directory_unavailable");
 const fields = new Set(["id", "displayName", "avatarMime", "mergedInto", "role", "createdAt", "updatedAt", "emails", "githubIdentity", "hasAvatar", "effectiveRole", "roleSource"]);
 const idValid = (v: unknown): v is string => typeof v === "string" && !!v && v.length <= 256 && !/[\u0000-\u001f\u007f]/.test(v);
@@ -43,9 +43,10 @@ export function parseDirectorySnapshot(raw: string): DirectorySnapshot {
 
 /** Public CLI entry and public process runner; never private dispatch or host DB. */
 export function createAccountDirectory(api: OpenClawPluginApi, hostInstanceId: string): AccountDirectory {
-  return { async read() {
+  return { async read(signal?: AbortSignal) {
     let scratch: string | undefined;
     try {
+      signal?.throwIfAborted();
       if (api.runtime.version !== "2026.10.1") throw fail();
       const config = api.runtime.config.current();
       const gateway = config.gateway;
@@ -65,19 +66,22 @@ export function createAccountDirectory(api: OpenClawPluginApi, hostInstanceId: s
       env.OPENCLAW_GATEWAY_URL = `ws://127.0.0.1:${port}`;
       env.OPENCLAW_GATEWAY_TOKEN = token;
       const before = JSON.stringify([gateway, process.env.OPENCLAW_GATEWAY_PORT, process.env.OPENCLAW_GATEWAY_TOKEN]);
-      const run = (args: string[]) => api.runtime.system.runCommandWithTimeout([process.execPath, entry, ...args], { baseEnv: env, timeoutMs: 10000, maxOutputBytes: { stdout: 1024 * 1024, stderr: 4096 }, maxCombinedOutputBytes: 1024 * 1024 + 4096, terminateOnOutputLimit: true, killProcessTree: true, requireProcessTreeExtinction: true });
+      const run = (args: string[], commandSignal: AbortSignal | null | undefined = signal) => api.runtime.system.runCommandWithTimeout([process.execPath, entry, ...args], { baseEnv: env, signal: commandSignal ?? undefined, timeoutMs: 10000, maxOutputBytes: { stdout: 1024 * 1024, stderr: 4096 }, maxCombinedOutputBytes: 1024 * 1024 + 4096, terminateOnOutputLimit: true, killProcessTree: true, requireProcessTreeExtinction: true });
       const valid = (result: Awaited<ReturnType<typeof run>>) => result.code === 0 && !result.killed && !result.signal && result.termination === "exit" && !result.stdoutTruncatedBytes && !result.stderrTruncatedBytes && !result.outputLimitExceeded && result.cleanup !== "uncertain";
-      const proveHost = async () => {
-        const proof = await run(["gateway", "call", "microsoft-graph.directory-host", "--json", "--timeout", "5000"]);
+      const proveHost = async (safetyCompletion = false) => {
+        const proof = await run(["gateway", "call", "microsoft-graph.directory-host", "--json", "--timeout", "5000"], safetyCompletion ? null : signal);
         if (!valid(proof)) throw fail();
         const value = JSON.parse(proof.stdout);
         if (value?.hostInstanceId !== hostInstanceId || Object.keys(value).join() !== "hostInstanceId") throw fail();
       };
-      await proveHost();
+      await proveHost(); signal?.throwIfAborted();
       const result = await run(["users", "list", "--json", "--timeout", "5000"]);
       if (before !== JSON.stringify([api.runtime.config.current().gateway, process.env.OPENCLAW_GATEWAY_PORT, process.env.OPENCLAW_GATEWAY_TOKEN]) || !valid(result)) throw fail();
       const snapshot = parseDirectorySnapshot(result.stdout);
-      await proveHost();
+      // Once a complete roster is observed, finish its bounded after-proof even
+      // during drain. This returns safety evidence only: positive callers must
+      // still check their live authority after awaiting the snapshot.
+      await proveHost(true);
       if (before !== JSON.stringify([api.runtime.config.current().gateway, process.env.OPENCLAW_GATEWAY_PORT, process.env.OPENCLAW_GATEWAY_TOKEN])) throw fail();
       return snapshot;
     } catch { throw fail(); } // Never expose subprocess stderr, roster, or shared auth.

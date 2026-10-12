@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountPage } from "./account-control-ui.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
-function mount(connected = false, canAdmin = false, automatic = false, assistanceUnavailable = false) {
+function mount(connected = false, canAdmin = false, automatic = false, assistanceUnavailable = false, missingStatus = false) {
   const policy = graphPolicyFixture(); const calls: Array<{ method: string; params: any }> = [];
   const account = { profileId: "A", generation: 1, revision: 1, connected, shared: false, unattended: false, policy };
   const replies: Record<string, any> = {
@@ -19,6 +19,7 @@ function mount(connected = false, canAdmin = false, automatic = false, assistanc
     if (!(name in replies)) throw new Error(`Unexpected method ${method}`); return replies[name];
   } };
   if (assistanceUnavailable) delete replies["automatic-migration"];
+  if (missingStatus) delete replies["status"];
   const container = document.createElement("div"); document.body.append(container); const controller = new AbortController(); const view = new AccountPage(container, host as any, controller.signal);
   const settle = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
   const click = (label: string) => { const b = [...container.querySelectorAll("button")].find(b => b.textContent === label); expect(b).toBeDefined(); b!.click(); };
@@ -39,10 +40,11 @@ describe("personal Control UI flow", () => {
     const select = r.container.querySelector("select")!; select.value = "shared-B"; r.click("Dieses Konto für die Session verwenden"); await r.settle();
     expect(r.calls.find(c => c.method.endsWith("bind"))?.params).toEqual({ agentId: "main", sessionKey: "agent:main:session-A", sessionId: "session-A", profileId: "shared-B", expectedRevision: null }); r.dispose();
   });
-  it("starts sole-admin assistance on ordinary load without login, confirmation or manual bindings", async () => {
+  it("displays host-startup singleton migration without triggering migration on page load", async () => {
     const confirm = vi.spyOn(window, "confirm");
     const r = mount(true, true, true); await r.settle();
-    expect(r.calls.slice(0, 2).map(c => c.method)).toEqual(["microsoft-graph.accounts.automatic-migration", "microsoft-graph.accounts.status"]);
+    expect(r.calls[0].method).toBe("microsoft-graph.accounts.status");
+    expect(r.calls.some(c => c.method.endsWith("automatic-migration"))).toBe(false);
     expect(r.container.textContent).toContain("Automatische Einbenutzer-Übernahme aktiv");
     expect(r.container.textContent).toContain("keine Session- oder Worker-Konfiguration nötig");
     expect(r.calls.some(c => /bind|configure|device-start/.test(c.method))).toBe(false);
@@ -50,7 +52,7 @@ describe("personal Control UI flow", () => {
   });
   it("shows explicit setup fallback after assistance failure and never treats it as success", async () => {
     const r = mount(false, true, false, true); await r.settle();
-    expect(r.container.textContent).toContain("Automatische Einbenutzer-Übernahme derzeit nicht verfügbar");
+    expect(r.calls.some(c => c.method.endsWith("automatic-migration"))).toBe(false);
     expect(r.container.textContent).toContain("Bei Microsoft anmelden");
     expect(r.container.textContent).not.toContain("Automatische Einbenutzer-Übernahme aktiv"); r.dispose();
   });
@@ -58,5 +60,30 @@ describe("personal Control UI flow", () => {
     const r = mount(true); r.replies["session-status"] = { workerProfileId: "A", binding: null, available: ["A"] }; await r.settle();
     expect(r.container.textContent).toContain("Festes Worker-Konto: A"); expect(r.container.querySelector("select")).toBeNull();
     r.click("Trennen / neu verbinden"); await r.settle(); expect(r.calls.find(c => c.method.endsWith("disconnect"))?.params).toEqual({ expectedRevision: 1 }); expect(r.account.generation).toBe(2); expect(r.container.textContent).toContain("nicht verbunden"); r.dispose();
+  });
+});
+
+
+describe("personal setup identity guidance", () => {
+  it("does not offer personal setup or migration writes for the shared owner identity", async () => {
+    const r = mount(true, true); r.replies.status.profileId = "gateway-owner"; await r.settle();
+    expect(r.container.textContent).toContain("Persönliche Anmeldung erforderlich");
+    expect(r.container.textContent).toContain("Einrichtung nicht abgeschlossen");
+    expect(r.container.textContent).toContain("Dashboard-Token");
+    expect(r.container.textContent).toContain("Einstellungen → Profil → Identität");
+    expect(r.container.querySelector("input")).toBeNull();
+    expect(r.calls.some(c => /provision|migrate-legacy|device-start|configure|disconnect/.test(c.method))).toBe(false); r.dispose();
+  });
+  it("shows missing identity as an incomplete setup with recovery rather than an endless loading screen", async () => {
+    const r = mount(false, false, false, false, true); await r.settle();
+    expect(r.container.textContent).toContain("Einrichtung nicht abgeschlossen");
+    expect(r.container.textContent).toContain("Administratorrechte allein");
+    expect([...r.container.querySelectorAll("button")].some(b => b.textContent === "Einrichtung erneut prüfen")).toBe(true); r.dispose();
+  });
+  it("distinguishes a confirmed personal connection from an unverified first agent request", async () => {
+    const r = mount(true); await r.settle();
+    expect(r.container.textContent).toContain("Bestätigtes persönliches OpenClaw-Profil: A");
+    expect(r.container.textContent).toContain("Persönliche Verbindung eingerichtet");
+    expect(r.container.textContent).toContain("Ein erfolgreicher Lesezugriff"); r.dispose();
   });
 });
