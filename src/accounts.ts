@@ -1,3 +1,4 @@
+import type { AccountDirectory, DirectorySnapshot } from "./account-directory.js";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { createSecretFileAtomic } from "@openclaw/fs-safe/secret";
@@ -12,7 +13,8 @@ export const SHARING_WARNING = "Gemeinsam bedienbare Agents können die hier fre
 export type Account = { profileId: string; generation: number; revision: number; connected: boolean; shared: boolean; unattended: boolean; policy: GraphPolicy };
 export type SessionTarget = { agentId: string; sessionKey: string; sessionId: string; lifecycleRevision?: string };
 export type Binding = SessionTarget & { profileId: string; generation: number; revision: number; privateOwner?: string };
-export type AccountRegistry = { legacyMigration?: { profileId: string; generation: number; sourceDigest: string }; version: 1; accounts: Record<string, Account>; sessions: Record<string, Binding> };
+export type AutomaticAccount = { profileId: string; generation: number; topologyDigest: string; invalidated: boolean };
+export type AccountRegistry = { automatic?: AutomaticAccount; legacyMigration?: { profileId: string; generation: number; sourceDigest: string }; version: 1; accounts: Record<string, Account>; sessions: Record<string, Binding> };
 type Registry = AccountRegistry;
 export type AccountHostContext = SessionTarget & { assertCurrent: () => void; privateOwner?: string };
 export type WorkerBindings = Record<string, string>;
@@ -24,7 +26,9 @@ function validateRegistry(value: unknown): Registry {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("graph_account_store_unavailable");
   const r = value as Registry;
   const closed = (v: unknown, fields: string[]) => !!v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).every(k => fields.includes(k));
-  if (!closed(r, ["version", "accounts", "sessions", "legacyMigration"])) throw new Error("graph_account_store_unavailable");
+  if (!closed(r, ["version", "accounts", "sessions", "legacyMigration", "automatic"])) throw new Error("graph_account_store_unavailable");
+  if (r.automatic) validProfile(r.automatic.profileId);
+  if (r.automatic && (!closed(r.automatic, ["profileId", "generation", "topologyDigest", "invalidated"]) || !r.automatic.profileId || !Number.isSafeInteger(r.automatic.generation) || r.automatic.generation < 1 || !/^[a-f0-9]{64}$/.test(r.automatic.topologyDigest) || typeof r.automatic.invalidated !== "boolean")) throw new Error("graph_account_store_unavailable");
   if (r.legacyMigration && (!closed(r.legacyMigration, ["profileId", "generation", "sourceDigest"]) || typeof r.legacyMigration.profileId !== "string" || !Number.isSafeInteger(r.legacyMigration.generation) || !/^[A-Za-z0-9_-]{43}$/.test(r.legacyMigration.sourceDigest))) throw new Error("graph_account_store_unavailable");
   if (r.version !== 1 || !r.accounts || !r.sessions || typeof r.accounts !== "object" || typeof r.sessions !== "object" || Array.isArray(r.accounts) || Array.isArray(r.sessions)) throw new Error("graph_account_store_unavailable");
   for (const [key, a] of Object.entries(r.accounts)) {
@@ -32,6 +36,10 @@ function validateRegistry(value: unknown): Registry {
     validProfile(a.profileId);
     if (key !== profileKey(a.profileId) || !Number.isSafeInteger(a.generation) || a.generation < 1 || !Number.isSafeInteger(a.revision) || a.revision < 1 || [a.connected, a.shared, a.unattended].some(x => typeof x !== "boolean")) throw new Error("graph_account_store_unavailable");
     validatePolicy(a.policy);
+  }
+  if (r.automatic && !r.automatic.invalidated) {
+    const account = r.accounts[profileKey(r.automatic.profileId)];
+    if (!account?.connected || account.generation !== r.automatic.generation || r.legacyMigration?.profileId !== account.profileId || r.legacyMigration.generation !== account.generation) throw new Error("graph_account_store_unavailable");
   }
   for (const [key, b] of Object.entries(r.sessions)) {
     if (!closed(b, ["agentId", "sessionKey", "sessionId", "lifecycleRevision", "profileId", "generation", "revision", "privateOwner"])) throw new Error("graph_account_store_unavailable");
@@ -55,7 +63,7 @@ export class AccountStore {
   private registry: Registry = { version: 1, accounts: {}, sessions: {} };
   private readonly holds = new Map<string, number>();
   private readonly pending = new Map<string, { target: string; expires: number }>();
-  constructor(readonly root: string, readonly workers: WorkerBindings = {}, readonly ceiling: GraphPolicy = blankAccountPolicy(), readonly ceilings: Record<string, GraphPolicy> = {}, readonly hostBusy: (target: SessionTarget) => boolean = () => false) {}
+  constructor(readonly root: string, readonly workers: WorkerBindings = {}, readonly ceiling: GraphPolicy = blankAccountPolicy(), readonly ceilings: Record<string, GraphPolicy> = {}, readonly hostBusy: (target: SessionTarget) => boolean = () => false, readonly directory?: AccountDirectory) {}
   ceilingFor(profileId: string): GraphPolicy { return this.ceilings[profileId] ?? this.ceiling; }
   private get file() { return join(this.root, "plugin-data", "microsoft-graph", "accounts", "registry.json"); }
   private async load(): Promise<Registry> {
@@ -70,6 +78,23 @@ export class AccountStore {
       throw new Error("graph_account_store_unavailable");
     }
   }
+  async automaticStatus(): Promise<AutomaticAccount | undefined> { await this.refresh(); return this.registry.automatic ? structuredClone(this.registry.automatic) : undefined; }
+  async checkAutomatic(snapshot?: DirectorySnapshot): Promise<AutomaticAccount | undefined> {
+    await this.refresh();
+    const a = this.registry.automatic;
+    if (!a) return;
+    if (a.invalidated) throw new Error("graph_single_user_topology_changed");
+    const fresh = snapshot ?? await this.directory?.read();
+    if (!fresh) throw new Error("graph_single_user_directory_unavailable");
+    if (fresh.soleProfileId !== a.profileId || fresh.digest !== a.topologyDigest) {
+      // Sticky, durable tombstone. Returning to a singleton never resurrects it.
+      await this.mutate(r => { if (r.automatic) r.automatic.invalidated = true; }, () => {});
+      throw new Error("graph_single_user_topology_changed");
+    }
+    await this.refresh();
+    if (fingerprint(this.registry.automatic) !== fingerprint(a)) throw new Error("graph_account_context_changed");
+    return structuredClone(a);
+  }
   async refresh(): Promise<void> { this.registry = await this.load(); }
   accountPath(profileId: string, generation: number): string { validProfile(profileId); return join(this.root, "plugin-data", "microsoft-graph", "accounts", profileKey(profileId), String(generation)); }
   async readAccount(profileId: string): Promise<Account | undefined> { validProfile(profileId); await this.refresh(); const a = this.registry.accounts[profileKey(profileId)]; return a ? structuredClone(a) : undefined; }
@@ -80,25 +105,43 @@ export class AccountStore {
   private accountBusy(profileId: string): boolean {
     return Object.entries(this.registry.sessions).some(([key, b]) => b.profileId === profileId && this.busy(key)) || this.busy(`worker:${profileId}`);
   }
-  async mutate<T>(action: (r: Registry) => T | Promise<T>, assertCurrent: () => void): Promise<T> {
+  async mutate<T>(action: (r: Registry) => T | Promise<T>, assertCurrent: () => void, admission: { beforePublication?: () => Promise<void>; automaticAttempt?: { profileId: string; generation: number; topologyDigest: string } } = {}): Promise<T> {
     const directory = join(this.root, "plugin-data", "microsoft-graph", "accounts");
     try { await createSecretFileAtomic({ rootDir: this.root, filePath: join(directory, ".initialized"), content: "graph-accounts-v1\n", mode: 0o600, dirMode: 0o700, durable: true }); } catch { /* Existing sentinel; secure reads/lock fail closed. */ }
     const lock = await acquireFileLock(this.file, { managerKey: "graph-accounts-v1", staleRecovery: "fail-closed", timeoutMs: 5000, staleMs: 300000, payload: () => ({ pid: process.pid, operation: "account-registry" }) });
     try {
       this.registry = await this.load();
-      const next = structuredClone(this.registry);
-      const value = await action(next);
-      assertCurrent(); if (!await lock.verifyStillHeld()) throw new Error("graph_account_store_unavailable"); assertCurrent();
+      let next = structuredClone(this.registry);
+      let value: T | undefined; let topologyError: unknown;
+      try { value = await action(next); }
+      catch (error) {
+        if (!admission.automaticAttempt || !(error instanceof Error) || error.message !== "graph_single_user_topology_changed") throw error;
+        // A detected transition only REDUCES authority. Discard all partially
+        // mutated grants/connection state, serialize the tombstone under this
+        // same registry lock, and do not depend on the cancelled actor's authority.
+        next = structuredClone(this.registry);
+        next.automatic ??= { ...admission.automaticAttempt, invalidated: true };
+        next.automatic.invalidated = true;
+        topologyError = error;
+      }
+      const publicationGuard = topologyError ? () => {} : assertCurrent;
+      const verifyPublication = async () => {
+        publicationGuard();
+        if (!await lock.verifyStillHeld()) throw new Error("graph_account_store_unavailable");
+        if (!topologyError) await admission.beforePublication?.();
+        publicationGuard();
+      };
+      await verifyPublication();
       const content = JSON.stringify(next) + "\n";
       if (Buffer.byteLength(content) > 2 * 1024 * 1024) throw new Error("graph_account_store_capacity");
       try { await readSecureFile({ filePath: this.file, label: "Graph account registry", trust: { trustedDirs: [directory] }, io: { maxBytes: 2 * 1024 * 1024, timeoutMs: 5000 } }); }
       catch (error) {
         if (Object.keys(this.registry.accounts).length || Object.keys(this.registry.sessions).length) throw error;
         await createSecretFileAtomic({ rootDir: this.root, filePath: this.file, content, mode: 0o600, dirMode: 0o700, durable: true });
-        this.registry = next; return structuredClone(value);
+        this.registry = next; if (topologyError) throw topologyError; return structuredClone(value as T);
       }
-      await replaceFileAtomic({ filePath: this.file, content, mode: 0o600, dirMode: 0o700, preserveExistingMode: false, copyFallbackOnPermissionError: false, destinationHardlinks: "reject", syncTempFile: true, syncParentDir: true, beforeRename: async () => { assertCurrent(); } });
-      this.registry = next; return structuredClone(value);
+      await replaceFileAtomic({ filePath: this.file, content, mode: 0o600, dirMode: 0o700, preserveExistingMode: false, copyFallbackOnPermissionError: false, destinationHardlinks: "reject", syncTempFile: true, syncParentDir: true, beforeRename: verifyPublication });
+      this.registry = next; if (topologyError) throw topologyError; return structuredClone(value as T);
     } finally { await lock.release(); }
   }
   async provision(profileId: string, assertCurrent: () => void): Promise<Account> {
@@ -110,6 +153,7 @@ export class AccountStore {
     return this.mutate(r => {
       const a = r.accounts[profileKey(profileId)];
       if (!a || a.revision !== expectedRevision) throw new Error("graph_account_conflict");
+      if (r.automatic?.profileId === profileId) r.automatic.invalidated = true;
       a.policy = structuredClone(policy); a.shared = shared; a.unattended = unattended; a.revision++;
       return a;
     }, assertCurrent);
@@ -121,6 +165,7 @@ export class AccountStore {
     await this.mutate(r => {
       const a = r.accounts[profileKey(profileId)]; if (!a || a.revision !== expectedRevision) throw new Error("graph_account_conflict");
       // Revocation may interrupt live work; generation checks stop all subsequent effects.
+      if (r.automatic?.profileId === profileId) r.automatic.invalidated = true;
       a.generation++; a.revision++; a.connected = false; a.shared = false; a.unattended = false;
       for (const [key, b] of Object.entries(r.sessions)) if (b.profileId === profileId) delete r.sessions[key];
     }, assertCurrent);
@@ -146,21 +191,25 @@ export class AccountStore {
     await this.refresh(); target.assertCurrent();
     const key = sessionKey(target); const binding = this.registry.sessions[key]; const worker = this.workers[target.agentId];
     if (worker && binding && binding.profileId !== worker) throw new Error("graph_execution_account_conflict");
-    const profileId = worker ?? binding?.profileId;
+    const automatic = !worker && !binding ? await this.checkAutomatic() : undefined;
+    target.assertCurrent();
+    const profileId = worker ?? binding?.profileId ?? automatic?.profileId;
     if (!profileId) throw new Error("graph_execution_account_required");
     const a = this.registry.accounts[profileKey(profileId)];
     if (!a?.connected || (binding && binding.generation !== a.generation)) throw new Error("graph_execution_account_required");
-    if (!a.shared || (worker && !a.unattended)) throw new Error("access_denied");
+    if (automatic && automatic.generation !== a.generation) throw new Error("graph_account_context_changed");
+    if (!automatic && (!a.shared || (worker && !a.unattended))) throw new Error("access_denied");
     assertPolicyCeiling(a.policy, this.ceilingFor(profileId));
-    const signature = fingerprint([a, worker ?? binding]);
+    const selection = worker ?? binding ?? automatic;
+    const signature = fingerprint([a, selection]);
     const assertCurrent = () => {
       target.assertCurrent();
       const current = this.registry.accounts[profileKey(profileId)];
-      const currentBinding = worker ?? this.registry.sessions[key];
+      const currentBinding = worker ?? this.registry.sessions[key] ?? (automatic ? this.registry.automatic : undefined);
       if (fingerprint([current, currentBinding]) !== signature) throw new Error("graph_account_context_changed");
     };
-    const holdKey = worker ? `worker:${profileId}` : key;
-    return { holdKey, scope: { identity: fingerprint([profileId, a.generation, a.revision, worker ?? binding]), stateDir: this.accountPath(profileId, a.generation), policy: structuredClone(a.policy), assertCurrent, assertFresh: async () => { await this.refresh(); assertCurrent(); } } };
+    const holdKey = worker || automatic ? `worker:${profileId}` : key;
+    return { holdKey, scope: { ...(automatic ? { directoryAdmissionAllowanceMs: 90000 } : {}), identity: fingerprint([profileId, a.generation, a.revision, selection]), stateDir: this.accountPath(profileId, a.generation), policy: structuredClone(a.policy), assertCurrent, assertFresh: async () => { if (automatic) await this.checkAutomatic(); await this.refresh(); assertCurrent(); } } };
   }
   hold(key: string): () => void { this.holds.set(key, (this.holds.get(key) ?? 0) + 1); let done = false; return () => { if (done) return; done = true; const n = (this.holds.get(key) ?? 1) - 1; if (n) this.holds.set(key, n); else this.holds.delete(key); }; }
   pendingApproval(id: string, key: string): void { this.pending.set(id, { target: key, expires: Date.now() + 180000 }); }

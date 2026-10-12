@@ -180,6 +180,10 @@ async function performTokenExchange(credential: Credential, requestedScopes: str
     scope: [...new Set(requestedScopes)].join(" "),
   });
   signal?.throwIfAborted();
+  // Local account/directory admission is not OAuth network time. The caller's
+  // whole-operation signal still bounds admission and is checked before dispatch.
+  if (accountScope.getStore()) await assertAccountEffect();
+  signal?.throwIfAborted();
   const controller = new AbortController();
   const timeoutReason = new DOMException("OAuth token exchange timed out", "TimeoutError");
   const timer = setTimeout(() => controller.abort(timeoutReason), requestTimeoutMs);
@@ -192,7 +196,6 @@ async function performTokenExchange(credential: Credential, requestedScopes: str
   try {
     let responsePromise: Promise<Response>;
     try {
-      if (accountScope.getStore()) await assertAccountEffect();
       responsePromise = fetchFn(url, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body, signal: controller.signal });
       dispatched = true;
     } catch (error) {

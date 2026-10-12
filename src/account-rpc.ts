@@ -1,6 +1,7 @@
+import type { DirectorySnapshot } from "./account-directory.js";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { AccountStore, assertPolicyCeiling, SHARING_WARNING, type AccountHostContext, type SessionTarget } from "./accounts.js";
-import { createVaultCredential, inspectVaultCredential, readVaultCredential } from "./credential-vault.js";
+import { acquireVaultLock, assertMigrationRefreshClear, createVaultCredential, inspectVaultCredential, readMigrationVault } from "./credential-vault.js";
 import { DeviceCodeSignIn } from "./device-code.js";
 import { accountScope } from "./account-scope.js";
 import { tokenForAuthorizedOperation } from "./credential.js";
@@ -74,7 +75,8 @@ export function registerAccountMethods(api: OpenClawPluginApi, store: AccountSto
   };
   register("status", [], async (_ctx, id) => {
     const a = await store.readAccount(id);
-    return { profileId: id, account: a ?? null, ceiling: store.ceilingFor(id), workers: Object.entries(store.workers).filter(([, owner]) => owner === id).map(([agent]) => agent), warning: SHARING_WARNING, credential: a ? await inspectVaultCredential(store.accountPath(id, a.generation), config.credentialVaultKey as string) : { result: "missing" } };
+    const automatic = await store.automaticStatus();
+    return { profileId: id, account: a ?? null, ceiling: store.ceilingFor(id), workers: Object.entries(store.workers).filter(([, owner]) => owner === id).map(([agent]) => agent), warning: SHARING_WARNING, automatic: automatic?.profileId === id ? automatic : undefined, credential: a ? await inspectVaultCredential(store.accountPath(id, a.generation), config.credentialVaultKey as string) : { result: "missing" } };
   });
   register("provision", [], async (_ctx, id, current) => store.provision(id, current));
   register("resolve-folder", ["path"], async (ctx, id, current) => {
@@ -145,27 +147,84 @@ export function registerAccountMethods(api: OpenClawPluginApi, store: AccountSto
     });
     return store.bind(id, ctx.params.profileId, t, ctx.params.expectedRevision as number | null);
   }, true);
-  // Explicit self migration only; no first visitor or administrator assigning another person's identity.
-  register("migrate-legacy", [], async (_ctx, id, current) => {
-    const a = await store.provision(id, current);
-    return store.mutate(async r => {
-      const account = Object.values(r.accounts).find(x => x.profileId === id)!;
-      if (r.legacyMigration) {
-        if (r.legacyMigration.profileId !== id || r.legacyMigration.generation !== account.generation || !account.connected) throw new Error("graph_account_conflict");
-        return { migrated: true, profileId: id, generation: account.generation, retainedLegacyBackup: true };
-      }
-      if (account.connected) throw new Error("graph_account_conflict");
-      const path = store.accountPath(id, account.generation);
-      const legacy = await readVaultCredential(store.root, config.credentialVaultKey);
-      current();
-      const status = await inspectVaultCredential(path, config.credentialVaultKey as string);
-      if (status.result === "missing") await createVaultCredential(path, legacy.credential, config.credentialVaultKey, undefined, current);
-      else {
-        const existing = await readVaultCredential(path, config.credentialVaultKey);
-        if (JSON.stringify(existing.credential) !== JSON.stringify(legacy.credential)) throw new Error("graph_account_conflict");
-      }
-      current(); r.legacyMigration = { profileId: id, generation: account.generation, sourceDigest: legacy.digest }; account.policy = intersectMigrationPolicy(store.ceiling, store.ceilingFor(id)); account.connected = true; account.shared = false; account.unattended = false; account.revision++;
-      return { migrated: true, profileId: id, generation: a.generation, retainedLegacyBackup: true };
-    }, current);
+  register("automatic-migration", [], async (_ctx, id, current) => {
+    // Host's operator.admin admission plus the fresh authenticated exact profile;
+    // directory read authority is never mistaken for the person's authority.
+    const existing = await store.automaticStatus();
+    if (existing) { const automatic = await store.checkAutomatic(); if (automatic?.profileId !== id) throw new Error("graph_account_conflict"); return { automatic: true, migrated: true }; }
+    const snapshot = await store.directory?.read(); current();
+    if (!snapshot) throw new Error("graph_single_user_directory_unavailable");
+    if (snapshot.soleProfileId !== id || id === "gateway-owner") return { automatic: false, reason: "not_authenticated_sole_user" };
+    const legacy = await inspectVaultCredential(store.root, config.credentialVaultKey as string);
+    current(); if (legacy.result === "missing") return { automatic: false, reason: "no_legacy_connection" };
+    await migrateLegacyAccount(store, config, id, current, snapshot);
+    return { automatic: true, migrated: true, retainedLegacyBackup: true };
   }, false, true);
+  // Explicit self migration remains available on genuine multi-user hosts.
+  register("migrate-legacy", [], async (_ctx, id, current) => migrateLegacyAccount(store, config, id, current), false, true);
+
+}
+
+/** The only migration writer; both paths retain the unchanged encrypted legacy vault. */
+export async function migrateLegacyAccount(store: AccountStore, config: { credentialVaultKey?: unknown }, id: string, current: () => void, snapshot?: DirectorySnapshot) {
+  const fresh = async () => {
+    current();
+    if (snapshot) {
+      const latest = await store.directory?.read();
+      // Record an actually observed mismatch even when the actor is cancelled
+      // while the read finishes. Cancellation must never erase a safety fact.
+      if (!latest || latest.soleProfileId !== id || latest.digest !== snapshot.digest) throw new Error("graph_single_user_topology_changed");
+      current();
+    }
+  };
+  const a = await store.provision(id, current);
+  const path = store.accountPath(id, a.generation);
+  const sourceLock = await acquireVaultLock(store.root, "migrate-source");
+  try {
+    current();
+    const destinationLock = await acquireVaultLock(path, "migrate-destination");
+    try {
+      current();
+      let sourceDigest: string | undefined; let destinationDigest: string | undefined;
+      const verifyVaults = async () => {
+        current();
+        const source = await readMigrationVault(store.root, config.credentialVaultKey, sourceLock);
+        const destination = await readMigrationVault(path, config.credentialVaultKey, destinationLock);
+        if (source.digest !== sourceDigest || destination.digest !== destinationDigest) throw new Error("credential_vault_conflict");
+        current();
+      };
+      return await store.mutate(async r => {
+        const account = Object.values(r.accounts).find(x => x.profileId === id)!;
+        if (account.generation !== a.generation) throw new Error("graph_account_conflict");
+        if (snapshot && r.automatic?.invalidated) throw new Error("graph_single_user_topology_changed");
+        if (snapshot && r.legacyMigration && !r.automatic) throw new Error("graph_account_conflict");
+        await fresh();
+        const legacy = await readMigrationVault(store.root, config.credentialVaultKey, sourceLock);
+        sourceDigest = legacy.digest;
+        if (r.legacyMigration) {
+          if (r.legacyMigration.profileId !== id || r.legacyMigration.generation !== account.generation || r.legacyMigration.sourceDigest !== legacy.digest || !account.connected) throw new Error("graph_account_conflict");
+          const destination = await readMigrationVault(path, config.credentialVaultKey, destinationLock);
+          destinationDigest = destination.digest;
+          await fresh();
+          return { migrated: true, profileId: id, generation: account.generation, retainedLegacyBackup: true };
+        }
+        if (account.connected) throw new Error("graph_account_conflict");
+        await fresh();
+        await assertMigrationRefreshClear(path, config.credentialVaultKey, destinationLock);
+        const status = await inspectVaultCredential(path, config.credentialVaultKey as string);
+        current();
+        if (status.result === "missing") {
+          if (!await sourceLock.verifyStillHeld() || !await destinationLock.verifyStillHeld()) throw new Error("credential_vault_locked");
+          current(); await createVaultCredential(path, legacy.credential, config.credentialVaultKey, undefined, current);
+        } else if (status.result !== "valid") throw new Error("credential_reauthorization_required");
+        const destination = await readMigrationVault(path, config.credentialVaultKey, destinationLock);
+        if (JSON.stringify(destination.credential) !== JSON.stringify(legacy.credential)) throw new Error("graph_account_conflict");
+        destinationDigest = destination.digest;
+        await fresh();
+        if (snapshot) r.automatic = { profileId: id, generation: account.generation, topologyDigest: snapshot.digest, invalidated: false };
+        current(); r.legacyMigration = { profileId: id, generation: account.generation, sourceDigest: legacy.digest }; account.policy = intersectMigrationPolicy(store.ceiling, store.ceilingFor(id)); account.connected = true; account.shared = false; account.unattended = false; account.revision++;
+        return { migrated: true, profileId: id, generation: a.generation, retainedLegacyBackup: true };
+      }, current, { beforePublication: verifyVaults, ...(snapshot ? { automaticAttempt: { profileId: id, generation: a.generation, topologyDigest: snapshot.digest } } : {}) });
+    } finally { await destinationLock.release().catch(() => undefined); }
+  } finally { await sourceLock.release().catch(() => undefined); }
 }

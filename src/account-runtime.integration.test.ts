@@ -1,34 +1,41 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
+import { writeFileSync as requireSyntheticWrite } from "node:fs";
+import { mkdtemp, rm, writeFile, readFile, utimes } from "node:fs/promises";
+import { randomBytes, createHmac } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import entry, { NativeApprovalSnapshotStore, WarningApprovalTrustStore } from "./index.js";
 import { accountScope } from "./account-scope.js";
 import { AccountStore } from "./accounts.js";
-import { createVaultCredential } from "./credential-vault.js";
+import { acquireVaultLock, createVaultCredential, readVaultCredential, vaultCredentialPath, vaultQuarantinePath } from "./credential-vault.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 import { authorizeOperation, authorizeRoot, type GraphPolicy } from "./policy.js";
 const dirs: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
-async function runtime(worker = false, accountPolicyCeilings: Record<string, GraphPolicy> = {}, legacyPolicy: GraphPolicy = graphPolicyFixture()) {
+async function runtime(worker = false, accountPolicyCeilings: Record<string, GraphPolicy> = {}, legacyPolicy: GraphPolicy = graphPolicyFixture(), directory?: () => string) {
   const root = await mkdtemp(join(tmpdir(), "graph-host-test-")); dirs.push(root); const key = randomBytes(32).toString("base64url");
   const policy = structuredClone(legacyPolicy);
   if (worker) for (const service of ["mail", "todo", "calendar"] as const) policy.services[service].agents["graph-a"] = { operations: ["read"] };
   const methods = new Map<string, { handler: (ctx: any) => Promise<void>; options: any }>(); const tools = new Map<string, any>(); const hooks: Record<string, any> = {};
   const entries = new Map<string, any>();
+  const hostConfig = { gateway: { mode: "local", port: 18789, bind: "loopback", auth: { mode: "token", token: "synthetic-gateway-auth" } } };
   const api = {
     pluginConfig: { enabled: true, credentialVaultKey: key, policy, accountWorkers: worker ? { "graph-a": "A" } : {}, accountPolicyCeilings },
-    runtime: { state: { resolveStateDir: () => root }, agent: { session: { getSessionEntry: ({ sessionKey }: any) => entries.get(sessionKey) } } },
+    runtime: { ...(directory ? { version: "2026.10.1", config: { current: () => hostConfig }, system: { runCommandWithTimeout: vi.fn(async (argv: string[]) => {
+      let stdout: string;
+      if (argv.includes("users")) stdout = directory();
+      else { let proof: unknown; await methods.get("microsoft-graph.directory-host")!.handler({ params: {}, respond: (_ok: boolean, value: unknown) => { proof = value; } }); stdout = JSON.stringify(proof); }
+      return { stdout, stderr: "", code: 0, signal: null, killed: false, termination: "exit" };
+    }) } } : {}), state: { resolveStateDir: () => root }, agent: { session: { getSessionEntry: ({ sessionKey }: any) => entries.get(sessionKey) } } },
     registerTool: (factory: any, options: any) => tools.set(options.name ?? options.names[0], factory),
     registerGatewayMethod: (name: string, handler: any, options: any) => methods.set(name, { handler, options }),
     on: (name: string, handler: any) => hooks[name] = handler,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   };
   entry.register(api as any);
-  const rpc = async (actor: string | undefined, name: string, params: Record<string, unknown> = {}, current = () => true, authority?: any) => {
+  const rpc = async (actor: string | undefined, name: string, params: Record<string, unknown> = {}, current = () => true, authority?: any, signal?: AbortSignal) => {
     let reply: any;
-    const ctx = { params, client: actor ? { authenticatedUserProfile: { profileId: actor } } : {}, hasCurrentClientAuthority: current,
+    const ctx = { params, signal, client: actor ? { authenticatedUserProfile: { profileId: actor } } : {}, hasCurrentClientAuthority: current,
       sessionAccessAuthority: authority, withSessionTurnAuthority: async (_target: unknown, consume: any) => consume(entries.get(params.sessionKey as string)), respond: (ok: boolean, value: unknown, error: any) => { reply = { ok, value, error }; } };
     await methods.get(`microsoft-graph.accounts.${name}`)!.handler(ctx);
     if (!reply.ok) throw new Error(reply.error.message); return reply.value;
@@ -211,5 +218,208 @@ describe("unmocked public V2 Graph host boundary", () => {
     const resolved = await r.store.resolve({ ...c.ctx, lifecycleRevision: "1", assertCurrent() {} });
     expect(() => authorizeOperation(resolved.scope.policy as GraphPolicy, "main", "mail", "read", "me")).not.toThrow();
     expect(() => authorizeOperation(resolved.scope.policy as GraphPolicy, "main", "mail", "send", "me")).toThrow("access_denied");
+  });
+});
+
+const hostRoster = (ids = ["gateway-owner", "A"]) => JSON.stringify({ profiles: ids.map(id => ({ id, displayName: id, avatarMime: null, mergedInto: null, createdAt: 1, updatedAt: 1, emails: [], githubIdentity: null, hasAvatar: false, roleSource: "default" })) });
+describe("automatic sole-user legacy continuity", () => {
+  async function marker(r: Awaited<ReturnType<typeof runtime>>, path: string, state: "in_flight" | "quarantined") {
+    const record = await readVaultCredential(path, r.key);
+    const payload = { format: "openclaw-microsoft-graph-refresh-quarantine", version: 2, generation: record.envelope.generation, keyId: record.envelope.keyId, vaultDigest: record.digest, state, createdAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-01T00:00:00.000Z" };
+    const raw = JSON.stringify({ ...payload, mac: createHmac("sha256", Buffer.from(r.key, "base64url")).update(JSON.stringify(payload)).digest("base64url") }) + "\n";
+    await writeFile(vaultQuarantinePath(path), raw, { mode: 0o600 }); return raw;
+  }
+  async function deniedPublication(r: Awaited<ReturnType<typeof runtime>>) {
+    expect((await r.store.readAccount("A"))?.connected ?? false).toBe(false);
+    expect(await r.store.automaticStatus()).toBeUndefined();
+    const c = r.context("migration-denied"); const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    expect((await r.tools.get("outlook_mail_read").create(c.ctx).execute("denied", { action: "list_messages" })).details.ok).toBe(false);
+    expect(fetch).not.toHaveBeenCalled();
+  }
+  it.each(["in_flight", "quarantined", "malformed"])("both migration paths deny source %s without laundering or changing backup", async state => {
+    const r = await runtime(false, {}, graphPolicyFixture(), () => hostRoster()); await legacy(r);
+    const source = await readFile(vaultCredentialPath(r.root));
+    const raw = state === "malformed" ? "{invalid-marker" : await marker(r, r.root, state as "in_flight" | "quarantined");
+    if (state === "malformed") await writeFile(vaultQuarantinePath(r.root), raw, { mode: 0o600 });
+    for (const method of ["automatic-migration", "migrate-legacy"]) await expect(r.rpc("A", method)).rejects.toThrow(/credential_(reauthorization_required|vault_unavailable)/);
+    expect(await readFile(vaultCredentialPath(r.root))).toEqual(source);
+    expect(await readFile(vaultQuarantinePath(r.root), "utf8")).toBe(raw);
+    await deniedPublication(r);
+  });
+  it.each(["source", "destination"])("denies held and stale %s vault locks without publishing", async side => {
+    const r = await runtime(false, {}, graphPolicyFixture(), () => hostRoster()); await legacy(r); const a = await r.store.provision("A", () => {});
+    const path = side === "source" ? r.root : r.store.accountPath("A", a.generation);
+    const source = await readFile(vaultCredentialPath(r.root)); const lock = await acquireVaultLock(path, "synthetic-holder");
+    try { await expect(r.rpc("A", "automatic-migration")).rejects.toThrow("credential_vault_locked"); } finally { await lock.release(); }
+    const lockPath = vaultCredentialPath(path) + ".lock";
+    await writeFile(lockPath, JSON.stringify({ pid: 999999, operation: "stale", startedAt: "2000-01-01T00:00:00.000Z" }), { mode: 0o600 });
+    const old = new Date("2000-01-01T00:00:00.000Z"); await utimes(lockPath, old, old);
+    await expect(r.rpc("A", "migrate-legacy")).rejects.toThrow("credential_vault_locked");
+    expect(await readFile(vaultCredentialPath(r.root))).toEqual(source); await deniedPublication(r);
+  });
+  it.each(["source", "destination"])("denies compromised %s lock during copied-vault admission", async side => {
+    let reads = 0; let r: Awaited<ReturnType<typeof runtime>>;
+    r = await runtime(false, {}, graphPolicyFixture(), () => {
+      if (++reads === 4) {
+        const path = side === "source" ? r.root : r.store.accountPath("A", 1);
+        // Synchronous corruption at the snapshot boundary: both locks are held.
+        requireSyntheticWrite(vaultCredentialPath(path) + ".lock", "compromised");
+      }
+      return hostRoster();
+    });
+    await legacy(r); const source = await readFile(vaultCredentialPath(r.root));
+    await expect(r.rpc("A", "automatic-migration")).rejects.toThrow("credential_vault_locked");
+    expect(await readFile(vaultCredentialPath(r.root))).toEqual(source); await deniedPublication(r);
+  });
+  it.each(["in_flight", "quarantined", "malformed", "different-token", "orphan-marker"])("interrupted destination %s is never admitted by retry", async state => {
+    const r = await runtime(false, {}, graphPolicyFixture(), () => hostRoster()); await legacy(r); const a = await r.store.provision("A", () => {});
+    const path = r.store.accountPath("A", a.generation); const source = await readVaultCredential(r.root, r.key);
+    if (state !== "orphan-marker") await createVaultCredential(path, { ...source.credential, ...(state === "different-token" ? { refreshToken: "different-synthetic-token" } : {}) }, r.key);
+    else { const lock = await acquireVaultLock(path, "synthetic-orphan-marker"); await lock.release(); }
+    if (state === "malformed" || state === "orphan-marker") await writeFile(vaultQuarantinePath(path), "not-a-marker", { mode: 0o600 });
+    else if (state !== "different-token") await marker(r, path, state as "in_flight" | "quarantined");
+    const destination = state === "orphan-marker" ? undefined : await readFile(vaultCredentialPath(path));
+    for (const method of ["automatic-migration", "migrate-legacy"]) await expect(r.rpc("A", method)).rejects.toThrow(/credential_|graph_account_conflict/);
+    if (destination) expect(await readFile(vaultCredentialPath(path))).toEqual(destination);
+    else await expect(readFile(vaultCredentialPath(path))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(vaultCredentialPath(r.root))).toEqual(source.raw); await deniedPublication(r);
+  });
+  it("caller cancellation before copy cannot publish a credential or positive grant", async () => {
+    let reads = 0; const controller = new AbortController();
+    const r = await runtime(false, {}, graphPolicyFixture(), () => {
+      if (++reads === 3) controller.abort(); return hostRoster();
+    });
+    await legacy(r); const source = await readFile(vaultCredentialPath(r.root));
+    await expect(r.rpc("A", "automatic-migration", {}, () => true, undefined, controller.signal)).rejects.toThrow();
+    await expect(readFile(vaultCredentialPath(r.store.accountPath("A", 1)))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(vaultCredentialPath(r.root))).toEqual(source); await deniedPublication(r);
+  });
+  it.each(["authority", "caller"])("persists a monotone tombstone despite %s cancellation during observed-transition persistence", async cancellation => {
+    let reads = 0; let inject = true; let active = true; const controller = new AbortController();
+    const r = await runtime(false, {}, graphPolicyFixture(), () => {
+      if (inject && ++reads === 4) {
+        setImmediate(() => { if (cancellation === "authority") active = false; else controller.abort(); });
+        return hostRoster(["gateway-owner", "A", "B"]);
+      }
+      return hostRoster();
+    });
+    await legacy(r); const source = await readFile(vaultCredentialPath(r.root)); const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    await expect(r.rpc("A", "automatic-migration", {}, () => active, undefined, controller.signal)).rejects.toThrow("graph_single_user_topology_changed");
+    expect((await r.store.readAccount("A"))!.connected).toBe(false);
+    const tombstone = await r.store.automaticStatus(); expect(tombstone).toMatchObject({ profileId: "A", generation: 1, invalidated: true });
+    inject = false; active = true;
+    await expect(r.rpc("A", "automatic-migration")).rejects.toThrow("graph_single_user_topology_changed");
+    // A fresh store instance reads the durable captured binding, not process state.
+    const reloaded = new AccountStore(r.root); expect(await reloaded.automaticStatus()).toEqual(tombstone);
+    await expect(reloaded.checkAutomatic()).rejects.toThrow("graph_single_user_topology_changed");
+    await expect(r.rpc("A", "migrate-legacy")).resolves.toMatchObject({ migrated: true });
+    expect(await reloaded.automaticStatus()).toEqual(tombstone); expect((await reloaded.readAccount("A"))!.connected).toBe(true);
+    expect(await readFile(vaultCredentialPath(r.root))).toEqual(source); expect(fetch).not.toHaveBeenCalled();
+  });
+
+  async function legacy(r: Awaited<ReturnType<typeof runtime>>) { await createVaultCredential(r.root, { clientId: "synthetic-legacy", tenant: "common", refreshToken: "synthetic-sole-user", scopes: ["Mail.Read", "offline_access"] }, r.key); }
+  it("automatically migrates only authenticated sole admin; old/new/jobs/delegation need no bindings", async () => {
+    const r = await runtime(false, {}, graphPolicyFixture(), () => hostRoster()); await legacy(r);
+    const before = await import("./credential-vault.js").then(m => m.readVaultCredential(r.root, r.key));
+    expect(r.methods.get("microsoft-graph.accounts.automatic-migration")!.options.scope).toBe("operator.admin");
+    await expect(r.rpc(undefined, "automatic-migration")).rejects.toThrow("graph_authenticated_profile_required");
+    expect(await r.rpc("B", "automatic-migration")).toMatchObject({ automatic: false });
+    expect((await r.rpc("A", "status")).account).toBeNull();
+    expect(await r.rpc("A", "automatic-migration")).toMatchObject({ automatic: true, retainedLegacyBackup: true });
+    expect(await r.rpc("A", "automatic-migration")).toMatchObject({ automatic: true });
+    const a = (await r.rpc("A", "status")).account; expect(a.policy).toEqual(r.policy); expect(a.shared).toBe(false); expect(a.unattended).toBe(false);
+    const after = await import("./credential-vault.js").then(m => m.readVaultCredential(r.root, r.key)); expect(after.raw).toEqual(before.raw);
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => url.includes("login.microsoftonline.com") ? new Response(JSON.stringify({ access_token: "synthetic-sole-token", expires_in: 3600 })) : new Response(JSON.stringify({ value: [{ id: "synthetic-result" }] }))));
+    for (const id of ["old-session", "continued-session", "new-session", "cron-job", "ordinary-delegation"]) {
+      const c = r.context(id); const tool = r.tools.get("outlook_mail_read").create(c.ctx);
+      expect((await tool.execute(id, { action: "list_messages" })).details.ok).toBe(true);
+      expect((await r.store.status({ ...c.ctx, assertCurrent() {} }, "A")).binding).toBeNull();
+    }
+    const denied = r.context("new-unapproved-agent", "unknown-agent"); const result = await r.tools.get("outlook_mail_read").create(denied.ctx).execute("denied", { action: "list_messages" }); expect(result.details.error).toBe("access_denied");
+  });
+  it("durably invalidates automatic access on second human/identity change and never resurrects", async () => {
+    let ids = ["gateway-owner", "A"];
+    const r = await runtime(false, {}, graphPolicyFixture(), () => hostRoster(ids)); await legacy(r); await r.rpc("A", "automatic-migration");
+    const c = r.context("old"); const tool = r.tools.get("outlook_mail_read").create(c.ctx); const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    ids = ["gateway-owner", "A", "B"];
+    expect((await tool.execute("second", { action: "list_messages" })).details.error).toBe("graph_single_user_topology_changed"); expect(fetch).not.toHaveBeenCalled();
+    ids = ["gateway-owner", "A"];
+    expect((await tool.execute("returned", { action: "list_messages" })).details.error).toBe("graph_single_user_topology_changed");
+    await expect(r.rpc("A", "automatic-migration")).rejects.toThrow("graph_single_user_topology_changed");
+    expect((await r.store.automaticStatus())!.invalidated).toBe(true);
+  });
+  it("rechecks topology after OAuth/response waits and withholds output after detected transition", async () => {
+    let ids = ["gateway-owner", "A"];
+    const r = await runtime(false, {}, graphPolicyFixture(), () => hostRoster(ids)); await legacy(r); await r.rpc("A", "automatic-migration");
+    const c = r.context("wait"); let requests = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => { requests++; ids.push("B"); return new Response(JSON.stringify({ access_token: "must-not-be-dispatched", expires_in: 3600 })); }));
+    const result = await r.tools.get("outlook_mail_read").create(c.ctx).execute("after-oauth", { action: "list_messages" });
+    expect(result.details.ok).toBe(false); expect(requests).toBe(1); expect(JSON.stringify(result)).not.toContain("must-not-be-dispatched");
+  });
+  it("withholds fetched output and invalidates pending approvals after a detected topology transition", async () => {
+    let ids = ["gateway-owner", "A"];
+    const r = await runtime(false, {}, graphPolicyFixture(), () => hostRoster(ids)); await legacy(r); await r.rpc("A", "automatic-migration");
+    const c = r.context("approval-snapshot"); r.tools.get("outlook_mail_write").create(c.ctx);
+    const approval = await r.hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: "auto-approval", params: { action: "mark_read", messageId: "synthetic-id", isRead: true } }, c.ctx);
+    expect(approval.requireApproval).toBeDefined(); ids.push("B");
+    await expect(approval.requireApproval.onResolution("allow-once")).rejects.toThrow("graph_single_user_topology_changed");
+    const second = await runtime(false, {}, graphPolicyFixture(), () => hostRoster(ids)); ids = ["gateway-owner", "A"]; await legacy(second); await second.rpc("A", "automatic-migration");
+    const read = second.context("output");
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.includes("login.microsoftonline.com")) return new Response(JSON.stringify({ access_token: "synthetic-token", expires_in: 3600 }));
+      ids.push("B"); return new Response(JSON.stringify({ value: [{ subject: "must-never-release-topology-private-output" }] }));
+    }));
+    const result = await second.tools.get("outlook_mail_read").create(read.ctx).execute("output", { action: "list_messages" });
+    expect(result.details.ok).toBe(false); expect(JSON.stringify(result)).not.toContain("must-never-release-topology-private-output");
+  });
+  it("fails closed on outages, migration authority loss, and preserves explicit worker precedence", async () => {
+    let unavailable = false;
+    const r = await runtime(true, {}, graphPolicyFixture(), () => unavailable ? "malformed" : hostRoster()); await legacy(r); await r.rpc("A", "automatic-migration");
+    const worker = r.context("fixed", "graph-a"); const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    expect((await r.tools.get("outlook_mail_read").create(worker.ctx).execute("fixed", { action: "list_messages" })).details.error).toBe("access_denied");
+    unavailable = true; const c = r.context("outage"); expect((await r.tools.get("outlook_mail_read").create(c.ctx).execute("outage", { action: "list_messages" })).details.error).toBe("graph_single_user_directory_unavailable"); expect(fetch).not.toHaveBeenCalled();
+    const second = await runtime(false, {}, graphPolicyFixture(), () => hostRoster()); await legacy(second);
+    await expect(second.rpc("A", "automatic-migration", {}, () => false)).rejects.toThrow("graph_authenticated_profile_required"); expect((await second.rpc("A", "status")).account).toBeNull();
+  });
+  it("recovers a copied-vault interrupted migration without altering encrypted backup", async () => {
+    let reads = 0; let fault = true;
+    const r = await runtime(false, {}, graphPolicyFixture(), () => ++reads === 4 && fault ? "malformed" : hostRoster()); await legacy(r);
+    await expect(r.rpc("A", "automatic-migration")).rejects.toThrow("graph_single_user_directory_unavailable");
+    expect((await r.store.readAccount("A"))!.connected).toBe(false);
+    expect(await r.store.automaticStatus()).toBeUndefined();
+    fault = false;
+    expect(await r.rpc("A", "automatic-migration")).toMatchObject({ automatic: true, retainedLegacyBackup: true });
+    expect((await r.store.readAccount("A"))!.connected).toBe(true);
+  });
+  it("records a permanent tombstone for a topology change detected during migration", async () => {
+    let reads = 0; let changed = true;
+    const r = await runtime(false, {}, graphPolicyFixture(), () => changed && ++reads === 4 ? hostRoster(["gateway-owner", "A", "B"]) : hostRoster()); await legacy(r);
+    await expect(r.rpc("A", "automatic-migration")).rejects.toThrow("graph_single_user_topology_changed");
+    expect((await r.store.automaticStatus())!.invalidated).toBe(true);
+    changed = false;
+    await expect(r.rpc("A", "automatic-migration")).rejects.toThrow("graph_single_user_topology_changed");
+    // Explicit self-migration remains usable after an interrupted automatic
+    // bootstrap, but cannot resurrect the revoked convenience receipt.
+    expect(await r.rpc("A", "migrate-legacy")).toMatchObject({ migrated: true });
+    expect((await r.store.automaticStatus())!.invalidated).toBe(true);
+    expect((await r.store.readAccount("A"))!.connected).toBe(true);
+  });
+  it("revokes convenience on account disconnect, not explicit fallback authority", async () => {
+    const r = await runtime(false, {}, graphPolicyFixture(), () => hostRoster()); await legacy(r); await r.rpc("A", "automatic-migration");
+    const a = (await r.store.readAccount("A"))!;
+    await r.rpc("A", "disconnect", { expectedRevision: a.revision });
+    expect((await r.store.automaticStatus())!.invalidated).toBe(true);
+    const c = r.context("disconnected"); vi.stubGlobal("fetch", vi.fn());
+    const result = await r.tools.get("outlook_mail_write").create(c.ctx).execute("disconnected", { action: "mark_read", messageId: "synthetic-id", isRead: true });
+    expect(result.details.error).toBe("graph_single_user_topology_changed"); expect(result.details.remoteEffectsMayHaveOccurred).toBe(true); expect(result.details.outcome).toBe("unknown");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("honors stricter profile ceiling and explicit account-policy changes end automatic mode", async () => {
+    const cap = structuredClone(graphPolicyFixture()); cap.services.mail.agents.main.operations = ["read"];
+    const r = await runtime(false, { A: cap }, graphPolicyFixture(), () => hostRoster()); await legacy(r); await r.rpc("A", "automatic-migration");
+    const a = (await r.rpc("A", "status")).account; expect(a.policy.services.mail.agents.main.operations).toEqual(["read"]);
+    await r.rpc("A", "configure", { expectedRevision: a.revision, policy: a.policy, shared: true, unattended: true });
+    expect((await r.store.automaticStatus())!.invalidated).toBe(true);
+    const c = r.context("explicit"); await r.bind("A", "A", c); expect((await r.store.readAccount("A"))!.shared).toBe(true);
   });
 });

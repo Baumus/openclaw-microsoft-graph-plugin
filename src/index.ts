@@ -253,7 +253,11 @@ export async function withConcurrency<T>(limit: number, action: () => Promise<T>
   try { return await action(); } finally { activeRequests -= 1; }
 }
 export function deadlineSignal(signal: AbortSignal | undefined, operationTimeoutMs: number, requestTimeoutMs = operationTimeoutMs): AbortSignal {
-  return graphOperationSignal(signal, operationTimeoutMs, requestTimeoutMs);
+  // After tool entry, CLI-backed checks add a finite operation allowance;
+  // initial hook/account admission precedes this timer (not a wall-time lease).
+  // HTTP request deadlines stay unchanged. Caller cancellation denies later
+  // effects but does not immediately stop the separately bounded CLI reader.
+  return graphOperationSignal(signal, operationTimeoutMs + (accountScope.getStore()?.directoryAdmissionAllowanceMs ?? 0), requestTimeoutMs);
 }
 
 const SCOPES: Record<string, string[]> = {
@@ -3227,7 +3231,13 @@ plugin.register = (api) => {
   if (typeof (api as unknown as { registerGatewayMethod?: unknown }).registerGatewayMethod === "function" && stateResolver) {
     registerConfigurationUiMethods(api as unknown as Parameters<typeof registerConfigurationUiMethods>[0], runtimeConfig, () => stateResolver(process.env));
     registerUpdateStatusMethod(api as unknown as Parameters<typeof registerUpdateStatusMethod>[0]);
-    if (accountStore) registerAccountMethods(api, accountStore, runtimeConfig);
+    if (accountStore) {
+      api.registerGatewayMethod("microsoft-graph.directory-host", ctx => {
+        if (Object.keys(ctx.params).length) { ctx.respond(false, undefined, { code: "INVALID_REQUEST", message: "invalid_rpc_parameters" }); return; }
+        ctx.respond(true, { hostInstanceId: accountRuntime.hostInstanceId });
+      }, { scope: "operator.read" });
+      registerAccountMethods(api, accountStore, runtimeConfig);
+    }
   }
   const warningApprovalTrustStore = new WarningApprovalTrustStore();
   api.on(

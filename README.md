@@ -45,7 +45,7 @@ Wait until the Control UI confirms that the Gateway has applied your rules. Run 
 
 - Every operation is checked against a credential-free, default-deny per-agent policy before plugin-side key selection, vault I/O, OAuth, or Graph access.
 - Warning-level mutations require OpenClaw-native call approval by default. Operators may explicitly set `warningApprovalsRequired: false`; critical delete, send, and respond operations always retain native call-bound approval.
-- Every execution context has one explicitly bound personal delegated account. Accounts, policy/consent, refresh locks, approvals and caches are separated. There is no implicit global account fallback; token exchanges request only the operation-specific scope.
+- Every execution context has one fixed personal delegated account, selected by explicit binding/worker or the bounded authenticated single-user assistant. Accounts, policy/consent, refresh locks, approvals and caches are separated. There is no implicit global account fallback; token exchanges request only the operation-specific scope.
 - One AES-256-GCM encrypted vault record, one fail-closed lock, and one authenticated quarantine marker protect the rotating refresh-token lifecycle.
 - Access-token caching is bounded and transactional: a token associated with a rotated refresh token is admitted only after durable vault replacement and verification.
 - Every refresh durably publishes authenticated `in_flight` state before OAuth dispatch; uncertainty transitions it to `quarantined`, and either state blocks another exchange until verified completion, explicit recovery, or reauthorization.
@@ -57,7 +57,7 @@ See [architecture](docs/ARCHITECTURE.md), [OAuth access matrix](docs/OAUTH_ACCES
 
 ## Configuration reference
 
-Version 4 uses profile-owned encrypted vaults and a protected account/session registry. See the [personal account and migration guide](docs/MULTI_USER.md) before upgrading; existing tools now require explicit account authority. The policy contains authorization rules only; it never contains credential locations or credential material.
+Version 4 uses profile-owned encrypted vaults and a protected account/session registry. See the [personal account and migration guide](docs/MULTI_USER.md) before upgrading; existing tools now require explicit account authority or a qualifying authenticated sole-user receipt. The policy contains authorization rules only; it never contains credential locations or credential material.
 
 ### Detailed prerequisites
 
@@ -185,7 +185,7 @@ openclaw plugins enable microsoft-graph
 
 Open **Mein Microsoft-Konto** in the authenticated Control UI. Create your own account, choose account-specific agent rights within the administrator's policy ceiling, save them, and sign in using the approved Microsoft app and your device code. Team sharing and unattended-worker consent are separate default-off choices. Select a controllable session and explicitly bind your account or an owner-shared account. The plugin does not infer account ownership from request text or the most recent speaker.
 
-Existing installations require the explicit self-migration operation described in [MULTI_USER.md](docs/MULTI_USER.md); no live migration is automatic. Legacy global credential RPCs and token-export CLI commands are not registered in version 4. Use `openclaw microsoft-graph accounts` for setup guidance.
+On supported single-user installations, loading **Mein Microsoft-Konto** as the authenticated sole administrator automatically preserves the existing connection and nonwidening rights; no manual session/worker configuration is needed. This candidate uses fresh whole-host directory snapshots, not an instant-revocation catalog lease. Other installations retain the explicit self-migration operation. See [MULTI_USER.md](docs/MULTI_USER.md) for exact supported-host, bootstrap and safety boundaries. No production migration or activation has been performed. Legacy global credential RPCs and token-export CLI commands are not registered in version 4. Use `openclaw microsoft-graph accounts` for setup guidance.
 
 Verify a read-only request in each of two separately bound sessions, then a denied unbound/foreign-account request. Synthetic tests are not a production OAuth canary. The source candidate does not modify live configuration or credentials.
 
@@ -215,7 +215,7 @@ OneDrive mutation authorization occurs before a warning approval request or appr
 
 ### Status, recovery, and rollback
 
-The personal page reports your connection as missing, valid, quarantined, or unavailable. Never overwrite an unavailable vault. Reconnect a quarantined account into a new connection generation; old encrypted records remain retained but are not implicit execution authority. See [MULTI_USER.md](docs/MULTI_USER.md) for explicit migration and rollback rules. Never roll back to implicit-global access; disable Graph until a reviewed rollback is accepted.
+The personal page reports your connection as missing, valid, quarantined, or unavailable. Never overwrite an unavailable vault. Automatic and explicit legacy migration both deny blocking/malformed refresh markers and unsafe source/destination locks; neither silently recovers refresh state. Reconnect a quarantined account into a new connection generation; old encrypted records remain retained but are not implicit execution authority. See [MULTI_USER.md](docs/MULTI_USER.md) for explicit migration and rollback rules. Never roll back to implicit-global access; disable Graph until a reviewed rollback is accepted.
 
 ### Safety notes
 

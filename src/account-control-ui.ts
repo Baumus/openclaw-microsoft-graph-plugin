@@ -2,7 +2,7 @@ import type { ControlUiHost } from "openclaw/plugin-sdk/control-ui";
 import type { Account, Binding } from "./accounts.js";
 import type { GraphPolicy } from "./policy.js";
 
-type Status = { profileId: string; account: Account | null; ceiling: GraphPolicy; workers: string[]; warning: string; credential: { result: string } };
+type Status = { profileId: string; account: Account | null; ceiling: GraphPolicy; workers: string[]; warning: string; automatic?: { profileId: string; invalidated: boolean }; credential: { result: string } };
 type SessionStatus = { binding: Binding | null; available: string[]; workerProfileId?: string };
 const serviceLabels = { calendar: "Kalender", mail: "E-Mail", todo: "To Do" };
 const actionLabels: Record<string, string> = { read: "Lesen", create: "Erstellen", update: "Bearbeiten", respond: "Antworten", attach: "Anhänge", delete: "Löschen", draft: "Entwürfe", move: "Verschieben", mark: "Markieren", send: "Senden", write: "Schreiben" };
@@ -48,6 +48,10 @@ export class AccountPage {
   private async load() {
     const epoch = ++this.epoch;
     try {
+      if (this.host.connection.canAdmin) {
+        try { await this.request("automatic-migration"); }
+        catch { this.notice = "Automatische Einbenutzer-Übernahme derzeit nicht verfügbar. Die ausdrückliche persönliche Einrichtung bleibt verfügbar; es gibt keinen globalen Rückfall."; }
+      }
       const status = await this.request<Status>("status");
       if (!this.active() || epoch !== this.epoch) return;
       this.status = status; this.policy = status.account ? clone(status.account.policy) : undefined;
@@ -100,10 +104,12 @@ export class AccountPage {
   render() {
     if (!this.active()) return;
     const main = node("main"); main.className = "mg-page"; main.append(node("h1", "Mein Microsoft-Konto"));
-    main.append(node("p", "Deine persönliche Verbindung, ihre Agentrechte und das Konto der ausgewählten Session werden getrennt verwaltet. Dieser Hostpfad benötigt eine ausdrückliche gemeinsame Freigabe; private Ausgabegarantien sind hier nicht nachgewiesen."));
+    main.append(node("p", "Deine persönliche Verbindung, ihre Agentrechte und das Konto der ausgewählten Session werden getrennt verwaltet. Bei einer nachgewiesenen Einbenutzer-Installation übernimmt der Assistent die bestehende Verbindung automatisch. Mehrbenutzer-Nutzung benötigt ausdrückliche Freigaben; private Ausgabegarantien für gemeinsame Sessions sind hier nicht nachgewiesen."));
     if (!this.host.connection.connected) { main.append(node("p", "Mit OpenClaw verbinden, um dein Konto zu verwalten.")); this.container.replaceChildren(main); return; }
     if (!this.status) { main.append(node("p", this.error || "Persönliches Konto wird geladen …")); this.container.replaceChildren(main); return; }
-    main.append(node("p", this.status.warning));
+    const automatic = this.status.automatic?.profileId === this.status.profileId && !this.status.automatic.invalidated;
+    main.append(node("p", automatic ? "Automatische Einbenutzer-Übernahme aktiv: Bestehende Agentrechte gelten für Sessions, Jobs und normale Delegation ohne zusätzliche Kontobindung. Das vollständige Benutzerverzeichnis wird vor neuen Vorgängen und an sensiblen asynchronen Grenzen erneut geprüft. Bereits versendete Microsoft-Anfragen können nicht zurückgerufen werden." : this.status.warning));
+    if (this.status.automatic?.invalidated) main.append(node("p", "Automatischer Zugriff bleibt nach einer Benutzerverzeichnis- oder Kontorechteänderung ausgeschaltet. Nutze jetzt ausdrückliche Freigaben und feste Kontobindungen."));
     if (this.error) { const e = node("p", this.error); e.className = "mg-error"; main.append(e); }
     if (this.notice) { const e = node("p", this.notice); e.className = "mg-success"; main.append(e); }
     const account = this.status.account;
@@ -156,6 +162,7 @@ export class AccountPage {
       }
     }
     permissions.append(roots);
+    if (automatic) permissions.append(node("p", "Das Speichern von Kontorechten beendet den automatischen Modus dauerhaft; anschließend gelten die ausdrücklichen Freigaben und Bindungen."));
     this.check(permissions, "Gemeinsame Nutzung dieses Kontos ausdrücklich freigeben", this.shared, v => this.shared = v);
     this.check(permissions, "Delegierte / unbeaufsichtigte Nutzung durch fest gebundene Worker freigeben", this.unattended, v => this.unattended = v);
     permissions.append(node("p", this.status.workers.length ? `Fest gebundene Worker: ${this.status.workers.join(", ")}` : "Keine fest gebundenen Worker konfiguriert."));
@@ -163,7 +170,7 @@ export class AccountPage {
     const context = node("section"); context.append(node("h2", "Ausführungskonto der ausgewählten Session"));
     if (this.session?.workerProfileId) context.append(node("p", `Festes Worker-Konto: ${this.session.workerProfileId}. Ein Kontowechsel ist nicht möglich.`));
     else if (this.session) {
-      context.append(node("p", this.session.binding ? `Aktives Konto: ${this.session.binding.profileId}` : "Noch kein Konto gebunden. Es gibt keinen automatischen Rückfall auf ein anderes Konto."));
+      context.append(node("p", this.session.binding ? `Aktives Konto: ${this.session.binding.profileId}` : automatic ? "Dein automatisch übernommenes Konto wird verwendet; keine Session- oder Worker-Konfiguration nötig." : "Noch kein Konto gebunden. Es gibt keinen automatischen Rückfall auf ein anderes Konto."));
       const select = node("select"); select.setAttribute("aria-label", "Ausführungskonto auswählen");
       for (const id of this.session.available) { const option = node("option", id === this.status.profileId ? "Mein Konto" : id); option.value = id; select.append(option); }
       if (this.session.binding) select.value = this.session.binding.profileId;

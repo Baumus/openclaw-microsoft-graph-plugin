@@ -325,11 +325,12 @@ async function fetchGraphValue<T>(
   let retries = 0;
   while (true) {
     throwPreferredAbort(operationSignal);
+    if (accountScope.getStore()) await assertAccountEffect();
+    throwPreferredAbort(operationSignal);
     const requestTimeout = AbortSignal.timeout(policy.requestTimeoutMs);
     const requestSignal = operationSignal ? AbortSignal.any([operationSignal, requestTimeout]) : requestTimeout;
     let response: Response;
     try {
-      if (accountScope.getStore()) await assertAccountEffect();
       response = await fetchFn(url, { ...init, signal: requestSignal });
     } catch (error) {
       throwPreferredAbort(operationSignal);
@@ -381,6 +382,8 @@ async function fetchGraphResponse(
   let retries = 0;
   while (true) {
     throwPreferredAbort(operationSignal);
+    if (accountScope.getStore()) await assertAccountEffect();
+    throwPreferredAbort(operationSignal);
     const headerTimeout = new AbortController();
     const requestSignal = operationSignal
       ? AbortSignal.any([operationSignal, headerTimeout.signal])
@@ -391,7 +394,6 @@ async function fetchGraphResponse(
     );
     let response: Response;
     try {
-      if (accountScope.getStore()) await assertAccountEffect();
       response = await fetchFn(url, { ...init, signal: requestSignal });
     } catch (error) {
       throwPreferredAbort(operationSignal);

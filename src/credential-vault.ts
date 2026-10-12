@@ -292,6 +292,21 @@ async function replaceRecord(stateDir: string, current: VaultRecord, credential:
   catch { throw new Error("credential_vault_write_failed"); }
 }
 
+/** Migration admission shares refresh's lock/marker contract; it never recovers a marker. */
+export async function readMigrationVault(stateDir: string, keyValue: unknown, lock: FileLockHandle): Promise<VaultRecord> {
+  await assertMigrationRefreshClear(stateDir, keyValue, lock);
+  const record = await readVaultCredential(stateDir, keyValue);
+  await assertMigrationRefreshClear(stateDir, keyValue, lock);
+  return record;
+}
+export async function assertMigrationRefreshClear(stateDir: string, keyValue: unknown, lock: FileLockHandle): Promise<void> {
+  if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked");
+  // Any authenticated marker (including one bound to an uncertain predecessor)
+  // denies copying; malformed/unreadable/orphan state also fails closed.
+  if (await readMarker(stateDir, keyValue)) throw new Error("credential_reauthorization_required");
+  if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked");
+}
+
 export async function refreshVaultCredential(params: { stateDir: string; key: unknown; signal?: AbortSignal; exchange: (credential: VaultCredential, binding: VaultBinding) => Promise<VaultRefreshResult>; onDurableResult?: (result: VaultRefreshResult, predecessor: VaultBinding, durable: VaultBinding) => void; testHooks?: MutationHooks }): Promise<string> {
   params.signal?.throwIfAborted(); const lock = await acquireVaultLock(params.stateDir, "refresh");
   try {

@@ -6,12 +6,15 @@ All notable changes to this project are documented here.
 
 ## 4.0.0 - 2026-10-12 (candidate, not published)
 
-- Breaking: remove implicit global Microsoft account authority and legacy credential RPC registration. Existing `me` tools and argument schemas are unchanged, but need an authenticated session binding or an explicitly consented fixed worker.
+- Breaking: remove implicit global Microsoft account authority and legacy credential RPC registration. Existing `me` tools and argument schemas are unchanged, but need an authenticated session binding, an explicitly consented fixed worker, or a qualified sole-user migration receipt.
 - Add one encrypted personal connection per canonical OpenClaw profile, own-profile sign-in/status/disconnect/reconnect and explicit idempotent legacy migration. No first-visitor claim, team consent, worker consent, token export, or global fallback.
 - Add protected persistent session-incarnation/account bindings, owner sharing and unattended consent, account-aware agent/resource policy restricted by administrative per-profile ceilings.
 - Add personal native Control UI with account permissions and session selection; retain separate administrative ceiling editor.
 - Bind native approvals, continuations, OneDrive instruction acknowledgements, vault/cache identities and every network dispatch to the account/generation/binding context. Recheck public V2 host invocation authority before effects.
-- Require OpenClaw 2026.10.1 for public authenticated-profile/session authority and V2 tool factories. Automatic DM admission/fork propagation is not claimed; authenticated UI and fixed-worker paths are supported.
+- Require OpenClaw 2026.10.1 for public authenticated-profile/session authority and V2 tool factories. Automatic multi-user DM admission/fork propagation is not claimed; authenticated UI and fixed-worker paths are supported.
+- Add a bounded automatic sole-administrator legacy assistant on ordinary personal-page load: full canonical host-directory snapshots through the public CLI, exact local instance/auth pinning, encrypted backup preservation, legacy∩ceiling policy, no manual singleton session/worker setup, and durable non-resurrecting topology/account-change invalidation.
+- Enforce existing refresh-marker admission under both source/destination vault locks in the common legacy migration writer; reject uncertain copies/locks without token laundering. Serialize detected bootstrap topology tombstones independently of request cancellation, publishing only revocation.
+- Clearly separate fresh-operation/checkpoint snapshot checks from an atomic catalog lifetime lease; unsupported host/auth/runtime shapes retain explicit migration. No live activation or strict instant-revocation claim.
 
 
 ## 3.12.1 - 2026-10-10

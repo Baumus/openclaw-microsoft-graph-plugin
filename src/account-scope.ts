@@ -4,6 +4,8 @@ export type AccountScope = {
   identity: string;
   stateDir: string;
   policy: unknown;
+  /** Bounded local directory admission allowance; caller/native cancellation wins. */
+  directoryAdmissionAllowanceMs?: number;
   assertCurrent: () => void;
   assertFresh: () => Promise<void>;
 };
