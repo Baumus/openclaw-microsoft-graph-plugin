@@ -2,7 +2,7 @@
   "id": "microsoft-graph",
   "name": "Connect Microsoft 365 to OpenClaw",
   "description": "Bring Outlook mail and calendar, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.",
-  "version": "3.12.1",
+  "version": "4.0.0",
   "categories": [
     "productivity"
   ],
@@ -348,6 +348,316 @@
         },
         "additionalProperties": false
       },
+      "accountPolicyCeilings": {
+        "type": "object",
+        "patternProperties": {
+          "^.*$": {
+            "type": "object",
+            "required": [
+              "version",
+              "rules",
+              "services"
+            ],
+            "properties": {
+              "version": {
+                "type": "number",
+                "const": 2
+              },
+              "rules": {
+                "type": "object",
+                "required": [
+                  "default"
+                ],
+                "properties": {
+                  "default": {
+                    "type": "string",
+                    "const": "deny"
+                  },
+                  "warningApprovalsByService": {
+                    "type": "object",
+                    "properties": {
+                      "onedrive": {
+                        "type": "boolean"
+                      },
+                      "calendar": {
+                        "type": "boolean"
+                      },
+                      "mail": {
+                        "type": "boolean"
+                      },
+                      "todo": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              },
+              "services": {
+                "type": "object",
+                "required": [
+                  "onedrive",
+                  "calendar",
+                  "mail",
+                  "todo"
+                ],
+                "properties": {
+                  "onedrive": {
+                    "type": "object",
+                    "required": [
+                      "allowed_roots"
+                    ],
+                    "properties": {
+                      "allowed_roots": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "label",
+                            "path",
+                            "drive_id",
+                            "item_id",
+                            "include_descendants",
+                            "permissions",
+                            "agents"
+                          ],
+                          "properties": {
+                            "label": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9_-]{0,159}$"
+                            },
+                            "path": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "drive_id": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "item_id": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "include_descendants": {
+                              "type": "boolean",
+                              "const": true
+                            },
+                            "agents_instructions": {
+                              "type": "string",
+                              "const": "trusted"
+                            },
+                            "permissions": {
+                              "type": "object",
+                              "required": [
+                                "read",
+                                "write",
+                                "delete"
+                              ],
+                              "properties": {
+                                "read": {
+                                  "type": "boolean"
+                                },
+                                "write": {
+                                  "type": "boolean"
+                                },
+                                "delete": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "agents": {
+                              "type": "object",
+                              "patternProperties": {
+                                "^.*$": {
+                                  "type": "object",
+                                  "required": [
+                                    "permissions"
+                                  ],
+                                  "properties": {
+                                    "permissions": {
+                                      "type": "object",
+                                      "properties": {
+                                        "read": {
+                                          "type": "boolean"
+                                        },
+                                        "write": {
+                                          "type": "boolean"
+                                        },
+                                        "delete": {
+                                          "type": "boolean"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                }
+                              }
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "calendar": {
+                    "type": "object",
+                    "required": [
+                      "agents"
+                    ],
+                    "properties": {
+                      "agents": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^.*$": {
+                            "type": "object",
+                            "required": [
+                              "operations"
+                            ],
+                            "properties": {
+                              "operations": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "enum": [
+                                    "read",
+                                    "create",
+                                    "update",
+                                    "respond",
+                                    "attach",
+                                    "delete"
+                                  ]
+                                },
+                                "minItems": 1
+                              },
+                              "resources": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "minItems": 1
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "mail": {
+                    "type": "object",
+                    "required": [
+                      "agents"
+                    ],
+                    "properties": {
+                      "agents": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^.*$": {
+                            "type": "object",
+                            "required": [
+                              "operations"
+                            ],
+                            "properties": {
+                              "operations": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "enum": [
+                                    "read",
+                                    "draft",
+                                    "update",
+                                    "move",
+                                    "mark",
+                                    "send",
+                                    "delete"
+                                  ]
+                                },
+                                "minItems": 1
+                              },
+                              "resources": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "minItems": 1
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "todo": {
+                    "type": "object",
+                    "required": [
+                      "agents"
+                    ],
+                    "properties": {
+                      "agents": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^.*$": {
+                            "type": "object",
+                            "required": [
+                              "operations"
+                            ],
+                            "properties": {
+                              "operations": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "enum": [
+                                    "read",
+                                    "create",
+                                    "update",
+                                    "delete"
+                                  ]
+                                },
+                                "minItems": 1
+                              },
+                              "resources": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "minItems": 1
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "accountWorkers": {
+        "type": "object",
+        "patternProperties": {
+          "^.*$": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      },
       "requestTimeoutMs": {
         "type": "integer",
         "minimum": 1000,
@@ -427,9 +737,9 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/6966e889a823b8e8362793953cd3b55602d7de0bca93f4edb1212252de41b90e/index.js",
+    "entry": "dist/control-ui/5aea81d113473783dd387d9d0c6bad42bd91ea9334f5d4755c65915f23a4c79b/index.js",
     "styles": [
-      "dist/control-ui/6966e889a823b8e8362793953cd3b55602d7de0bca93f4edb1212252de41b90e/index.css"
+      "dist/control-ui/5aea81d113473783dd387d9d0c6bad42bd91ea9334f5d4755c65915f23a4c79b/index.css"
     ]
   },
   "contracts": {

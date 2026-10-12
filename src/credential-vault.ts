@@ -193,10 +193,12 @@ export async function readVaultCredential(stateDir: string, keyValue: unknown): 
   try { const raw = await readVaultRaw(stateDir); const envelope = parseVaultEnvelope(raw.toString("utf8")); return { envelope, credential: decryptVaultEnvelope(envelope, keyValue), digest: digest(raw), raw }; }
   catch { throw unavailable(); }
 }
-export async function createVaultCredential(stateDir: string, credential: VaultCredential, keyValue: unknown): Promise<VaultRecord> {
+export async function createVaultCredential(stateDir: string, credential: VaultCredential, keyValue: unknown, _reserved?: undefined, assertCurrent: () => void = () => {}): Promise<VaultRecord> {
   const content = serializeVaultEnvelope(encryptVaultCredential(1, credential, keyValue));
   try {
+    assertCurrent();
     await createSecretFileAtomic({ rootDir: stateDir, filePath: vaultCredentialPath(stateDir), content, mode: 0o600, dirMode: 0o700, durable: true });
+    assertCurrent();
     const record = await readVaultCredential(stateDir, keyValue);
     if (record.envelope.generation !== 1 || record.digest !== digest(Buffer.from(content))) throw unavailable();
     return record;

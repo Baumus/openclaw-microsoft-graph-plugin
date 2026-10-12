@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("./account-runtime.js", () => ({ createAccountRuntime: (api: unknown, config: unknown) => ({ registrationApi: api, config, store: undefined, clearSession: () => {}, hook: (_event: unknown, _ctx: unknown, action: () => unknown) => action() }) }));
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 
 /**

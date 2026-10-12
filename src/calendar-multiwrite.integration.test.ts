@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
+// Operation-regression fixtures use an explicit account-admission test double.
+// The real V2 host/profile/account boundary is exercised unmocked in account-runtime.integration.test.ts.
+vi.mock("./account-runtime.js", () => ({ createAccountRuntime: (api: unknown, config: unknown) => ({ registrationApi: api, config, store: undefined, clearSession: () => {}, hook: (_event: unknown, _ctx: unknown, action: () => unknown) => action() }) }));
+
 const credential = vi.hoisted(() => ({
   readCredential: vi.fn(async () => ({ clientId: "synthetic", refreshToken: "synthetic", tenant: "common", scopes: ["Calendars.ReadWrite"] })),
   exchangeRefreshToken: vi.fn(async () => "synthetic-token"),

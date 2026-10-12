@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { saveMediaStream } from "openclaw/plugin-sdk/media-store";
+import { assertAccountEffect, captureAccountGuard } from "./account-scope.js";
 import { contentTypeAllowed, drivePath, graphRequest, graphStreamRequest, ONEDRIVE_READ_MAX_BYTES, OUTLOOK_ATTACHMENT_MAX_BYTES, safeDriveItem, safeId } from "./graph.js";
 import type { AllowedRoot } from "./policy.js";
 
@@ -78,11 +79,13 @@ export function sanitizeAttachmentMime(value: unknown): string {
 }
 
 export async function publishPrivateMediaBytes(bytes: Uint8Array, nameValue: unknown, mimeValue: unknown, maxBytes: number) {
+  const assertCommitAllowed = captureAccountGuard();
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || bytes.byteLength > maxBytes) throw new Error("file_too_large");
   const name = sanitizeAttachmentName(nameValue);
   const contentType = sanitizeAttachmentMime(mimeValue);
   async function* source() { yield bytes; }
-  const saved = await saveMediaStream(source(), contentType, "inbound", maxBytes, name, name);
+  await assertAccountEffect();
+  const saved = await saveMediaStream(source(), contentType, "inbound", maxBytes, name, name, { assertCommitAllowed });
   if (!Number.isSafeInteger(saved.size) || saved.size !== bytes.byteLength) fail("invalid_provider_response");
   const artifact = {
     type: "file" as const,
@@ -97,6 +100,7 @@ export async function publishPrivateMediaBytes(bytes: Uint8Array, nameValue: unk
 
 /** Stream one allowlisted OneDrive file directly into OpenClaw private media. */
 export async function downloadOneDriveFile(options: { root: AllowedRoot; relativePath: string; token: string; signal?: AbortSignal; fetchFn?: typeof fetch }) {
+  const assertCommitAllowed = captureAccountGuard();
   const fetchFn = options.fetchFn ?? fetch;
   const metadata = await graphRequest(options.token, `${drivePath(options.root, options.relativePath)}?$select=id,name,size,file,createdDateTime,lastModifiedDateTime,webUrl`, { signal: options.signal }, fetchFn);
   if (metadata?.folder || !metadata?.file || !Number.isSafeInteger(metadata.size) || metadata.size < 0) fail("invalid_provider_response");
@@ -105,6 +109,7 @@ export async function downloadOneDriveFile(options: { root: AllowedRoot; relativ
   const contentType = sanitizeAttachmentMime(metadata.file.mimeType ?? "application/octet-stream");
   if (!contentTypeAllowed(contentType)) fail("unsupported_attachment_type");
   const response = await graphStreamRequest(options.token, drivePath(options.root, options.relativePath, "/content"), { signal: options.signal }, fetchFn);
+  await assertAccountEffect();
   const hash = createHash("sha256");
   let streamedBytes = 0;
   async function* source() {
@@ -112,7 +117,9 @@ export async function downloadOneDriveFile(options: { root: AllowedRoot; relativ
     const reader = response.body?.getReader();
     try {
       while (reader) {
+        await assertAccountEffect();
         const { done, value } = await reader.read();
+        await assertAccountEffect();
         if (done) break;
         streamedBytes += value.byteLength;
         if (streamedBytes > ONEDRIVE_READ_MAX_BYTES) {
@@ -122,11 +129,12 @@ export async function downloadOneDriveFile(options: { root: AllowedRoot; relativ
         hash.update(value);
         yield value;
       }
+      await assertAccountEffect();
     } finally {
       reader?.releaseLock();
     }
   }
-  const saved = await saveMediaStream(source(), contentType, "inbound", ONEDRIVE_READ_MAX_BYTES, name, name);
+  const saved = await saveMediaStream(source(), contentType, "inbound", ONEDRIVE_READ_MAX_BYTES, name, name, { assertCommitAllowed });
   if (!Number.isSafeInteger(saved.size) || saved.size !== streamedBytes || saved.size !== metadata.size) fail("invalid_provider_response");
   const artifact = {
     type: "file" as const,
@@ -195,7 +203,9 @@ async function* boundedResponseBody(response: Response, reportedBytes: number, m
   let bytes = 0;
   try {
     while (reader) {
+      await assertAccountEffect();
       const { done, value } = await readWithIdleTimeout(reader, readIdleTimeoutMs);
+      await assertAccountEffect();
       if (done) break;
       bytes += value.byteLength;
       if (bytes > maximumBytes) {
@@ -206,6 +216,7 @@ async function* boundedResponseBody(response: Response, reportedBytes: number, m
     }
     if (contentLength !== undefined && bytes !== contentLength) fail("invalid_provider_response");
     if (bytes === 0 && reportedBytes !== 0) fail("invalid_provider_response");
+    await assertAccountEffect();
   } finally {
     reader?.releaseLock();
   }
@@ -213,6 +224,7 @@ async function* boundedResponseBody(response: Response, reportedBytes: number, m
 
 /** Download one exact Graph file attachment into OpenClaw's private media store. */
 export async function downloadOutlookFileAttachment(options: DownloadOutlookAttachmentOptions) {
+  const assertCommitAllowed = captureAccountGuard();
   if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 1 || options.maxBytes > OUTLOOK_ATTACHMENT_MAX_BYTES) throw new Error("invalid_byte_limit");
   if (!Number.isSafeInteger(options.readIdleTimeoutMs) || options.readIdleTimeoutMs < 1 || options.readIdleTimeoutMs > 30_000) throw new Error("invalid_request_timeout");
   const fetchFn = options.fetchFn ?? fetch;
@@ -223,6 +235,7 @@ export async function downloadOutlookFileAttachment(options: DownloadOutlookAtta
   const name = sanitizeAttachmentName(item.name);
   const contentType = sanitizeAttachmentMime(item.contentType);
   const response = await graphStreamRequest(options.token, `${base}/$value`, { signal: options.signal }, fetchFn);
+  await assertAccountEffect();
   const hash = createHash("sha256");
   async function* hashingSource() {
     for await (const chunk of boundedResponseBody(response, item.size, options.maxBytes, options.readIdleTimeoutMs)) {
@@ -230,7 +243,7 @@ export async function downloadOutlookFileAttachment(options: DownloadOutlookAtta
       yield chunk;
     }
   }
-  const saved = await saveMediaStream(hashingSource(), contentType, "inbound", options.maxBytes, name, name);
+  const saved = await saveMediaStream(hashingSource(), contentType, "inbound", options.maxBytes, name, name, { assertCommitAllowed });
   if (!Number.isSafeInteger(saved.size) || saved.size < 0 || saved.size > options.maxBytes) fail("invalid_provider_response");
   const storedContentType = sanitizeAttachmentMime(saved.contentType ?? contentType);
   const sourceSha256 = hash.digest("hex");

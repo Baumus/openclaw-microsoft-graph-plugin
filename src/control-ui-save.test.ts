@@ -23,7 +23,7 @@ function harness(mode: Mode = "active") {
       if (method === "config.get") return getOverride ? getOverride() : snapshot();
       if (method === "microsoft-graph.configuration.applicationStatus") return { activePolicyHash: active, activeVersion: "3.12.1" };
       if (method === "microsoft-graph.configuration.validate") return { valid: true, requiredScopes: ["Mail.Read"], policyHash: hash(params.policy) };
-      if (method === "microsoft-graph.credentials.status") return { ok: true, value: { policyVersion: 2, credential: { result: "valid" } } };
+      if (method === "microsoft-graph.accounts.status") return { policyVersion: 2, credential: { result: "valid" } };
       if (method === "microsoft-graph.updateStatus") return { updateAvailable: false };
       if (method === "config.patch") {
         const raw = JSON.parse(params.raw as string); const changes = raw.plugins.entries["microsoft-graph"].config.policy;

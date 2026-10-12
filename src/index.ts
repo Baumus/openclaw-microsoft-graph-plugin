@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
+import { type WorkerBindings } from "./accounts.js";
+import { createAccountRuntime } from "./account-runtime.js";
+import { registerAccountMethods } from "./account-rpc.js";
+import { accountScope, currentAccountIdentity, captureAccountGuard } from "./account-scope.js";
 import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { root as secureRoot, type OpenResult } from "@openclaw/fs-safe";
@@ -8,7 +13,7 @@ import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 import { stageWorkspaceFile, validateWorkspaceRelativeFilePath, workspaceFileContentType, workspaceStagingStore, type WorkspaceStagingLease } from "./stage-workspace-file.js";
 import { downloadOneDriveFile, downloadOutlookFileAttachment, publishPrivateMediaBytes } from "./attachment-download.js";
 import { exchangeRefreshToken, readCredential, selectScope, tokenForAuthorizedOperation } from "./credential.js";
-import { registerCredentialCli, registerCredentialGatewayMethods } from "./credential-cli.js";
+import { registerAccountCli } from "./account-cli.js";
 import { registerConfigurationUiMethods } from "./config-ui-rpc.js";
 import { registerUpdateStatusMethod } from "./update-status.js";
 import { ContinuationStore, normalizedCriteria, type ContinuationBinding } from "./continuation.js";
@@ -55,6 +60,8 @@ const Config = Type.Object({
   warningApprovalsRequired: Type.Optional(Type.Boolean({ default: true, description: "Require OpenClaw-native approval for warning-level Microsoft Graph mutations. Missing defaults to true; set false only when policy-authorized warning mutations may proceed without an approval prompt." })),
   credentialVaultKey: Type.Optional(SecretRefOnly),
   policy: Type.Optional(GraphPolicySchema),
+  accountPolicyCeilings: Type.Optional(Type.Record(Type.String({ minLength: 1 }), GraphPolicySchema)),
+  accountWorkers: Type.Optional(Type.Record(Type.String({ minLength: 1 }), Type.String({ minLength: 1, maxLength: 256 }))),
   requestTimeoutMs: Type.Optional(Type.Integer({ minimum: 1000, maximum: 30000, default: 5000 })),
   readOperationTimeoutMs: Type.Optional(Type.Integer({ minimum: 5000, maximum: 300000, default: DEFAULT_READ_OPERATION_TIMEOUT_MS, description: "Whole-operation deadline for multi-request reads; each Graph request remains bounded by requestTimeoutMs." })),
   calendarMultiwriteTimeoutMs: Type.Optional(Type.Integer({ minimum: 30000, maximum: 1800000, default: DEFAULT_CALENDAR_MULTIWRITE_TIMEOUT_MS, description: "Whole-operation deadline for calendar multiwrite, including authorization, credential exchange, and every 20-request Graph batch." })),
@@ -66,7 +73,7 @@ const Config = Type.Object({
   oneDriveTransferTimeoutMs: Type.Optional(Type.Integer({ minimum: 30000, maximum: 7 * 24 * 60 * 60 * 1000, default: DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS, description: "Whole-operation deadline for OneDrive private-media downloads and uploads; each Graph request remains bounded by requestTimeoutMs." })),
 }, { additionalProperties: false });
 
-export type RuntimeConfig = { enabled?: boolean; warningApprovalsRequired?: boolean; credentialVaultKey?: unknown; policy?: GraphPolicy; requestTimeoutMs?: number; readOperationTimeoutMs?: number; calendarMultiwriteTimeoutMs?: number; maxConcurrent?: number; maxReadBytes?: number; maxReadOutputBytes?: number; maxAttachmentDownloadBytes?: number; attachmentDownloadTimeoutMs?: number; oneDriveTransferTimeoutMs?: number };
+export type RuntimeConfig = { accountPolicyCeilings?: Record<string, GraphPolicy>; accountWorkers?: WorkerBindings; enabled?: boolean; warningApprovalsRequired?: boolean; credentialVaultKey?: unknown; policy?: GraphPolicy; requestTimeoutMs?: number; readOperationTimeoutMs?: number; calendarMultiwriteTimeoutMs?: number; maxConcurrent?: number; maxReadBytes?: number; maxReadOutputBytes?: number; maxAttachmentDownloadBytes?: number; attachmentDownloadTimeoutMs?: number; oneDriveTransferTimeoutMs?: number };
 type OneDriveApprovalRoot = Pick<AllowedRoot, "label" | "drive_id" | "item_id">;
 type Logger = { info: (message: string) => void; warn: (message: string) => void };
 let activeRequests = 0;
@@ -85,7 +92,7 @@ function setResolvePluginStateDir(resolver: () => string): void {
 }
 type OneDriveStagingWorkspaceContext = { agentId?: string; sessionId?: string; workspaceDir?: string; abortSignal?: AbortSignal };
 const oneDriveStagingWorkspaceContexts = new Map<string, { agentId: string; sessionId: string; workspaceDir: string }>();
-export type NativeApprovalSnapshot = { agentId?: string; sessionId?: string; toolName: string; params: string; oneDriveRoot?: OneDriveApprovalRoot };
+export type NativeApprovalSnapshot = { accountIdentity?: string; agentId?: string; sessionId?: string; toolName: string; params: string; oneDriveRoot?: OneDriveApprovalRoot };
 type SessionEntryLookup = (params: { agentId?: string; sessionKey: string; readConsistency: "latest" }) => { sessionId?: string } | undefined;
 
 function currentSessionId(lookup: SessionEntryLookup | undefined, agentId: string | undefined, sessionKey: string | undefined): string | undefined {
@@ -114,6 +121,7 @@ export class NativeApprovalSnapshotStore {
 
   record(toolCallId: string, snapshot: NativeApprovalSnapshot): void {
     if (!toolCallId || !snapshot.toolName) throw new Error("approval_context_invalid_or_changed");
+    snapshot = { ...snapshot, accountIdentity: snapshot.accountIdentity ?? currentAccountIdentity() };
     const existing = this.#snapshots.get(toolCallId);
     if (existing && normalizedCriteria(existing) !== normalizedCriteria(snapshot)) throw new Error("approval_context_invalid_or_changed");
     if (!this.#snapshots.has(toolCallId) && this.#snapshots.size >= this.maximum) throw new Error("approval_context_capacity_exceeded");
@@ -130,7 +138,8 @@ export class NativeApprovalSnapshotStore {
     if (!snapshot) return undefined;
     this.#snapshots.delete(toolCallId);
     const resolvedRoot = typeof oneDriveRoot === "function" ? oneDriveRoot() : oneDriveRoot;
-    return snapshot.agentId === agentId
+    return snapshot.accountIdentity === currentAccountIdentity()
+      && snapshot.agentId === agentId
       && snapshot.sessionId === sessionId
       && snapshot.toolName === toolName
       && snapshot.params === normalizedCriteria(params)
@@ -187,9 +196,10 @@ function clearStagingWorkspaceSession(sessionId: string): void {
   for (const [key, entry] of oneDriveStagingWorkspaceContexts) if (entry.sessionId === sessionId) oneDriveStagingWorkspaceContexts.delete(key);
 }
 
-function stateDirForVault(): string | undefined { return getResolvePluginStateDir()?.(); }
+function stateDirForVault(): string | undefined { return accountScope.getStore()?.stateDir ?? getResolvePluginStateDir()?.(); }
 
 export type WarningApprovalScope = {
+  accountIdentity?: string;
   agentId: string;
   toolName: string;
   action: string;
@@ -205,7 +215,7 @@ export class WarningApprovalTrustStore {
 
   #key(scope: WarningApprovalScope): string {
     if (!scope.agentId || !scope.toolName || !scope.action) throw new Error("invalid_warning_approval_scope");
-    return normalizedCriteria([scope.agentId, scope.toolName, scope.action]);
+    return normalizedCriteria([scope.accountIdentity, scope.agentId, scope.toolName, scope.action]);
   }
 
   has(scope: WarningApprovalScope): boolean { return this.#scopes.has(this.#key(scope)); }
@@ -235,7 +245,7 @@ function errorCode(error: unknown): string {
   if (error instanceof DOMException && error.name === "AbortError") return "request_aborted";
   if (error instanceof DOMException && error.name === "TimeoutError") return "request_timeout";
   const code = error instanceof Error ? error.message : "internal_error";
-  return /^(access_denied|approval_context_|connector_disabled|trusted_(?:agent_identity|workspace|session_identity)_required|instruction_|onedrive_agents_instructions_required|invalid_|unsupported_|credential_|authentication_|provider_|item_|file_|binary_|request_|workspace_|exactly_one_)/.test(code) ? code : "internal_error";
+  return /^(graph_|access_denied|approval_context_|connector_disabled|trusted_(?:agent_identity|workspace|session_identity)_required|instruction_|onedrive_agents_instructions_required|invalid_|unsupported_|credential_|authentication_|provider_|item_|file_|binary_|request_|workspace_|exactly_one_)/.test(code) ? code : "internal_error";
 }
 export async function withConcurrency<T>(limit: number, action: () => Promise<T>): Promise<T> {
   if (activeRequests >= limit) throw new Error("request_concurrency_exceeded");
@@ -259,7 +269,7 @@ async function withService<T>(config: RuntimeConfig, agentId: string | undefined
   if (config.enabled !== true) throw new Error("connector_disabled");
   const bounded = deadlineSignal(signal, operationTimeoutMs, config.requestTimeoutMs ?? 5000);
   return withConcurrency(config.maxConcurrent ?? 4, async () => {
-    const policy = validatePolicy(config.policy);
+    const policy = validatePolicy(accountScope.getStore()?.policy ?? config.policy);
     authorizeOperation(policy, agentId, service, operation, resource);
     await beforeCredential?.();
     const token = await tokenForAuthorizedOperation({ config, policy, allowedScopes: SCOPES[scopeKey], signal: bounded, stateDir: stateDirForVault(), requestTimeoutMs: config.requestTimeoutMs ?? 5000 });
@@ -272,7 +282,7 @@ async function withCalendarMultiwrite<T>(config: RuntimeConfig, agentId: string 
   const requestTimeoutMs = config.requestTimeoutMs ?? 5000;
   const bounded = deadlineSignal(signal, config.calendarMultiwriteTimeoutMs ?? DEFAULT_CALENDAR_MULTIWRITE_TIMEOUT_MS, requestTimeoutMs);
   return withConcurrency(config.maxConcurrent ?? 4, async () => {
-    const policy = validatePolicy(config.policy);
+    const policy = validatePolicy(accountScope.getStore()?.policy ?? config.policy);
     for (const authorization of authorizations) authorizeOperation(policy, agentId, "calendar", authorization.operation, authorization.resource);
     const token = await tokenForAuthorizedOperation({ config, policy, allowedScopes: SCOPES.calendar_write, signal: bounded, stateDir: stateDirForVault(), requestTimeoutMs });
     return action(token, bounded);
@@ -284,7 +294,7 @@ async function withDrive<T>(config: RuntimeConfig, agentId: string | undefined, 
   const requestTimeoutMs = config.requestTimeoutMs ?? 5000;
   const bounded = deadlineSignal(signal, operationTimeoutMs ?? (operation === "read" ? config.readOperationTimeoutMs ?? DEFAULT_READ_OPERATION_TIMEOUT_MS : requestTimeoutMs), requestTimeoutMs);
   return withConcurrency(config.maxConcurrent ?? 4, async () => {
-    const policy = validatePolicy(config.policy);
+    const policy = validatePolicy(accountScope.getStore()?.policy ?? config.policy);
     const root = authorizeRoot(policy, agentId, rootLabel, operation);
     await beforeCredential?.(root);
     const allowedScopes = SCOPES[operation === "read" ? "onedrive_read" : "onedrive_write"];
@@ -607,7 +617,7 @@ function semanticParams(value: unknown): Record<string, unknown> {
 export function callerCapabilities(config: RuntimeConfig, agentId: string | undefined) {
   if (!agentId) throw new Error("trusted_agent_identity_required");
   if (config.enabled !== true) return { ok: false, code: "connector_disabled", nextAction: "Ask the operator to enable the connector." };
-  const policy = validatePolicy(config.policy);
+  const policy = validatePolicy(accountScope.getStore()?.policy ?? config.policy);
   const roots = policy.services.onedrive.allowed_roots.flatMap((root) => {
     const actions = (["read", "write", "delete"] as const).filter((action) => root.permissions[action] === true && root.agents[agentId]?.permissions?.[action] === true);
     return actions.length ? [{ rootLabel: root.label, actions, instructions: root.agents_instructions === "trusted" ? "session_acknowledgement_may_be_required" : "none" }] : [];
@@ -976,7 +986,7 @@ function criteriaFor(params: Record<string, unknown>, effective: Record<string, 
 }
 
 function continuationBinding(agentId: string | undefined, service: ContinuationBinding["service"], action: string, resource: string, criteria: string): ContinuationBinding {
-  return { agentId: requireAgentId(agentId), service, action, resource, criteria };
+  return { accountIdentity: currentAccountIdentity(), agentId: requireAgentId(agentId), service, action, resource, criteria };
 }
 
 function publicPage(page: Record<string, unknown>, binding: ContinuationBinding, expectedPath: string, state?: { resultCount?: number }): Record<string, unknown> {
@@ -1436,7 +1446,7 @@ export function mutationApprovalText(toolName: string, rawParams: unknown): { ti
 
 function warningApprovalScope(agentId: unknown, toolName: string, params: unknown): WarningApprovalScope {
   if (typeof agentId !== "string" || !agentId) throw new Error("trusted_agent_identity_required");
-  return { agentId, toolName, action: normalizedWarningApprovalAction(toolName, params) };
+  return { accountIdentity: currentAccountIdentity(), agentId, toolName, action: normalizedWarningApprovalAction(toolName, params) };
 }
 
 function warningApprovalPreflight(config: RuntimeConfig, toolName: string, params: Record<string, unknown>, agentId: string | undefined, authorizedRoot?: OneDriveApprovalRoot): OneDriveApprovalRoot | undefined {
@@ -3100,9 +3110,13 @@ export async function beforeMicrosoftGraphToolCall(
 
   if (severity !== "none" && !event.toolCallId) return { block: true, blockReason: "approval_context_tool_call_id_required" };
 
+  const assertAccountCurrent = captureAccountGuard();
+  const capturedAccountIdentity = currentAccountIdentity();
   const bindExecutionSnapshot = () => {
+    assertAccountCurrent();
     if (!sessionIdentityCurrent(lookupSession, ctx.agentId, ctx.sessionKey, ctx.sessionId)) throw new Error("approval_context_invalid_or_changed");
     if (event.toolCallId) approvalSnapshots.record(event.toolCallId, {
+      accountIdentity: capturedAccountIdentity,
       agentId: ctx.agentId,
       sessionId: ctx.sessionId,
       toolName: event.toolName,
@@ -3192,7 +3206,7 @@ plugin.register = (api) => {
   const runtimeConfig = ((api as unknown as { pluginConfig?: RuntimeConfig }).pluginConfig ?? {}) as RuntimeConfig;
   if ((api as unknown as { registrationMode?: string }).registrationMode === "cli-metadata") {
     if (typeof (api as unknown as { registerCli?: unknown }).registerCli === "function") {
-      registerCredentialCli(api as unknown as Parameters<typeof registerCredentialCli>[0]);
+      registerAccountCli(api);
     }
     return;
   }
@@ -3204,29 +3218,28 @@ plugin.register = (api) => {
     setResolvePluginStateDir(() => stateResolver(process.env));
     workspaceStagingStore.startReconciliation(stateResolver(process.env), () => api.logger.warn("Microsoft Graph workspace staging reconciliation failed; retrying on the next interval"));
   }
-  originalRegister(api);
+  const accountRuntime = createAccountRuntime(api, runtimeConfig, stateResolver ? stateResolver(process.env) : undefined);
+  const accountStore = accountRuntime.store;
+  originalRegister(accountRuntime.registrationApi);
   if (typeof (api as unknown as { registerCli?: unknown }).registerCli === "function" && stateResolver) {
-    registerCredentialCli(api as unknown as Parameters<typeof registerCredentialCli>[0]);
+    registerAccountCli(api);
   }
   if (typeof (api as unknown as { registerGatewayMethod?: unknown }).registerGatewayMethod === "function" && stateResolver) {
     registerConfigurationUiMethods(api as unknown as Parameters<typeof registerConfigurationUiMethods>[0], runtimeConfig, () => stateResolver(process.env));
     registerUpdateStatusMethod(api as unknown as Parameters<typeof registerUpdateStatusMethod>[0]);
-    registerCredentialGatewayMethods(
-      api as unknown as Parameters<typeof registerCredentialGatewayMethods>[0],
-      runtimeConfig,
-      () => stateResolver(process.env),
-    );
+    if (accountStore) registerAccountMethods(api, accountStore, runtimeConfig);
   }
   const warningApprovalTrustStore = new WarningApprovalTrustStore();
   api.on(
     "before_tool_call",
-    (event, ctx) => beforeMicrosoftGraphToolCall(runtimeConfig, event, ctx, {}, warningApprovalTrustStore, nativeApprovalSnapshots, () => api.logger.warn(STAGING_CLEANUP_DEFERRED), api.runtime?.agent?.session?.getSessionEntry),
+    (event, ctx) => accountRuntime.hook(event, ctx, () => beforeMicrosoftGraphToolCall(accountRuntime.config, event, ctx, {}, warningApprovalTrustStore, nativeApprovalSnapshots, () => api.logger.warn(STAGING_CLEANUP_DEFERRED), api.runtime?.agent?.session?.getSessionEntry)),
     // Run after ordinary policy hooks so this plugin's exact original snapshot
     // becomes authoritative. The execution-bound snapshot still fails closed
     // if a same/lower-priority hook attempts a later rewrite.
     { priority: Number.MIN_SAFE_INTEGER },
   );
   api.on("session_end", (_event, ctx) => {
+    accountRuntime.clearSession(ctx.sessionId);
     oneDriveAgentsSessionCache.clearSession(ctx.sessionId);
     clearStagingWorkspaceSession(ctx.sessionId);
     nativeApprovalSnapshots.clearSession(ctx.sessionId);

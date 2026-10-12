@@ -1,3 +1,4 @@
+import { AccountPage } from "./account-control-ui.js";
 import { defineControlUiPlugin, type ControlUiHost } from "openclaw/plugin-sdk/control-ui";
 import "./control-ui.css";
 import { localize, format, setLocale, isRtl } from "./control-ui-i18n.js";
@@ -280,7 +281,7 @@ class ConfigurationPage {
     if (!this.host.connection.canAdmin) { append(main, el("p", "mg-message", "Zum Anzeigen und Ändern dieser Regeln brauchst du Administratorrechte.")); this.container.replaceChildren(main); return; }
     if (!this.snapshot) { append(main, el("p", "mg-message", this.error || "Regeln werden geladen…")); this.container.replaceChildren(main); return; }
     this.renderSetup(main);
-    this.renderSignIn(main);
+    append(main, el("p", "mg-hint", "Persönliche Anmeldung, Kontoauswahl und Freigaben verwaltest du unter Mein Microsoft-Konto. Diese Seite bearbeitet die administrative Rechteobergrenze."));
     const rail = el("nav", "mg-steps"); rail.setAttribute("aria-label", localize("Konfigurationsschritte"));
     ["OneDrive", "Dienste", "Freigaben", "Prüfen"].forEach((name, index) => { const tab = this.action(`${index + 1}  ${localize(name)}`, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost"); tab.disabled = this.locked; tab.setAttribute("aria-current", index === this.step ? "step" : "false"); append(rail, tab); }); append(main, rail);
     if (this.included && (this.dirty || !!this.error)) append(main, el("p", "mg-banner", format("Policy-Quelle: {name}. Änderungen werden beim Speichern in diese Datei geschrieben.", { name: this.includeName })));
@@ -424,7 +425,7 @@ class ConfigurationPage {
   }
   private async refreshCredential() {
     try {
-      const status = await this.credentialCall<CredentialStatus>("microsoft-graph.credentials.status", {});
+      const status = await this.host.request<CredentialStatus>("microsoft-graph.accounts.status", {});
       if (!this.disposed && !this.signal.aborted) this.credential = status.credential;
     } catch { if (!this.disposed && !this.signal.aborted && this.credential?.result !== "valid") this.credential = { result: "unavailable" }; }
   }
@@ -546,7 +547,7 @@ class ConfigurationPage {
     if (!path.startsWith("/")) { this.error = "Bitte einen Ordnerpfad ab / eingeben."; this.render(); return; }
     this.busy = true; this.error = ""; this.render();
     try {
-      const resolved = await this.host.request<{ path: string; drive_id: string; item_id: string }>("microsoft-graph.configuration.resolveFolder", { path });
+      const resolved = await this.host.request<{ path: string; drive_id: string; item_id: string }>("microsoft-graph.accounts.resolve-folder", { path });
       const roots = this.policy.services.onedrive.allowed_roots;
       if (roots.some(root => root.drive_id === resolved.drive_id && root.item_id === resolved.item_id)) { this.error = "Dieser Ordner ist bereits freigegeben. Wähle in der Ordnerkachel die Rechte für den Agenten."; return; }
       let label = "folder_" + (roots.length + 1); let suffix = roots.length + 1;
@@ -752,6 +753,8 @@ export default defineControlUiPlugin({ id, activate(host) {
   setLocale(host.locale);
   const pageId = "configure";
   const disposers = [
+    host.ui.registerPage({ id: "accounts", label: "Mein Microsoft-Konto", mount(container, context) { const view = new AccountPage(container, context.host, context.signal); return { dispose: () => view.dispose() }; } }),
+    host.ui.registerNavigation({ id: "accounts", label: "Mein Microsoft-Konto", page: { id: "accounts" }, icon: "user", order: 79 }),
     host.ui.registerPage({ id: pageId, label: "Connect Microsoft 365 to OpenClaw", mount(container, context) { const view = new ConfigurationPage(container, context.host, context.signal); return { dispose: () => view.dispose() }; } }),
     host.ui.registerNavigation({ id: "configure", label: "Connect Microsoft 365 to OpenClaw", page: { id: pageId }, icon: "settings", order: 80 }),
   ];

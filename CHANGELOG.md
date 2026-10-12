@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 4.0.0 - 2026-10-12 (candidate, not published)
+
+- Breaking: remove implicit global Microsoft account authority and legacy credential RPC registration. Existing `me` tools and argument schemas are unchanged, but need an authenticated session binding or an explicitly consented fixed worker.
+- Add one encrypted personal connection per canonical OpenClaw profile, own-profile sign-in/status/disconnect/reconnect and explicit idempotent legacy migration. No first-visitor claim, team consent, worker consent, token export, or global fallback.
+- Add protected persistent session-incarnation/account bindings, owner sharing and unattended consent, account-aware agent/resource policy restricted by administrative per-profile ceilings.
+- Add personal native Control UI with account permissions and session selection; retain separate administrative ceiling editor.
+- Bind native approvals, continuations, OneDrive instruction acknowledgements, vault/cache identities and every network dispatch to the account/generation/binding context. Recheck public V2 host invocation authority before effects.
+- Require OpenClaw 2026.10.1 for public authenticated-profile/session authority and V2 tool factories. Automatic DM admission/fork propagation is not claimed; authenticated UI and fixed-worker paths are supported.
+
+
 ## 3.12.1 - 2026-10-10
 
 - Distinguish saving from activation, lock duplicate writes immediately, and reconcile persisted policies even when the save response times out or disconnects. Keep drafts and operation state in authenticated host memory across page remounts.

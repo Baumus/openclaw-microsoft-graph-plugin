@@ -1,5 +1,11 @@
 # User-bound Microsoft OAuth: feasibility gate
 
+> Scope update, 2026-10-12: [MULTI_USER_CONCEPT.md](MULTI_USER_CONCEPT.md)
+> proposes explicit session-bound accounts and pre-authorized account workers.
+> The gate below applies to the earlier always-current-human selection contract;
+> it is not a blanket blocker for that separately defined shared-trust model.
+> No multi-user implementation or OAuth migration has occurred.
+
 **Status: implementation gate not satisfied; no multi-user capability shipped.**
 
 Checked on 2026-10-12, Europe/Berlin, against OpenClaw **2026.10.1

@@ -1,3 +1,4 @@
+import { accountScope, assertAccountEffect } from "./account-scope.js";
 import { createHash } from "node:crypto";
 import { canonicalPolicy } from "./config-policy-identity.js";
 import { requiredPolicyScopes } from "./credential-cli.js";
@@ -36,6 +37,8 @@ export function registerConfigurationUiMethods(api: GatewayApi, config?: { polic
   }, { scope: "operator.admin" });
   api.registerGatewayMethod("microsoft-graph.configuration.resolveFolder", async ({ params, respond }) => {
     try {
+      if (!accountScope.getStore()) throw new Error("graph_execution_account_required");
+      await assertAccountEffect();
       if (!config?.policy || !stateDir || !params || typeof params !== "object" || Array.isArray(params) || Object.keys(params).length !== 1) throw new Error("invalid_rpc_parameters");
       const raw = (params as { path?: unknown }).path;
       if (typeof raw !== "string" || raw.length > 1024 || !raw.startsWith("/") || raw.includes("\\") || /[\u0000-\u001f\u007f]/.test(raw)) throw new Error("invalid_path");
