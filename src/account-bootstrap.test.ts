@@ -8,7 +8,7 @@ import { AccountStore, blankAccountPolicy } from "./accounts.js";
 import { createVaultCredential, readVaultCredential, vaultCredentialPath, vaultQuarantinePath } from "./credential-vault.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 const roots: string[] = [];
-afterEach(async () => { vi.unstubAllGlobals(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 function scheduler() {
   const abort = new AbortController(); const pending = new Map<string, () => unknown>(); const running = new Set<Promise<unknown>>();
   const s = { version: 1 as const, signal: abort.signal, now: Date.now, scope: () => s, beginClose() { abort.abort(); pending.clear(); },
@@ -57,6 +57,27 @@ describe("registered trusted host singleton startup", () => {
     expect(JSON.stringify(result)).not.toContain("synthetic-never-real"); expect(JSON.stringify(result)).not.toContain("synthetic-token");
     expect(h.api.runtime.system.runCommandWithTimeout.mock.calls.some(([, opts]: any) => opts.signal instanceof AbortSignal)).toBe(true);
     expect(h.api.logger.warn).not.toHaveBeenCalled();
+  });
+  it.each(["2026.10.1", "2026.10.2"])("automatically assigns independent sole canonical owner on %s with aliases and arbitrary state root", async runtimeVersion => {
+    const h = await host({ runtimeVersion, users: ["gateway-owner", "independent-owner"] });
+    h.directory(() => JSON.stringify({ profiles: [row("independent-owner"), row("other-alias", "independent-owner"), row("gateway-owner")] }));
+    const original = await readFile(vaultCredentialPath(h.root)); const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    await h.start(); await h.schedule.flush();
+    expect(await h.store.automaticStatus()).toMatchObject({ profileId: "independent-owner", invalidated: false });
+    expect(await h.store.readAccount("independent-owner")).toMatchObject({ connected: true, shared: false, unattended: false });
+    expect(await h.store.readAccount("A")).toBeUndefined(); expect(await readFile(vaultCredentialPath(h.root))).toEqual(original); expect(fetch).not.toHaveBeenCalled();
+    await h.service.stop();
+  });
+  it.each(["2026.10.1", "2026.10.2"].flatMap(runtimeVersion => ["multiuser", "malformed", "foreign", "cancelled"].map(reason => ({ runtimeVersion, reason }))))("portable startup rejects $runtimeVersion $reason", async ({ runtimeVersion, reason }) => {
+    const h = await host({ runtimeVersion, users: ["gateway-owner", "independent-owner"] });
+    if (reason === "multiuser") h.directory(() => JSON.stringify({ profiles: [row("independent-owner"), row("another-person")] }));
+    if (reason === "malformed") h.directory(() => '{"profiles":[{"id":"independent-owner"}]}');
+    if (reason === "foreign") h.api.runtime.system.runCommandWithTimeout.mockResolvedValue({ stdout: JSON.stringify({ hostInstanceId: "another-server" }), stderr: "", code: 0, signal: null, killed: false, termination: "exit" });
+    await h.start(); if (reason === "cancelled") h.abort.abort(); await h.schedule.flush();
+    expect(await h.store.automaticStatus()).toBeUndefined(); expect(await h.store.readAccount("independent-owner")).toBeUndefined(); await h.service.stop();
+  });
+  it.each(["OPENCLAW_PROFILE", "OPENCLAW_GATEWAY_PASSWORD"])("startup closes authority when %s changes", async key => {
+    const h = await host(); await h.start(); vi.stubEnv(key, "changed-synthetic-transport"); await h.schedule.flush(); expect(await h.store.automaticStatus()).toBeUndefined(); await h.service.stop();
   });
   it.each(["cli-metadata", "discovery", "tool-discovery", "setup"])("does not register migration in %s mode", async mode => { const h = await host({ mode }); expect(h.service).toBeUndefined(); expect(h.hooks.has("gateway_start")).toBe(false); });
   it.each([{ enabled: false }, { users: ["gateway-owner"] }, { users: ["gateway-owner", "A", "B"] }, { legacy: false }, { runtimeVersion: "unsupported" }])("does not provision an account in ineligible startup %j", async options => {

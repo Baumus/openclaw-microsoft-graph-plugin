@@ -27,7 +27,7 @@ export function registerAccountBootstrap(api: OpenClawPluginApi, store: AccountS
   const gatewayIdentity = (gateway: ReturnType<typeof api.runtime.config.current>["gateway"]) => normalizedCriteria([gateway?.mode, gateway?.port, gateway?.bind, gateway?.tls, gateway?.auth]);
   const relevant = () => {
     const current = api.runtime.config.current();
-    return normalizedCriteria([config, gatewayIdentity(current.gateway), current.plugins?.enabled, current.plugins?.entries?.["microsoft-graph"], process.env.OPENCLAW_GATEWAY_PORT, process.env.OPENCLAW_GATEWAY_TOKEN]);
+    return normalizedCriteria([config, gatewayIdentity(current.gateway), current.plugins?.enabled, current.plugins?.entries?.["microsoft-graph"], process.env.OPENCLAW_GATEWAY_PORT, process.env.OPENCLAW_PROFILE, process.env.OPENCLAW_GATEWAY_TOKEN, process.env.OPENCLAW_GATEWAY_PASSWORD]);
   };
   const baseline = relevant();
   const current = () => {

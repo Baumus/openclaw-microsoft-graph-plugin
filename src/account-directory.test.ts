@@ -42,6 +42,45 @@ describe("supported full-host directory oracle", () => {
       expect(options.requireProcessTreeExtinction).toBe(true);
     }
   });
+  it.each(["2026.10.1", "2026.10.2"])("supports %s independent canonical IDs, aliases, defaults and local listeners", async version => {
+    vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", undefined); vi.stubEnv("OPENCLAW_GATEWAY_PASSWORD", undefined); vi.stubEnv("OPENCLAW_GATEWAY_PORT", undefined); vi.stubEnv("OPENCLAW_PROFILE", undefined);
+    for (const shape of [
+      { bind: "loopback", port: 24567, auth: { token: "synthetic-config-first" } },
+      { bind: "lan", auth: { mode: "password", password: "synthetic-password" } },
+      { bind: "auto", auth: { password: "synthetic-inferred-password" } },
+      { auth: { mode: "token", token: "synthetic-resolved-runtime-value" } },
+    ]) {
+      const r = api([{ hostInstanceId: "same-host" }, { profiles: [row("gateway-owner"), row("person-independent"), row("merged-alias", "person-independent")] }, { hostInstanceId: "same-host" }]);
+      r.host.runtime.version = version; r.config.gateway = shape as any;
+      const snapshot = await createAccountDirectory(r.host as any, "same-host").read(); expect(snapshot.soleProfileId).toBe("person-independent");
+      const env = (r.run.mock.calls as any)[0][1].baseEnv;
+      expect(env.OPENCLAW_GATEWAY_URL).toBe(`ws://127.0.0.1:${shape.port ?? 18789}`);
+      expect(env.OPENCLAW_GATEWAY_PASSWORD ?? env.OPENCLAW_GATEWAY_TOKEN).toBe(shape.auth.password ?? shape.auth.token);
+      expect(Object.keys(env).filter(k => /GATEWAY_(TOKEN|PASSWORD)/.test(k))).toHaveLength(1);
+    }
+  });
+  it("uses public config-first auth and named-profile/environment port rules without copying host paths", async () => {
+    vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", "synthetic-environment-token"); vi.stubEnv("OPENCLAW_GATEWAY_PASSWORD", undefined); vi.stubEnv("OPENCLAW_GATEWAY_PORT", "127.0.0.1:29123"); vi.stubEnv("OPENCLAW_PROFILE", "different-installation");
+    vi.stubEnv("OPENCLAW_STATE_DIR", "C:\\Users\\Another\\AppData\\Local\\OpenClaw"); vi.stubEnv("OPENCLAW_CONFIG_PATH", "/srv/another-install/config.json");
+    const r = api(); await createAccountDirectory(r.host as any, "same-host").read(); let env = (r.run.mock.calls as any)[0][1].baseEnv;
+    expect(env.OPENCLAW_GATEWAY_URL).toBe("ws://127.0.0.1:29123"); expect(env.OPENCLAW_GATEWAY_TOKEN).toBe("synthetic-host-auth"); expect(env.OPENCLAW_PROFILE).toBeUndefined(); expect(env.OPENCLAW_CONFIG_PATH).not.toContain("/srv/");
+    vi.stubEnv("OPENCLAW_GATEWAY_PORT", undefined); const named = api(); delete (named.config.gateway as any).port;
+    await createAccountDirectory(named.host as any, "same-host").read(); env = (named.run.mock.calls as any)[0][1].baseEnv;
+    const { resolveGatewayPort } = await import("openclaw/plugin-sdk/core"); expect(env.OPENCLAW_GATEWAY_URL).toBe(`ws://127.0.0.1:${resolveGatewayPort(named.config as any, process.env)}`); expect(env.OPENCLAW_GATEWAY_URL).not.toBe("ws://127.0.0.1:18789");
+  });
+  it.each(["token", "password"])("does not substitute env credentials for unresolved active %s SecretRef", async mode => {
+    vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", "synthetic-env-token"); vi.stubEnv("OPENCLAW_GATEWAY_PASSWORD", "synthetic-env-password");
+    const r = api(); r.config.gateway.auth = { mode, [mode]: { source: "env", provider: "default", id: "SYNTHETIC_UNRESOLVED" } } as any;
+    await expect(createAccountDirectory(r.host as any, "same-host").read()).rejects.toThrow("graph_single_user_directory_unavailable"); expect(r.run).not.toHaveBeenCalled();
+  });
+  it.each(["2026.10.0", "2026.10.3", "2026.10.2-beta.1", "unknown"])("rejects unverified runtime %s before launching CLI", async version => {
+    const r = api(); r.host.runtime.version = version; await expect(createAccountDirectory(r.host as any, "same-host").read()).rejects.toThrow("graph_single_user_directory_unavailable"); expect(r.run).not.toHaveBeenCalled();
+  });
+  it.each(["OPENCLAW_PROFILE", "OPENCLAW_GATEWAY_PASSWORD", "OPENCLAW_GATEWAY_PORT", "OPENCLAW_GATEWAY_TOKEN"])("pins changing transport environment %s and denies an aborted read", async key => {
+    const r = api(); const original = r.run.getMockImplementation()!; r.run.mockImplementation(async () => { vi.stubEnv(key, "changed-synthetic"); return original(); });
+    await expect(createAccountDirectory(r.host as any, "same-host").read()).rejects.toThrow("graph_single_user_directory_unavailable");
+    const abort = new AbortController(); abort.abort(); const stopped = api(); await expect(createAccountDirectory(stopped.host as any, "same-host").read(abort.signal)).rejects.toThrow("graph_single_user_directory_unavailable"); expect(stopped.run).not.toHaveBeenCalled();
+  });
   it("completes bounded same-host safety proof after a full roster arrives during drain", async () => {
     vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", undefined); vi.stubEnv("OPENCLAW_GATEWAY_PORT", undefined);
     const r = api(), abort = new AbortController(); let calls = 0;
@@ -57,7 +96,7 @@ describe("supported full-host directory oracle", () => {
     await expect(createAccountDirectory(truncated.host as any, "same-host").read()).rejects.toThrow("graph_single_user_directory_unavailable");
     const changed = api(); changed.run.mockImplementation(async () => { changed.config.gateway.port++; return { stdout: JSON.stringify({ hostInstanceId: "same-host" }), stderr: "", code: 0, killed: false, signal: null, termination: "exit" }; });
     await expect(createAccountDirectory(changed.host as any, "same-host").read()).rejects.toThrow("graph_single_user_directory_unavailable");
-    for (const change of [{ mode: "remote" }, { bind: "lan" }, { tls: { enabled: true } }, { auth: { mode: "none" } }, { auth: { mode: "token", token: { source: "env" } } }]) {
+    for (const change of [{ mode: "remote" }, { tls: { enabled: true } }, { auth: { mode: "none" } }, { auth: { mode: "token", token: { source: "env" } } }]) {
       const r = api(); Object.assign(r.config.gateway, change); await expect(createAccountDirectory(r.host as any, "same-host").read()).rejects.toThrow("graph_single_user_directory_unavailable"); expect(r.run).not.toHaveBeenCalled();
     }
   });

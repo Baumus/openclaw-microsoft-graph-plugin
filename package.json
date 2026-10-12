@@ -36,6 +36,7 @@
   ],
   "scripts": {
     "test": "vitest run --config ./vitest.config.ts",
+    "migration:canary": "node scripts/migration-runtime-canary.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "npm run typecheck && esbuild src/index.ts --bundle --platform=node --format=esm --target=node24 --packages=external --outfile=dist/index.js",
     "plugin:build": "npm run build && openclaw plugins build --root . --entry ./dist/index.js",

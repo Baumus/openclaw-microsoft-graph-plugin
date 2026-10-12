@@ -29,7 +29,7 @@ Review the [ClawHub listing](https://clawhub.ai/packages/@baumus/openclaw-micros
 openclaw plugins install clawhub:@baumus/openclaw-microsoft-graph
 ```
 
-**Upgrade with an existing connection:** after an enabled plugin is activated and the Gateway starts, the plugin automatically checks this exact host's complete user directory. Exactly one canonical personal user (excluding the technical `gateway-owner` and resolving merged aliases) receives the existing valid connection with its nonwidening rights. **No Control UI, personal login, administrator role, confirmation button, session binding or worker configuration is required.** Merely extracting an archive is not activation; admission remains fail-closed while startup setup is pending. The encrypted legacy backup is retained.
+**Upgrade with an existing connection (OpenClaw 2026.10.1 or 2026.10.2):** after an enabled plugin is activated and the Gateway starts, the plugin automatically checks this exact host's complete user directory. Exactly one canonical personal user (excluding the technical `gateway-owner` and resolving merged aliases) receives the existing valid connection with its nonwidening rights. **No Control UI, personal login, administrator role, confirmation button, session binding or worker configuration is required.** Merely extracting an archive is not activation; admission remains fail-closed while startup setup is pending. The encrypted legacy backup is retained.
 
 **New installations, multiple users or an unprovable directory:** no account is guessed. Use the explicit setup routine:
 
