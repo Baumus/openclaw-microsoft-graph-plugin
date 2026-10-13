@@ -1,5 +1,8 @@
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -31,11 +34,19 @@ if (manifest.controlUi?.entry) expected.push(manifest.controlUi.entry);
 for (const style of manifest.controlUi?.styles ?? []) expected.push(style);
 expected.sort();
 
-const { stdout } = await execFileAsync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
-  encoding: "utf8",
-  maxBuffer: 4 * 1024 * 1024,
-});
-const payload = JSON.parse(stdout);
+// npm pack --dry-run can return [] on supported host/npm combinations. Pack
+// into a disposable directory so this check inspects the actual release files.
+const packDir = await mkdtemp(join(tmpdir(), "microsoft-graph-package-check-"));
+let payload;
+try {
+  const { stdout } = await execFileAsync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", packDir], {
+    encoding: "utf8",
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  payload = JSON.parse(stdout);
+} finally {
+  await rm(packDir, { recursive: true, force: true });
+}
 if (!Array.isArray(payload) || payload.length !== 1 || !Array.isArray(payload[0]?.files)) throw new Error("invalid_npm_pack_output");
 const actual = payload[0].files.map((entry) => entry.path).sort();
 if (JSON.stringify(actual) !== JSON.stringify(expected)) {
