@@ -31,6 +31,8 @@ openclaw plugins install clawhub:@baumus/openclaw-microsoft-graph
 
 Installation alone does not sign you in, grant an agent access, or make an incomplete configuration usable. Existing installations should review changes before updating; this guide does not silently upgrade them.
 
+**Temporary ClawHub validation notice:** ClawHub may flag `contracts.tools` as an unsupported manifest contract (`manifest-unknown-contracts`). For this plugin, that finding is a validator false positive: OpenClaw requires the field to discover its agent tools, so removing it would break them. The [upstream Inspector fix](https://github.com/openclaw/plugin-inspector/commit/d0cfd5ef980e6fc9c10a2252760249a79baa8e3c) has merged. We expect the warning to disappear once that fix is released and adopted by ClawHub, but the timing is not confirmed.
+
 ### 2. Choose access and connect Microsoft
 
 Create the vault-key SecretRef and a default-deny policy for named agents. Begin with one read-only grant. OneDrive access requires immutable drive and item IDs, not just a folder name. Configure and enable the plugin, then follow the setup checklist in **Plugins → Connect Microsoft 365 to OpenClaw**. It shows the next actionable prerequisite before sign-in. Connect the approved Microsoft account only after the policy is saved and applied. Review the Microsoft permissions shown during sign-in.
