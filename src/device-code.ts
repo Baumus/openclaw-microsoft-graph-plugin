@@ -31,7 +31,10 @@ function endpoint(tenant: string, suffix: string): string { return `https://logi
 export class DeviceCodeSignIn {
   private session?: DeviceSession;
   private starting = false;
-  constructor(private readonly config: { policy?: GraphPolicy; credentialVaultKey?: unknown }, private readonly stateDir: () => string, private readonly fetchFn: typeof fetch = fetch, private readonly wait: (ms: number) => Promise<void> = sleep) {}
+  constructor(private readonly config: { policy?: GraphPolicy; credentialVaultKey?: unknown }, private readonly stateDir: () => string, private readonly fetchFn: typeof fetch = fetch, private readonly wait: (ms: number) => Promise<void> = sleep, private readonly authority: () => Promise<void> = async () => {}, private readonly finalAuthority: () => void = () => {}) {}
+
+  async checkAuthority(): Promise<void> { await this.authority(); this.finalAuthority(); }
+  stop(): void { if (this.session?.state === "pending") { this.session.state = "failed"; this.session.error = "device_authorization_cancelled"; this.session.deviceCode = ""; this.session.userCode = ""; } }
 
   async start(clientId: string, tenant: string): Promise<StartResult> {
     if (!SAFE_CLIENT.test(clientId) || !SAFE_TENANT.test(tenant) || tenant.includes("..")) throw new Error("invalid_rpc_parameters");
@@ -49,6 +52,7 @@ export class DeviceCodeSignIn {
       const scopes = checkedScopes(policy);
       if (scopes.length < 2) throw new Error("invalid_policy");
       if ((await inspectVaultCredential(this.stateDir(), key)).result !== "missing") throw new Error("credential_vault_conflict");
+      await this.checkAuthority();
       const result = await oauthPost(endpoint(tenant, "devicecode"), new URLSearchParams({ client_id: clientId, scope: scopes.join(" ") }), this.fetchFn);
       const value = result.value;
       if (result.status !== 200 || typeof value.device_code !== "string" || !value.device_code || value.device_code.length > 4096
@@ -82,7 +86,7 @@ export class DeviceCodeSignIn {
       await this.wait(session.interval);
       if (this.session !== session || session.state !== "pending" || Date.now() >= session.expiresAt) break;
       let response: { status: number; value: Record<string, unknown> };
-      try { response = await oauthPost(endpoint(session.tenant, "token"), new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:device_code", client_id: session.clientId, device_code: session.deviceCode }), this.fetchFn); }
+      try { await this.checkAuthority(); response = await oauthPost(endpoint(session.tenant, "token"), new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:device_code", client_id: session.clientId, device_code: session.deviceCode }), this.fetchFn); }
       catch { session.state = "failed"; session.error = "device_authorization_failed"; break; }
       if (this.session !== session || session.state !== "pending" || Date.now() >= session.expiresAt) break;
       const value = response.value;
@@ -104,7 +108,8 @@ export class DeviceCodeSignIn {
         try {
           if ((await inspectVaultCredential(this.stateDir(), key)).result !== "missing") throw new Error("credential_vault_conflict");
           if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked");
-          await createVaultCredential(this.stateDir(), credential, key);
+          await this.checkAuthority();
+          await createVaultCredential(this.stateDir(), credential, key, undefined, this.finalAuthority);
         } finally { await lock.release().catch(() => undefined); }
         session.grantedScopes = credential.scopes;
         session.state = "created";

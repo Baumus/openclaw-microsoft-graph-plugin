@@ -2,13 +2,13 @@
 
 The plugin uses delegated Microsoft Graph permissions only. It does not support application permissions, client secrets, certificates, arbitrary Graph scopes, or arbitrary Graph URLs.
 
-`offline_access` is needed when initially obtaining a refresh token. For each authorized operation, the plugin exchanges the shared credential for one service-specific scope from the table below.
+`offline_access` is needed when initially obtaining a refresh token. For each authorized operation, the plugin exchanges that execution account’s credential for one service-specific scope from the table below.
 
-## Shared credential consent set
+## Personal credential consent set
 
-The one credential must contain every scope needed by enabled policy grants, plus `offline_access`. Write scopes may satisfy the corresponding read exchange where Microsoft defines that implication. Grant only workloads and operations actually enabled by policy.
+Each personal credential must contain every scope needed by enabled policy grants, plus `offline_access`. Write scopes may satisfy the corresponding read exchange where Microsoft defines that implication. Grant only workloads and operations actually enabled by policy.
 
-This is not provider-side read/write isolation. A shared-credential compromise or plugin bypass has the union of consented scopes. Default-deny policy and write approvals remain the normal runtime authority.
+This is not provider-side read/write isolation. A personal-credential compromise or plugin bypass has that account’s union of consented scopes. Default-deny policy and write approvals remain the normal runtime authority.
 
 ## Tool-to-scope matrix
 
@@ -49,3 +49,9 @@ Unknown or missing read actions fail closed before provider access. Unknown or m
 | To Do | Signed-in user's `/me/todo` resources; writes reject shared/non-owned lists |
 
 Microsoft tenant administrators remain responsible for consent policy, conditional access, token revocation, account lifecycle, and reviewing the effective delegated permissions.
+
+## Automatic single-user execution authority
+
+The local whole-host directory reader requests only `operator.read`, using the host’s existing shared bootstrap auth transiently in a sanitized CLI child environment. It cannot migrate a connection by itself: `automatic-migration` separately requires a current canonical authenticated profile and host-admitted `operator.admin`, and that profile must equal the sole canonical person. No new Microsoft consent scope is requested during migration. The unchanged encrypted backup and nonwidening **legacy∩personal-ceiling** account policy are retained.
+
+A protected automatic receipt selects this personal account only where no explicit worker/session selection exists; it never grants unapproved agents, resources or actions. New accesses and asynchronous sensitive checkpoints require a fresh whole-host snapshot; any detected topology/account-policy transition makes the receipt permanently unusable. Snapshot race/ABA and already-issued request limitations are explicit in [MULTI_USER.md](MULTI_USER.md). Shared multi-user execution and fixed workers continue to require their independent owner consent.

@@ -1,3 +1,4 @@
+import { accountScope, assertAccountEffect } from "./account-scope.js";
 import { createHash } from "node:crypto";
 import type { AllowedRoot } from "./policy.js";
 
@@ -324,6 +325,8 @@ async function fetchGraphValue<T>(
   let retries = 0;
   while (true) {
     throwPreferredAbort(operationSignal);
+    if (accountScope.getStore()) await assertAccountEffect();
+    throwPreferredAbort(operationSignal);
     const requestTimeout = AbortSignal.timeout(policy.requestTimeoutMs);
     const requestSignal = operationSignal ? AbortSignal.any([operationSignal, requestTimeout]) : requestTimeout;
     let response: Response;
@@ -378,6 +381,8 @@ async function fetchGraphResponse(
   const policy = graphFetchPolicy(operationSignal, options);
   let retries = 0;
   while (true) {
+    throwPreferredAbort(operationSignal);
+    if (accountScope.getStore()) await assertAccountEffect();
     throwPreferredAbort(operationSignal);
     const headerTimeout = new AbortController();
     const requestSignal = operationSignal
@@ -499,6 +504,7 @@ async function boundedUploadJson(response: Response): Promise<unknown> {
 
 async function cancelAttachmentUploadSession(uploadUrl: string, kind: AttachmentUploadSessionKind, token: string, fetchFn: typeof fetch): Promise<void> {
   const headers = kind === "todo" ? { authorization: "Bearer " + token } : undefined;
+  if (accountScope.getStore()) await assertAccountEffect();
   try { await fetchFn(uploadUrl, { method: "DELETE", headers, redirect: "error", signal: AbortSignal.timeout(5000) }); }
   catch { /* best-effort cleanup only; preserve the original upload error */ }
 }
@@ -538,6 +544,7 @@ export async function uploadAttachmentSession(
       let response: Response;
       const chunkSignal = stepSignal();
       try {
+        if (accountScope.getStore()) await assertAccountEffect();
         response = await fetchFn(uploadUrl, { method: "PUT", headers, body: content.subarray(start, endExclusive) as unknown as BodyInit, redirect: "error", signal: chunkSignal });
       } catch (error) {
         if (chunkSignal.aborted) throw chunkSignal.reason;
@@ -638,6 +645,7 @@ async function graphContinuationRequest(token: string, continuation: unknown, pa
   fetchFn = ((input: string | URL | Request, init?: RequestInit) => fetchGraphResponse(String(input), init ?? {}, signal, directFetch)) as typeof fetch;
   let response: Response;
   try {
+    if (accountScope.getStore()) await assertAccountEffect();
     response = await fetchFn(url, { method: "GET", headers: { accept: "application/json", authorization: "Bearer " + token }, signal });
   } catch (error) {
     throwPreferredAbort(signal);
@@ -1120,6 +1128,7 @@ export async function driveWriteBytes(root: AllowedRoot, relativePath: string, t
     headers["if-match"] = current.eTag;
   }
   let response: Response;
+  if (accountScope.getStore()) await assertAccountEffect();
   try { response = await fetchFn(`${GRAPH}${drivePath(root, relativePath, "/content")}`, { method: "PUT", headers, body: content as unknown as BodyInit, signal }); }
   catch { throw new Error("provider_unavailable"); }
   if (!response.ok) {
@@ -1236,6 +1245,7 @@ export async function driveWriteSource(root: AllowedRoot, relativePath: string, 
     let response: Response;
     try {
       const body = source.size === 0 ? Buffer.alloc(0) : bodyChunks() as unknown as BodyInit;
+      if (accountScope.getStore()) await assertAccountEffect();
       response = await fetchFn(`${GRAPH}${drivePath(root, relativePath, "/content")}`, { method: "PUT", headers, body, signal, ...(source.size > 0 ? { duplex: "half" } : {}) } as RequestInit);
     } catch {
       if (sourceFailure.error) throw sourceFailure.error;
@@ -1271,6 +1281,7 @@ export async function driveWriteSource(root: AllowedRoot, relativePath: string, 
       const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(requestTimeoutMs)]) : AbortSignal.timeout(requestTimeoutMs);
       let response: Response;
       try {
+        if (accountScope.getStore()) await assertAccountEffect();
         response = await fetchFn(uploadUrl, {
           method: "PUT",
           headers: {
@@ -1297,6 +1308,7 @@ export async function driveWriteSource(root: AllowedRoot, relativePath: string, 
     }
     throw new Error("invalid_provider_response");
   } catch (error) {
+    if (accountScope.getStore()) await assertAccountEffect();
     try { await fetchFn(uploadUrl, { method: "DELETE", redirect: "error", signal: AbortSignal.timeout(5000) }); } catch { /* best-effort cleanup */ }
     throw error;
   }

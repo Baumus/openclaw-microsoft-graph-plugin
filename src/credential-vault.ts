@@ -193,10 +193,12 @@ export async function readVaultCredential(stateDir: string, keyValue: unknown): 
   try { const raw = await readVaultRaw(stateDir); const envelope = parseVaultEnvelope(raw.toString("utf8")); return { envelope, credential: decryptVaultEnvelope(envelope, keyValue), digest: digest(raw), raw }; }
   catch { throw unavailable(); }
 }
-export async function createVaultCredential(stateDir: string, credential: VaultCredential, keyValue: unknown): Promise<VaultRecord> {
+export async function createVaultCredential(stateDir: string, credential: VaultCredential, keyValue: unknown, _reserved?: undefined, assertCurrent: () => void = () => {}): Promise<VaultRecord> {
   const content = serializeVaultEnvelope(encryptVaultCredential(1, credential, keyValue));
   try {
+    assertCurrent();
     await createSecretFileAtomic({ rootDir: stateDir, filePath: vaultCredentialPath(stateDir), content, mode: 0o600, dirMode: 0o700, durable: true });
+    assertCurrent();
     const record = await readVaultCredential(stateDir, keyValue);
     if (record.envelope.generation !== 1 || record.digest !== digest(Buffer.from(content))) throw unavailable();
     return record;
@@ -288,6 +290,21 @@ async function replaceRecord(stateDir: string, current: VaultRecord, credential:
   } catch (error) { if (error instanceof Error && ["credential_vault_locked", "credential_vault_conflict"].includes(error.message)) throw error; throw new Error("credential_vault_write_failed"); }
   try { await hooks?.afterPublication?.(); const published = await readVaultCredential(stateDir, keyValue); if (published.digest !== expected || published.envelope.generation !== next.generation || published.envelope.keyId !== next.keyId) throw unavailable(); return published; }
   catch { throw new Error("credential_vault_write_failed"); }
+}
+
+/** Migration admission shares refresh's lock/marker contract; it never recovers a marker. */
+export async function readMigrationVault(stateDir: string, keyValue: unknown, lock: FileLockHandle): Promise<VaultRecord> {
+  await assertMigrationRefreshClear(stateDir, keyValue, lock);
+  const record = await readVaultCredential(stateDir, keyValue);
+  await assertMigrationRefreshClear(stateDir, keyValue, lock);
+  return record;
+}
+export async function assertMigrationRefreshClear(stateDir: string, keyValue: unknown, lock: FileLockHandle): Promise<void> {
+  if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked");
+  // Any authenticated marker (including one bound to an uncertain predecessor)
+  // denies copying; malformed/unreadable/orphan state also fails closed.
+  if (await readMarker(stateDir, keyValue)) throw new Error("credential_reauthorization_required");
+  if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked");
 }
 
 export async function refreshVaultCredential(params: { stateDir: string; key: unknown; signal?: AbortSignal; exchange: (credential: VaultCredential, binding: VaultBinding) => Promise<VaultRefreshResult>; onDurableResult?: (result: VaultRefreshResult, predecessor: VaultBinding, durable: VaultBinding) => void; testHooks?: MutationHooks }): Promise<string> {

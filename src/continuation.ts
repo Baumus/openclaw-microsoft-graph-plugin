@@ -7,6 +7,7 @@ export const MAX_CONTINUATION_STATE_BYTES = 4 * 1024 * 1024;
 export const MAX_CONTINUATION_STORE_BYTES = 32 * 1024 * 1024;
 
 export type ContinuationBinding = {
+  accountIdentity?: string;
   agentId: string;
   service: "calendar" | "mail" | "onedrive" | "todo";
   action: string;
@@ -122,7 +123,7 @@ export class ContinuationStore {
       if (record) this.#delete(handle);
       throw new Error("invalid_continuation");
     }
-    for (const key of ["agentId", "service", "action", "resource", "criteria"] as const) {
+    for (const key of ["accountIdentity", "agentId", "service", "action", "resource", "criteria"] as const) {
       if (record[key] !== binding[key]) throw new Error("invalid_continuation");
     }
     return record;

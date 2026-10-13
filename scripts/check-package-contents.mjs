@@ -15,6 +15,11 @@ const expected = [
   "assets/ICON_PROVENANCE.md",
   "assets/icon.png",
   "dist/index.js",
+  "docs/MULTI_USER.md",
+  "src/account-control-ui.ts",
+  "src/device-verification.ts",
+  "src/config-policy-identity.ts",
+  "src/control-ui-status.ts",
   "docs/ARCHITECTURE.md",
   "docs/CREDENTIAL_VAULT_DESIGN.md",
   "docs/OAUTH_ACCESS_MATRIX.md",
@@ -53,7 +58,7 @@ const packageName = JSON.parse(readFileSync(new URL("../package.json", import.me
 const packEntry = Array.isArray(payload)
   ? (payload.length === 1 ? payload[0] : undefined)
   : (payload && typeof payload === "object" && Object.keys(payload).length === 1 ? payload[packageName] : undefined);
-if (!Array.isArray(packEntry?.files)) throw new Error("invalid_npm_pack_output");
+if (packEntry?.name !== packageName || packEntry?.version !== JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version || !Array.isArray(packEntry?.files) || packEntry.files.some(entry => typeof entry?.path !== "string" || !entry.path)) throw new Error("invalid_npm_pack_output");
 const actual = packEntry.files.map((entry) => entry.path).sort();
 if (JSON.stringify(actual) !== JSON.stringify(expected)) {
   const missing = expected.filter((entry) => !actual.includes(entry));

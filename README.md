@@ -16,7 +16,7 @@ This is not an official Microsoft or OpenClaw product. It carries no enterprise,
 
 ### 1. Check requirements and install
 
-You need a supported OpenClaw host (`>=2026.9.6`), Node.js (`>=24.16.0 <25` or `>=26.1.0`), permission to edit its configuration, and an approved Microsoft Entra public-client app registration for the account you will connect. Check your local versions:
+You need a supported OpenClaw host (`>=2026.10.1`), Node.js (`>=24.16.0 <25` or `>=26.1.0`), permission to edit its configuration, and an approved Microsoft Entra public-client app registration for the account you will connect. Check your local versions:
 
 ```bash
 node --version
@@ -29,13 +29,24 @@ Review the [ClawHub listing](https://clawhub.ai/packages/@baumus/openclaw-micros
 openclaw plugins install clawhub:@baumus/openclaw-microsoft-graph
 ```
 
-Installation alone does not sign you in, grant an agent access, or make an incomplete configuration usable. Existing installations should review changes before updating; this guide does not silently upgrade them.
+**Upgrade with an existing connection (OpenClaw 2026.10.1 or 2026.10.2):** after an enabled plugin is activated and the Gateway starts, the plugin automatically checks this exact host's complete user directory. Exactly one canonical personal user (excluding the technical `gateway-owner` and resolving merged aliases) receives the existing valid connection with its nonwidening rights. **No Control UI, personal login, administrator role, confirmation button, session binding or worker configuration is required.** Merely extracting an archive is not activation; admission remains fail-closed while startup setup is pending. The encrypted legacy backup is retained.
+
+**Installation type:** the regular plugin setting `installationMode` accepts `auto` (initialize once, keep the result), `single-user`, or `multi-user`. Updates never overwrite the protected effective selection. Single-user keeps existing jobs/automations/delegation and agent rights without recurring user-directory queries or per-job changes. **Switch to multi-user and apply BEFORE admitting another person.** See [the exact deployment contract](docs/MULTI_USER.md#persistent-installation-mode).
+
+**New installations, multiple users or an unprovable directory:** no account is guessed. Use the explicit setup routine:
+
+1. Open this Gateway's Control UI. Enable **Settings → Labs → Custom plugin UI** if Microsoft pages are absent.
+2. Check **Settings → Profile → Identity** for your verified personal profile. A shared `gateway-owner`/dashboard token or display-name change is not personal authentication. Use the administrator-configured identity-bearing login route.
+3. Choose **Microsoft-Einrichtung** or **Mein Microsoft-Konto**. Save personal rights and sign into Microsoft for a new connection. Explicit legacy migration requires administrator authority; **Limited access → Request admin** grants authority, not identity.
+4. Verify the [first permitted read](#3-verify-your-first-request) with the intended account authority. Unknown/quarantined credentials remain incomplete; no global fallback exists.
+
+`openclaw microsoft-graph accounts` prints guidance only. The bounded automatic upgrade uses the supported post-ready `gateway_start` hook and a lifetime-owned scheduler, not an authenticated installer callback or a browser wizard. See [the persistent installation mode and supported-host boundaries](docs/MULTI_USER.md#persistent-installation-mode). Existing installations should review changes before updating; this guide does not change the running installation.
 
 ### 2. Choose access and connect Microsoft
 
-Create the vault-key SecretRef and a default-deny policy for named agents. Begin with one read-only grant. OneDrive access requires immutable drive and item IDs, not just a folder name. Configure and enable the plugin, then follow the setup checklist in **Plugins → Connect Microsoft 365 to OpenClaw**. It shows the next actionable prerequisite before sign-in. Connect the approved Microsoft account only after the policy is saved and applied. Review the Microsoft permissions shown during sign-in.
+Create the vault-key SecretRef and a default-deny policy for named agents. Begin with one read-only grant. OneDrive access requires immutable drive and item IDs, not just a folder name. Configure and enable the plugin, then use **Mein Microsoft-Konto** for personal rights, sign-in, consent and session selection. Connect the approved Microsoft account only after your account rights are saved. Review the Microsoft permissions shown during sign-in.
 
-The [detailed configuration guide](#configuration-reference) has the exact key command, policy example, host configuration, and sign-in steps. This plugin uses delegated access for one signed-in user; it does not support application permissions, client secrets, or unattended service-principal access.
+The [detailed configuration guide](#configuration-reference) has the exact key command, policy example, host configuration, and sign-in steps. Version 4 uses one personal delegated connection per canonical authenticated OpenClaw profile; it does not support application permissions, client secrets, or unattended service-principal access.
 
 ### 3. Verify your first request
 
@@ -45,26 +56,26 @@ Wait until the Control UI confirms that the Gateway has applied your rules. Run 
 
 - Every operation is checked against a credential-free, default-deny per-agent policy before plugin-side key selection, vault I/O, OAuth, or Graph access.
 - Warning-level mutations require OpenClaw-native call approval by default. Operators may explicitly set `warningApprovalsRequired: false`; critical delete, send, and respond operations always retain native call-bound approval.
-- One shared delegated OAuth credential serves every authorized read and write operation. The plugin requests only the operation-specific scope for each exchange.
+- Every execution context has one fixed personal delegated account, selected by explicit binding/worker or the bounded host-startup single-user assistant. Accounts, policy/consent, refresh locks, approvals and caches are separated. There is no implicit global account fallback; token exchanges request only the operation-specific scope.
 - One AES-256-GCM encrypted vault record, one fail-closed lock, and one authenticated quarantine marker protect the rotating refresh-token lifecycle.
 - Access-token caching is bounded and transactional: a token associated with a rotated refresh token is admitted only after durable vault replacement and verification.
 - Every refresh durably publishes authenticated `in_flight` state before OAuth dispatch; uncertainty transitions it to `quarantined`, and either state blocks another exchange until verified completion, explicit recovery, or reauthorization.
 - HTTP-200 OAuth responses require a 1–16 KiB RFC 6750 `b64token`/header-safe access token and a positive integer `expires_in` no greater than 86,400 seconds. Cache residency is capped at one hour with a 60-second skew.
 
-This simpler shared-credential model has an explicit tradeoff: compromise of the credential, vault key, or a plugin bypass can expose the union of Microsoft delegated scopes granted to that credential. The policy and write-approval gates constrain normal plugin behavior; they are not provider-side credential isolation.
+Each personal credential has an explicit tradeoff: compromise of the credential, vault key, or a plugin bypass can expose the union of Microsoft delegated scopes granted to that credential. The policy and write-approval gates constrain normal plugin behavior; they are not provider-side credential isolation.
 
 See [architecture](docs/ARCHITECTURE.md), [OAuth access matrix](docs/OAUTH_ACCESS_MATRIX.md), [vault design](docs/CREDENTIAL_VAULT_DESIGN.md), and [support](docs/SUPPORT.md).
 
 ## Configuration reference
 
-Version 3.5.3 uses one Microsoft delegated OAuth credential and one encrypted local vault. The policy contains authorization rules only; it never contains credential locations or credential material.
+Version 4 uses profile-owned encrypted vaults and a protected account/session registry. See the [personal account and migration guide](docs/MULTI_USER.md) before upgrading; existing tools now require explicit account authority or a qualifying authenticated sole-user receipt. The policy contains authorization rules only; it never contains credential locations or credential material.
 
 ### Detailed prerequisites
 
 You need:
 
 - Node.js `>=24.16.0 <25` or `>=26.1.0`.
-- OpenClaw `>=2026.9.6` running as the OS account that will own the plugin state.
+- OpenClaw `>=2026.10.1` running as the OS account that will own the plugin state.
 - A Microsoft Entra app registration and one delegated user grant for the account the plugin will use. Application permissions, client secrets, certificates, and daemon/service-principal flows are not supported.
 - GNU `pass` and GPG only if you choose the optional emergency `restore-pass` backup. Do not invoke that export when credentials must remain exclusively in the local encrypted vault. Normal setup and tool calls do not use `pass`.
 - Permission to edit the OpenClaw configuration and to review the third-party plugin's declared capabilities.
@@ -216,32 +227,13 @@ If the plugin remains disabled after saving valid configuration, enable it expli
 openclaw plugins enable microsoft-graph
 ```
 
-### Sign in from the browser UI
+### Connect and bind your personal account
 
-Open **Plugins → Connect Microsoft 365 to OpenClaw** in an administrator Control UI session. Save the access rules and wait until the page confirms that the Gateway has applied them. Under **Connect to Microsoft**, enter the approved public application's client ID and tenant ID/domain, then select **Start sign-in**. Open the Microsoft link, enter the one-time code shown on this page, and approve the displayed delegated permissions. The page detects completion automatically; you can cancel before authorization finishes.
+Open **Mein Microsoft-Konto** in the authenticated Control UI. Create your own account, choose account-specific agent rights within the administrator's policy ceiling, save them, and sign in using the approved Microsoft app and your device code. Team sharing and unattended-worker consent are separate default-off choices. Select a controllable session and explicitly bind your account or an owner-shared account. The plugin does not infer account ownership from request text or the most recent speaker.
 
-The Gateway, not the browser, polls Microsoft's token endpoint, verifies the granted scopes against the applied policy, and writes the refresh token directly to an **empty encrypted local vault**. The device-code flow makes outbound requests to Microsoft; it does not operate or require an inbound OAuth callback service. The UI only receives a one-time code, scoped status, and sanitized errors. It never receives OAuth tokens or the vault key. The code expires within 15 minutes. A CLI alternative remains available from an interactive host terminal:
+On supported single-user installations, post-ready Gateway startup automatically preserves the existing connection and nonwidening rights; no manual session/worker configuration is needed. The installation type is initialized once and retained. Single-user tools and ordinary restarts do not query the directory. Set installationMode to multi-user and apply BEFORE admitting additional people; this is an operator deployment contract, not automatic isolation of new humans. Other installations retain the explicit self-migration operation. See [MULTI_USER.md](docs/MULTI_USER.md) for exact supported-host, bootstrap and safety boundaries. No production migration or activation has been performed. Legacy global credential RPCs and token-export CLI commands are not registered in version 4. Use `openclaw microsoft-graph accounts` for setup guidance.
 
-```text
-openclaw microsoft-graph credentials status
-openclaw microsoft-graph credentials sign-in --client-id <approved-app-id> --tenant <tenant-id>
-```
-
-Tenant consent and conditional-access rules remain authoritative. Sign-in will not overwrite an existing or quarantined vault; use a separately reviewed recovery or reauthorization procedure in that case. `status` requires `operator.read`; sign-in, cancellation, recovery, and optional `restore-pass` require `operator.admin`. Gateway RPC parameters and responses have closed validated shapes and do not include OAuth tokens, the vault key, `pass` contents, or raw errors.
-
-### Validate the setup
-
-Run the local checks in this order:
-
-```bash
-openclaw config validate
-openclaw plugins doctor --json
-openclaw plugins inspect microsoft-graph --runtime --json
-openclaw secrets audit --check
-openclaw microsoft-graph credentials status
-```
-
-Expected credential status is `result: "valid"` with secret-free metadata. Then, from an agent explicitly granted in policy, make one read-only request against an allowlisted resource and confirm that an ungranted agent or resource is denied. Do not start validation with a write or destructive action. `plugins list` or a cold manifest inspection alone does not prove that the running Gateway registered the plugin.
+Verify a read-only request in each of two separately bound sessions, then a denied unbound/foreign-account request. Synthetic tests are not a production OAuth canary. The source candidate does not modify live configuration or credentials.
 
 ### Understand approvals
 
@@ -267,38 +259,15 @@ Staged workspace copies live in a plugin-owned inbound subdirectory. On startup 
 
 OneDrive mutation authorization occurs before a warning approval request or approval-free warning continuation. For upload/update, the protected artifact's opened-file identity, exact lowercase SHA-256, and byte size are verified before any applicable managed-root instruction discovery. Discovery requires its own read authority before credential or Graph access. Execution independently reopens and revalidates the artifact plus policy authorization and all media/write preconditions before selecting the key, reading the vault, exchanging OAuth, or calling Graph.
 
-### 10. Status, recovery, and rollback
+### Status, recovery, and rollback
 
-`openclaw microsoft-graph credentials status` returns one of:
-
-- `missing`: no vault exists; use the browser sign-in above.
-- `valid`: the vault decrypts and has no authenticated refresh marker.
-- `quarantined`: a dispatched refresh has an uncertain outcome. Normal exchanges remain blocked.
-- `unavailable`: the key, record, permissions, ownership, filesystem, or authenticated envelope could not be validated. Stop and investigate; do not overwrite the vault.
-
-For `quarantined`, reauthorization is the safest recovery whenever Microsoft may have rotated the refresh token. Only if an operator has independently established that the current vault credential remains usable should they copy the current **sanitized binding** from `status` and run:
-
-```text
-openclaw microsoft-graph credentials recover-refresh --expected-binding <binding> --dry-run
-openclaw microsoft-graph credentials recover-refresh --expected-binding <binding> --apply
-```
-
-Apply requires the exact typed confirmation `RECOVER MICROSOFT GRAPH REFRESH`. The binding prevents recovery against a changed record. Do not blindly repeat a refresh or recovery after an uncertain result.
-
-To create a verified emergency copy in a separate `pass` destination without changing vault operation:
-
-```text
-openclaw microsoft-graph credentials restore-pass --destination <pass-ref> --dry-run
-openclaw microsoft-graph credentials restore-pass --destination <pass-ref> --apply
-```
-
-Apply requires `RESTORE MICROSOFT GRAPH CREDENTIAL`. A `complete` receipt means the destination was written and read back; `unknown` means the local result could not be verified and must be inspected before retrying. The plugin never deletes a `pass` entry automatically.
+The personal page reports your connection as missing, valid, quarantined, or unavailable. Never overwrite an unavailable vault. Automatic and explicit legacy migration both deny blocking/malformed refresh markers and unsafe source/destination locks; neither silently recovers refresh state. Reconnect a quarantined account into a new connection generation; old encrypted records remain retained but are not implicit execution authority. See [MULTI_USER.md](docs/MULTI_USER.md) for explicit migration and rollback rules. Never roll back to implicit-global access; disable Graph until a reviewed rollback is accepted.
 
 ### Safety notes
 
 - Keep the SecretRef provider, vault files, and any `pass` backup private and backed up separately. Never store the key beside an exported vault backup.
 - Vault generations have no external monotonic anchor. Replaying an older valid encrypted record with its matching key cannot be detected cryptographically; compare sanitized bindings and prefer reauthorization after uncertainty.
-- One shared credential has the union of its consented Microsoft scopes. Policy and approval gates constrain normal plugin use but do not provide provider-side read/write isolation after credential, key, host-account, or plugin compromise.
+- Each personal credential has the union of its consented Microsoft scopes. Policy and approval gates constrain normal plugin use but do not provide provider-side read/write isolation after credential, key, host-account, or plugin compromise.
 - OpenClaw may resolve declared SecretInputs while loading configuration. The plugin guarantees authorization before plugin-side key selection and vault/provider access, not suppression of host-level SecretRef materialization.
 - Unknown actions, malformed resources, missing grants, missing credentials, unsafe files, and unsupported filesystem conditions fail closed.
 - Process-local access-token, continuation, instruction, and warning allow-always trust is lost on restart. Retry from a fresh read/status check rather than assuming an interrupted mutation failed.
@@ -313,13 +282,13 @@ Use the existing `microsoft_todo_write` tool with `action: "create_task"`, `titl
 
 The default selector requires independently allowed To Do `read` and `create` operations. Before native approval, the plugin validates the task payload and follows at most 20 safe list pages / 500 lists to identify the unique owned, non-shared list whose Microsoft `wellknownListName` is `defaultList`. Missing, ambiguous, unsafe, or incomplete discovery fails closed; list names and arbitrary sole lists are never used as fallback. Approval identifies and binds the concrete list ID, and execution uses that same target even if the account's default changes. The existing owner check remains; no post-write GET is added. Known `listId` calls do not discover lists or require separate discovery read access. The selector is not accepted for other actions. Warning approval and per-service overrides continue to apply.
 
-## Configuration UI (OpenClaw 2026.9.6+)
+## Configuration UI (OpenClaw 2026.10.1+)
 
 Administrators can enable **Settings → Labs → Custom plugin UI**, then open **Connect Microsoft 365 to OpenClaw** in the Control UI. The page offers English, German, Spanish, and Arabic; other host locales fall back to English. When a newer security-clean stable release is published on ClawHub, an administrator-only, read-only Gateway check shows an update badge beside the established-connection status. It contacts ClawHub with no Microsoft credentials or policy data, and the badge never installs or activates an update. The page edits OneDrive folder/agent rights, per-agent Calendar/Mail/To Do access, and warning-level approval choices for each service. New OneDrive paths are resolved to immutable drive/item IDs by an admin-only Gateway method. Critical delete, send, and respond actions always retain call-bound approval.
 
 The page validates the policy and submits a revision-checked, policy-only `config.patch`. A supported single-file object-key `$include` is written through by OpenClaw; an unsupported include layout or concurrent change fails closed. The page immediately locks duplicate writes and re-reads the effective policy independently of the save response. A timeout or disconnect does not imply that saving failed: unknown outcomes are reconciled without resaving. Drafts and operation state remain only in authenticated host memory across page remounts (not browser storage). An administrator-only read-only status method compares the running Microsoft Graph generation’s canonical policy hash with the saved target; unrelated Gateway changes do not make Graph rules appear inactive. Pending application is checked automatically for up to 12 checks, with bounded read timeouts and a manual recheck available. After a persisted save, the page can request a targeted, drain-aware plugin reload; **Apply saved rules** retries application without rewriting policy or interrupting admitted work. A disconnect during application may require another application attempt. Concurrent policy changes fail closed and require loading the current state. Confirmed Microsoft account connection remains visible during pending activation. Do not treat “saved” as proof that the Gateway is using the new rules.
 
-When new delegated scopes would be required, the page blocks saving while the plugin is enabled until Microsoft consent is verified through the separate operator workflow. The browser sign-in is a guided Microsoft device-code flow; only the one-time code is displayed. Tokens and the vault key stay on the Gateway. Recovery remains in the interactive CLI. Generic plugin settings and CLI paths remain available when Custom plugin UI is disabled.
+When new delegated scopes would be required, the page blocks saving while the plugin is enabled until Microsoft consent is verified through the separate operator workflow. The browser sign-in is a guided Microsoft device-code flow; only the one-time code is displayed. Tokens and the vault key stay on the Gateway. Personal connection recovery uses the profile-authenticated disconnect/reconnect page; legacy global recovery/export CLI operations are not registered. Generic plugin settings and CLI paths remain available when Custom plugin UI is disabled.
 
 ## Development
 

@@ -4,6 +4,10 @@ import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+
+// Operation-regression fixtures use an explicit account-admission test double.
+// The real V2 host/profile/account boundary is exercised unmocked in account-runtime.integration.test.ts.
+vi.mock("./account-runtime.js", () => ({ createAccountRuntime: (api: unknown, config: unknown) => ({ registrationApi: api, config, store: undefined, clearSession: () => {}, hook: (_event: unknown, _ctx: unknown, action: () => unknown) => action() }) }));
 import { getToolPluginMetadata } from "openclaw/plugin-sdk/tool-plugin";
 import entry, { approvalInventory, assertOwnedTodoList, assertWriteActionFields, attachmentWritePlan, boundedCollectionPage, calendarApprovalCriteria, calendarCollectionPath, calendarEventPath, calendarEventPayload, calendarPageIsTruncated, calendarViewPath, calendarViewQuery, calendarWindowDateTime, classifyApproval, collectFilteredCollection, dateTimeTimeZone, deadlineSignal, enforceOneDriveInstructionPreflight, eventGetFields, eventMatchesSearch, eventReadFields, fileAttachmentPayload, listMailFolders, mailFolderCollectionPath, mailListQuery, mailMessageActionPath, mailMessageCollectionPath, mailMessagePayload, mailReplyForwardPlan, NativeApprovalSnapshotStore, nextGraphPath, normalizedWarningApprovalAction, oneDriveAgentsInstructions, oneDriveInstructionDirectories, oneDriveWriteApprovalCriteria, readProtectedMediaSource, readOperationTimeout, schedulePage, taskPayload, todoTaskChildPath, todoTaskMatches, todoTaskPath, validateAttachmentContent, validateProtectedMediaUri, WarningApprovalTrustStore, WRITE_ACTION_FIELDS } from "./index.js";
 import { beforeMicrosoftGraphToolCall, enforceOneDriveInstructionExecution } from "./index.js";
@@ -58,18 +62,12 @@ describe("microsoft-graph plugin contract", () => {
     expect(() => entry.register(api as any)).not.toThrow();
     expect(registerTool).toHaveBeenCalled();
     expect(registerCli).toHaveBeenCalledTimes(1);
-    expect(registerGatewayMethod).toHaveBeenCalledTimes(10);
+    expect(registerGatewayMethod).toHaveBeenCalledTimes(4);
     expect(registerGatewayMethod.mock.calls.map(([method, _handler, options]) => [method, options.scope])).toEqual([
       ["microsoft-graph.configuration.applicationStatus", "operator.admin"],
       ["microsoft-graph.configuration.validate", "operator.admin"],
       ["microsoft-graph.configuration.resolveFolder", "operator.admin"],
       ["microsoft-graph.updateStatus", "operator.admin"],
-      ["microsoft-graph.credentials.status", "operator.read"],
-      ["microsoft-graph.credentials.restore-pass", "operator.admin"],
-      ["microsoft-graph.credentials.recover-refresh", "operator.admin"],
-      ["microsoft-graph.credentials.device-start", "operator.admin"],
-      ["microsoft-graph.credentials.device-status", "operator.admin"],
-      ["microsoft-graph.credentials.device-cancel", "operator.admin"],
     ]);
   });
 

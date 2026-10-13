@@ -1,3 +1,4 @@
+import { currentAccountIdentity } from "./account-scope.js";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 export const ONEDRIVE_AGENTS_MAX_DEPTH = 16;
@@ -88,7 +89,7 @@ function assertPositiveInteger(value: number): void {
 }
 
 function rootCacheKey(sessionId: string, agentId: string, rootPin: string): string {
-  return JSON.stringify([sessionId, agentId, rootPin]);
+  return JSON.stringify([currentAccountIdentity(), sessionId, agentId, rootPin]);
 }
 
 function receiptForChain(root: RootCache, chainHash: string): string {

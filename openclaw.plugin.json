@@ -2,7 +2,7 @@
   "id": "microsoft-graph",
   "name": "Connect Microsoft 365 to OpenClaw",
   "description": "Bring Outlook mail and calendar, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.",
-  "version": "3.13.0",
+  "version": "4.0.0",
   "categories": [
     "productivity"
   ],
@@ -348,6 +348,326 @@
         },
         "additionalProperties": false
       },
+      "accountPolicyCeilings": {
+        "type": "object",
+        "patternProperties": {
+          "^.*$": {
+            "type": "object",
+            "required": [
+              "version",
+              "rules",
+              "services"
+            ],
+            "properties": {
+              "version": {
+                "type": "number",
+                "const": 2
+              },
+              "rules": {
+                "type": "object",
+                "required": [
+                  "default"
+                ],
+                "properties": {
+                  "default": {
+                    "type": "string",
+                    "const": "deny"
+                  },
+                  "warningApprovalsByService": {
+                    "type": "object",
+                    "properties": {
+                      "onedrive": {
+                        "type": "boolean"
+                      },
+                      "calendar": {
+                        "type": "boolean"
+                      },
+                      "mail": {
+                        "type": "boolean"
+                      },
+                      "todo": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              },
+              "services": {
+                "type": "object",
+                "required": [
+                  "onedrive",
+                  "calendar",
+                  "mail",
+                  "todo"
+                ],
+                "properties": {
+                  "onedrive": {
+                    "type": "object",
+                    "required": [
+                      "allowed_roots"
+                    ],
+                    "properties": {
+                      "allowed_roots": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "label",
+                            "path",
+                            "drive_id",
+                            "item_id",
+                            "include_descendants",
+                            "permissions",
+                            "agents"
+                          ],
+                          "properties": {
+                            "label": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9_-]{0,159}$"
+                            },
+                            "path": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "drive_id": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "item_id": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "include_descendants": {
+                              "type": "boolean",
+                              "const": true
+                            },
+                            "agents_instructions": {
+                              "type": "string",
+                              "const": "trusted"
+                            },
+                            "permissions": {
+                              "type": "object",
+                              "required": [
+                                "read",
+                                "write",
+                                "delete"
+                              ],
+                              "properties": {
+                                "read": {
+                                  "type": "boolean"
+                                },
+                                "write": {
+                                  "type": "boolean"
+                                },
+                                "delete": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "agents": {
+                              "type": "object",
+                              "patternProperties": {
+                                "^.*$": {
+                                  "type": "object",
+                                  "required": [
+                                    "permissions"
+                                  ],
+                                  "properties": {
+                                    "permissions": {
+                                      "type": "object",
+                                      "properties": {
+                                        "read": {
+                                          "type": "boolean"
+                                        },
+                                        "write": {
+                                          "type": "boolean"
+                                        },
+                                        "delete": {
+                                          "type": "boolean"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                }
+                              }
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "calendar": {
+                    "type": "object",
+                    "required": [
+                      "agents"
+                    ],
+                    "properties": {
+                      "agents": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^.*$": {
+                            "type": "object",
+                            "required": [
+                              "operations"
+                            ],
+                            "properties": {
+                              "operations": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "enum": [
+                                    "read",
+                                    "create",
+                                    "update",
+                                    "respond",
+                                    "attach",
+                                    "delete"
+                                  ]
+                                },
+                                "minItems": 1
+                              },
+                              "resources": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "minItems": 1
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "mail": {
+                    "type": "object",
+                    "required": [
+                      "agents"
+                    ],
+                    "properties": {
+                      "agents": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^.*$": {
+                            "type": "object",
+                            "required": [
+                              "operations"
+                            ],
+                            "properties": {
+                              "operations": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "enum": [
+                                    "read",
+                                    "draft",
+                                    "update",
+                                    "move",
+                                    "mark",
+                                    "send",
+                                    "delete"
+                                  ]
+                                },
+                                "minItems": 1
+                              },
+                              "resources": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "minItems": 1
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "todo": {
+                    "type": "object",
+                    "required": [
+                      "agents"
+                    ],
+                    "properties": {
+                      "agents": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^.*$": {
+                            "type": "object",
+                            "required": [
+                              "operations"
+                            ],
+                            "properties": {
+                              "operations": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "enum": [
+                                    "read",
+                                    "create",
+                                    "update",
+                                    "delete"
+                                  ]
+                                },
+                                "minItems": 1
+                              },
+                              "resources": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "minItems": 1
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "installationMode": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "single-user",
+          "multi-user"
+        ],
+        "default": "auto",
+        "description": "Initialize once from the supported host directory and persist the result. Single-user is an operator deployment contract: switch to multi-user BEFORE admitting another person; no recurring roster queries."
+      },
+      "accountWorkers": {
+        "type": "object",
+        "patternProperties": {
+          "^.*$": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      },
       "requestTimeoutMs": {
         "type": "integer",
         "minimum": 1000,
@@ -427,10 +747,25 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/18432d1e59ff28930d1ed7f764d56a52b00a68b68e6874bd3ba1db07c6712a2a/index.js",
+    "entry": "dist/control-ui/83730b4dcb6326be02b3a7391f8dee13254f03b36650707f00ec9b0a0befe5f2/index.js",
     "styles": [
-      "dist/control-ui/18432d1e59ff28930d1ed7f764d56a52b00a68b68e6874bd3ba1db07c6712a2a/index.css"
+      "dist/control-ui/83730b4dcb6326be02b3a7391f8dee13254f03b36650707f00ec9b0a0befe5f2/index.css"
     ]
+  },
+  "uiCapabilities": [
+    "page",
+    "navigation",
+    "action"
+  ],
+  "uiHints": {
+    "enabled": {
+      "label": "Enable Microsoft Graph",
+      "help": "Enabled upgrades automatically preserve an existing valid connection at Gateway startup on a proven supported single-user host, without UI/login/button. New, multi-user or unprovable installations use Microsoft-Einrichtung / Mein Microsoft-Konto; enable custom plugin UI and verify personal identity for explicit setup. Run openclaw microsoft-graph accounts for guidance."
+    },
+    "installationMode": {
+      "label": "Installation type",
+      "help": "auto initializes once and retains the saved result across restarts and updates. Select single-user or multi-user to change it deliberately. Single-user keeps existing jobs and agent rights without per-job bindings; exclude other people until multi-user is applied. An ambiguous single-user change fails closed."
+    }
   },
   "contracts": {
     "tools": [

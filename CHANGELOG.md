@@ -4,6 +4,25 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 4.0.0 - 2026-10-12 (candidate, not published)
+
+- Guide explicit setup for new/multi-user/unprovable installations: a native Microsoft setup header action, incomplete/ready checklist and personal-page link, verified-profile display, shared-owner identity guidance, packaged Settings hints, and actionable CLI/README instructions. Qualifying single-user upgrades instead preserve the existing connection automatically at post-ready Gateway startup without any browser/account interaction.
+
+- Breaking: remove implicit global Microsoft account authority and legacy credential RPC registration. Existing `me` tools and argument schemas are unchanged, but need an authenticated session binding, an explicitly consented fixed worker, or a qualified sole-user migration receipt.
+- Add one encrypted personal connection per canonical OpenClaw profile, own-profile sign-in/status/disconnect/reconnect and explicit idempotent legacy migration. No first-visitor claim, team consent, worker consent, token export, or global fallback.
+- Add protected persistent session-incarnation/account bindings, owner sharing and unattended consent, account-aware agent/resource policy restricted by administrative per-profile ceilings.
+- Add personal native Control UI with account permissions and session selection; retain separate administrative ceiling editor.
+- Bind native approvals, continuations, OneDrive instruction acknowledgements, vault/cache identities and every network dispatch to the account/generation/binding context. Recheck public V2 host invocation authority before effects.
+- Require OpenClaw 2026.10.1 for public authenticated-profile/session authority and V2 tool factories. Automatic multi-user DM admission/fork propagation is not claimed; authenticated UI and fixed-worker paths are supported.
+- Make automatic upgrades portable across verified OpenClaw 2026.10.1/2026.10.2 installations: public auth/port defaults, config-first token/password modes, loopback-capable LAN/auto binds, independent canonical IDs/aliases and state roots. Add a supported-host CI matrix and repeatable synthetic SDK/startup canary; unknown ownership or unresolved transport authority still fails closed.
+- Add a bounded host-startup singleton legacy migration with a generation-owned v2 scheduler: full canonical host-directory snapshots through the public SDK, exact local instance/auth pinning, encrypted backup preservation, legacy∩ceiling policy, no manual singleton session/worker setup, and durable non-resurrecting topology/account-change invalidation.
+- Replace CLI process starts with one fresh read-only, null-device public SDK connection per directory snapshot, requesting only `operator.read` and retaining same-connection before/roster/after instance proofs. Remove the extra 90-second directory allowance while preserving one-time setup proofs and configured operation/provider deadlines; no roster cache or persistent client is introduced.
+- Enforce existing refresh-marker admission under both source/destination vault locks in the common legacy migration writer; reject uncertain copies/locks without token laundering. Serialize detected bootstrap topology tombstones independently of request cancellation, publishing only revocation.
+- Replace recurring singleton snapshots with a persistent operator-controlled installationMode (auto initialization once / single-user / multi-user). Preserve existing single-user jobs, sessions and delegation without per-job edits; zero per-tool or initialized-restart directory calls. The operator must apply multi-user BEFORE admitting additional people; no unsupported canonical caller identity is fabricated.
+- Preserve the ordinary installation-policy edit workflow for legacy-derived single accounts; optional personal ceilings still restrict it. Explicit personal saves/new accounts retain personal-policy management.
+- Bind every scope/approval/continuation/media identity to the durable deployment revision; deliberate switches revoke stale authority without restoring old automatic tombstones, credential generations, quarantine state or sharing consent. Unknown/ambiguous initialization and explicit-single changes fail closed.
+
+
 ## 3.13.0 - 2026-10-13
 
 - Document a single `plugins.json` include containing all plugin settings and an inline Microsoft Graph policy, so OpenClaw can update plugin config without a nested-include write refusal.

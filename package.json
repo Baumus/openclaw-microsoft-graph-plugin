@@ -1,6 +1,6 @@
 {
   "name": "@baumus/openclaw-microsoft-graph",
-  "version": "3.13.0",
+  "version": "4.0.0",
   "description": "Bring Outlook mail and calendar, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.",
   "type": "module",
   "main": "./dist/index.js",
@@ -24,14 +24,20 @@
     "SECURITY.md",
     "openclaw.plugin.json",
     "scripts/bounded-json.mjs",
-    "scripts/migrate-plugins-include.mjs",
     "dist/control-ui/",
     "src/control-ui.ts",
     "src/control-ui-i18n.ts",
-    "src/control-ui.css"
+    "src/control-ui.css",
+    "docs/MULTI_USER.md",
+    "src/account-control-ui.ts",
+    "src/device-verification.ts",
+    "src/config-policy-identity.ts",
+    "src/control-ui-status.ts",
+    "scripts/migrate-plugins-include.mjs"
   ],
   "scripts": {
     "test": "vitest run --config ./vitest.config.ts",
+    "migration:canary": "node scripts/migration-runtime-canary.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "npm run typecheck && esbuild src/index.ts --bundle --platform=node --format=esm --target=node24 --packages=external --outfile=dist/index.js",
     "plugin:build": "npm run build && openclaw plugins build --root . --entry ./dist/index.js",
@@ -71,18 +77,18 @@
     "node": ">=24.16.0 <25 || >=26.1.0"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.9.6"
+    "openclaw": ">=2026.10.1"
   },
   "dependencies": {
     "@openclaw/fs-safe": "0.21.1",
-    "json5": "2.2.3",
-    "typebox": "^1.3.34"
+    "typebox": "^1.3.34",
+    "json5": "2.2.3"
   },
   "devDependencies": {
     "clawhub": "0.23.3",
     "esbuild": "^0.28.2",
     "happy-dom": "^20.14.5",
-    "openclaw": "2026.10.3",
+    "openclaw": "^2026.10.1",
     "typescript": "^7.0.2",
     "vitest": "^5.0.2"
   },
@@ -94,18 +100,18 @@
       "./dist/index.js"
     ],
     "compat": {
-      "pluginApi": ">=2026.9.6",
-      "minGatewayVersion": ">=2026.9.6"
+      "pluginApi": ">=2026.10.1",
+      "minGatewayVersion": ">=2026.10.1"
     },
     "build": {
-      "openclawVersion": "2026.10.3",
-      "pluginSdkVersion": "2026.10.3"
+      "openclawVersion": "2026.10.1",
+      "pluginSdkVersion": "2026.10.1"
     },
     "install": {
       "clawhubSpec": "clawhub:@baumus/openclaw-microsoft-graph",
-      "npmSpec": "@baumus/openclaw-microsoft-graph@3.13.0",
+      "npmSpec": "@baumus/openclaw-microsoft-graph@4.0.0",
       "defaultChoice": "clawhub",
-      "minHostVersion": ">=2026.9.6"
+      "minHostVersion": ">=2026.10.1"
     },
     "controlUi": "./src/control-ui.ts"
   },

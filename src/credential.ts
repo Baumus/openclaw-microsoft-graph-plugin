@@ -1,3 +1,4 @@
+import { accountScope, assertAccountEffect, currentAccountIdentity } from "./account-scope.js";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -179,6 +180,10 @@ async function performTokenExchange(credential: Credential, requestedScopes: str
     scope: [...new Set(requestedScopes)].join(" "),
   });
   signal?.throwIfAborted();
+  // Local account/directory admission is not OAuth network time. The caller's
+  // whole-operation signal still bounds admission and is checked before dispatch.
+  if (accountScope.getStore()) await assertAccountEffect();
+  signal?.throwIfAborted();
   const controller = new AbortController();
   const timeoutReason = new DOMException("OAuth token exchange timed out", "TimeoutError");
   const timer = setTimeout(() => controller.abort(timeoutReason), requestTimeoutMs);
@@ -303,25 +308,27 @@ export async function tokenForAuthorizedOperation(params: {
   decodeVaultKey(key);
   let exchangedCredential: Credential | undefined;
   let exchangedScopes: string[] | undefined;
+  if (accountScope.getStore()) await assertAccountEffect();
   return refreshVaultCredential({
     stateDir: params.stateDir, key, signal: params.signal,
     exchange: async (credential, binding) => {
+      if (accountScope.getStore()) await assertAccountEffect();
       const scope = selectScope(credential, params.allowedScopes);
       exchangedCredential = credential;
       exchangedScopes = [scope];
       return exchangeRefreshTokenDetailed(credential, [scope], params.signal, params.fetchFn ?? fetch, {
         requestTimeoutMs: params.requestTimeoutMs,
-        transactionalCacheIdentity: vaultCacheIdentity(binding),
+        transactionalCacheIdentity: JSON.stringify([params.stateDir, currentAccountIdentity(), vaultCacheIdentity(binding)]),
         quarantineOnTransportFailure: true,
       });
     },
     onDurableResult: (result, predecessor, durable) => {
       if (!exchangedCredential || !exchangedScopes || result.expiresAt === undefined) return;
-      const oldKey = accessTokenCacheKey(exchangedCredential, exchangedScopes, vaultCacheIdentity(predecessor));
-      const durableKey = accessTokenCacheKey(exchangedCredential, exchangedScopes, vaultCacheIdentity(durable));
+      const oldKey = accessTokenCacheKey(exchangedCredential, exchangedScopes, JSON.stringify([params.stateDir, currentAccountIdentity(), vaultCacheIdentity(predecessor)]));
+      const durableKey = accessTokenCacheKey(exchangedCredential, exchangedScopes, JSON.stringify([params.stateDir, currentAccountIdentity(), vaultCacheIdentity(durable)]));
       if (oldKey !== durableKey) accessTokenCache.delete(oldKey);
       cacheAccessToken(durableKey, result.accessToken, result.expiresAt);
     },
-    testHooks: params.vaultTestHooks,
+    testHooks: { ...params.vaultTestHooks, beforePublication: async () => { if (accountScope.getStore()) await assertAccountEffect(); await params.vaultTestHooks?.beforePublication?.(); }, afterExchange: assertAccountEffect },
   });
 }
