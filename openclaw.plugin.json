@@ -747,9 +747,9 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/965fc4338da4ac85f9eeb14422960ae78ebd1f83e2a1f94ac8b48b6ce4dc0dca/index.js",
+    "entry": "dist/control-ui/83730b4dcb6326be02b3a7391f8dee13254f03b36650707f00ec9b0a0befe5f2/index.js",
     "styles": [
-      "dist/control-ui/965fc4338da4ac85f9eeb14422960ae78ebd1f83e2a1f94ac8b48b6ce4dc0dca/index.css"
+      "dist/control-ui/83730b4dcb6326be02b3a7391f8dee13254f03b36650707f00ec9b0a0befe5f2/index.css"
     ]
   },
   "uiCapabilities": [

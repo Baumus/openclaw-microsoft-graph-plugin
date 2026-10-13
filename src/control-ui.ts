@@ -14,7 +14,7 @@ type DeviceStart = { sessionId: string; userCode: string; verificationUri: strin
 type UpdateStatus = { updateAvailable: boolean; latestVersion?: string };
 type DeviceStatus = { state: "pending" | "created" | "failed"; error?: string; scopes?: string[] };
 type CredentialReply<T> = { ok: true; value: T } | { ok: false; error: string };
-type ConfigSnapshot = { hash: string; config: { plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; parsed?: { plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; configRevisionHash?: string; appliedConfigHash?: string };
+type ConfigSnapshot = { hash: string; config: { plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; parsed?: { plugins?: { $include?: unknown; entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; configRevisionHash?: string; appliedConfigHash?: string };
 type SavePhase = "idle" | "validating" | "saving" | "applying" | "pending" | "unknown" | "failed" | "conflict" | "applied";
 type SaveOperation = { target: Policy; baseline: Policy; targetHash?: string; phase: SavePhase; issued: boolean; settled: boolean; epoch: number; reloadAttempted?: boolean; reloadPending?: boolean; applicationFailed?: boolean; rejectedBeforeWrite?: boolean };
 // Private drafts live only in authenticated host memory, never browser storage.
@@ -26,6 +26,13 @@ function isPreCommitRejection(error: unknown): boolean {
   return !!error && typeof error === "object" && (error as { code?: unknown }).code === "INVALID_REQUEST";
 }
 const id = "microsoft-graph";
+function authoredPolicySource(snapshot: ConfigSnapshot): string {
+  const policy = snapshot.parsed?.plugins?.entries?.[id]?.config?.policy;
+  if (policy && typeof policy === "object" && "$include" in policy) return `policy:${String((policy as { $include: unknown }).$include)}`;
+  const plugins = snapshot.parsed?.plugins;
+  if (plugins && "$include" in plugins) return `plugins:${String(plugins.$include)}`;
+  return "";
+}
 const appIdsStorageKey = "microsoft-graph.app-ids.v1";
 const validClientId = (value: string) => /^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$/.test(value);
 const validTenant = (value: string) => /^(?:[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}|[A-Za-z0-9.-]{1,253})$/.test(value) && !value.includes("..");
@@ -251,9 +258,8 @@ class ConfigurationPage {
       const pluginEntry = snap.config?.plugins?.entries?.[id];
       const entry = pluginEntry?.config ?? {};
       this.pluginEnabled = pluginEntry?.enabled === true && entry.enabled !== false;
-      const authored = snap.parsed?.plugins?.entries?.[id]?.config?.policy;
-      this.included = !!authored && typeof authored === "object" && "$include" in authored;
-      this.includeName = this.included ? String((authored as { $include: unknown }).$include) : "";
+      this.includeName = authoredPolicySource(snap);
+      this.included = !!this.includeName;
       const policy = entry.policy as Policy | undefined;
       this.initial = policy ? clone(policy) : blankPolicy();
       this.policy = this.operation && this.operation.phase !== "applied" ? clone(this.operation.target) : clone(this.initial);
@@ -286,7 +292,7 @@ class ConfigurationPage {
     append(main, el("p", "mg-hint", "Persönliche Anmeldung, Kontoauswahl und Freigaben verwaltest du unter Mein Microsoft-Konto. Diese Seite bearbeitet die administrative Rechteobergrenze."));
     const rail = el("nav", "mg-steps"); rail.setAttribute("aria-label", localize("Konfigurationsschritte"));
     ["OneDrive", "Dienste", "Freigaben", "Prüfen"].forEach((name, index) => { const tab = this.action(`${index + 1}  ${localize(name)}`, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost"); tab.disabled = this.locked; tab.setAttribute("aria-current", index === this.step ? "step" : "false"); append(rail, tab); }); append(main, rail);
-    if (this.included && (this.dirty || !!this.error)) append(main, el("p", "mg-banner", format("Policy-Quelle: {name}. Änderungen werden beim Speichern in diese Datei geschrieben.", { name: this.includeName })));
+    if (this.included && (this.dirty || !!this.error)) append(main, el("p", "mg-banner", format("Konfigurationsquelle: {name}. Änderungen werden beim Speichern in diese Datei geschrieben.", { name: this.includeName.slice(this.includeName.indexOf(":") + 1) })));
     this.renderSaveStatus(main);
     const body = el("section", "mg-body"); if (this.step === 0) this.renderOneDrive(body); else if (this.step === 1) this.renderServices(body); else if (this.step === 2) this.renderApprovals(body); else this.renderReview(body); append(main, body);
     if (this.error) append(main, el("p", "mg-error", this.error)); if (this.success) append(main, el("p", "mg-success", this.success));
@@ -728,9 +734,7 @@ class ConfigurationPage {
       const fresh = await this.read<ConfigSnapshot>("config.get");
       if (this.disposed || this.signal.aborted || !this.authorized) { operation.phase = "failed"; return; }
       if (fresh.hash !== this.snapshot.hash || canonicalPolicy(fresh.config?.plugins?.entries?.[id]?.config?.policy) !== canonicalPolicy(operation.baseline)) { this.error = "Configuration changed since this draft loaded. Reload and reapply your changes."; operation.phase = "conflict"; return; }
-      const freshAuthored = fresh.parsed?.plugins?.entries?.[id]?.config?.policy;
-      const freshInclude = freshAuthored && typeof freshAuthored === "object" && "$include" in freshAuthored ? String((freshAuthored as { $include: unknown }).$include) : "";
-      if (freshInclude !== this.includeName) { this.error = "Die Policy-Quelle wurde geändert. Bitte neu laden."; operation.phase = "conflict"; return; }
+      if (authoredPolicySource(fresh) !== this.includeName) { this.error = "Die Konfigurationsquelle wurde geändert. Bitte neu laden."; operation.phase = "conflict"; return; }
       const replacements: string[] = [];
       const patchPolicy = collectDiff(operation.baseline, operation.target, "plugins.entries.microsoft-graph.config.policy", replacements);
       const raw = JSON.stringify({ plugins: { entries: { [id]: { config: { policy: patchPolicy } } } } });

@@ -32,7 +32,8 @@
     "src/account-control-ui.ts",
     "src/device-verification.ts",
     "src/config-policy-identity.ts",
-    "src/control-ui-status.ts"
+    "src/control-ui-status.ts",
+    "scripts/migrate-plugins-include.mjs"
   ],
   "scripts": {
     "test": "vitest run --config ./vitest.config.ts",
@@ -80,7 +81,8 @@
   },
   "dependencies": {
     "@openclaw/fs-safe": "0.21.1",
-    "typebox": "^1.3.34"
+    "typebox": "^1.3.34",
+    "json5": "2.2.3"
   },
   "devDependencies": {
     "clawhub": "0.23.3",
