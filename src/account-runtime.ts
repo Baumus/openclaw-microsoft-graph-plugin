@@ -6,7 +6,7 @@ import { accountScope } from "./account-scope.js";
 import { normalizedCriteria } from "./continuation.js";
 import { validatePolicy, type GraphPolicy } from "./policy.js";
 
-type Config = { enabled?: boolean; policy?: GraphPolicy; accountWorkers?: WorkerBindings; accountPolicyCeilings?: Record<string, GraphPolicy> };
+type Config = { installationMode?: import("./accounts.js").InstallationMode; enabled?: boolean; policy?: GraphPolicy; accountWorkers?: WorkerBindings; accountPolicyCeilings?: Record<string, GraphPolicy> };
 type HookEvent = { toolName: string; toolCallId?: string };
 type HookContext = { agentId?: string; sessionKey?: string; sessionId?: string };
 type Approval = { onResolution?: (decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") => void | Promise<void> };
@@ -19,7 +19,8 @@ export function createAccountRuntime(api: OpenClawPluginApi, runtimeConfig: Conf
   const stateKey = Symbol.for("@baumus/openclaw-microsoft-graph/account-runtime-state/v4/single-user-snapshot-v1");
   const slots = globalThis as Record<symbol, unknown>;
   const states = (slots[stateKey] ??= new Map<string, { invocationContexts: Map<string, OpenClawPluginToolContext<2>>; store?: AccountStore; hostInstanceId: string }>()) as Map<string, { invocationContexts: Map<string, OpenClawPluginToolContext<2>>; store?: AccountStore; hostInstanceId: string }>;
-  const generationKey = normalizedCriteria([stateDir, runtimeConfig.enabled, runtimeConfig.policy, runtimeConfig.accountWorkers, runtimeConfig.accountPolicyCeilings]);
+  const configSignature = normalizedCriteria([runtimeConfig.enabled, runtimeConfig.policy, runtimeConfig.accountWorkers, runtimeConfig.accountPolicyCeilings, runtimeConfig.installationMode]);
+  const generationKey = normalizedCriteria([stateDir, runtimeConfig.enabled, runtimeConfig.policy, runtimeConfig.accountWorkers, runtimeConfig.accountPolicyCeilings, runtimeConfig.installationMode]);
   let state = states.get(generationKey);
   if (!state) { state = { invocationContexts: new Map(), hostInstanceId: randomUUID() }; states.set(generationKey, state); }
   const invocationContexts = state.invocationContexts;
@@ -29,7 +30,7 @@ export function createAccountRuntime(api: OpenClawPluginApi, runtimeConfig: Conf
     if (!invocation) return false;
     try { invocation.assertInvocationCurrent(); return true; } catch { return false; }
   };
-  const accountStore = stateDir ? state.store ??= new AccountStore(stateDir, runtimeConfig.accountWorkers, runtimeConfig.policy ? validatePolicy(runtimeConfig.policy) : blankAccountPolicy(), runtimeConfig.accountPolicyCeilings, hostBusy, createAccountDirectory(api, state.hostInstanceId)) : undefined;
+  const accountStore = stateDir ? state.store ??= new AccountStore(stateDir, runtimeConfig.accountWorkers, runtimeConfig.policy ? validatePolicy(runtimeConfig.policy) : blankAccountPolicy(), runtimeConfig.accountPolicyCeilings, hostBusy, createAccountDirectory(api, state.hostInstanceId), runtimeConfig.installationMode) : undefined;
   const hostTarget = (ctx: OpenClawPluginToolContext<2>): AccountHostContext => {
     if (!ctx.agentId || !ctx.sessionKey || !ctx.sessionId || typeof ctx.assertInvocationCurrent !== "function") throw new Error("graph_session_authority_required");
     const lookup = api.runtime?.agent?.session?.getSessionEntry;
@@ -41,8 +42,8 @@ export function createAccountRuntime(api: OpenClawPluginApi, runtimeConfig: Conf
       try { ctx.assertInvocationCurrent(); } catch { throw new Error("graph_account_context_changed"); }
       const latest = lookup?.({ agentId: ctx.agentId, sessionKey: ctx.sessionKey!, readConsistency: "latest" });
       if (!latest || latest.sessionId !== ctx.sessionId || latest.lifecycleRevision !== initialLifecycle) throw new Error("graph_account_context_changed");
-      const currentConfig = ctx.getRuntimeConfig?.()?.plugins?.entries?.["microsoft-graph"]?.config;
-      if (currentConfig && normalizedCriteria([currentConfig.enabled, currentConfig.policy, currentConfig.accountWorkers, currentConfig.accountPolicyCeilings]) !== normalizedCriteria([runtimeConfig.enabled, runtimeConfig.policy, runtimeConfig.accountWorkers, runtimeConfig.accountPolicyCeilings])) throw new Error("graph_account_context_changed");
+      const currentConfig = ctx.getRuntimeConfig?.()?.plugins?.entries?.["microsoft-graph"]?.config ?? api.runtime?.config?.current?.()?.plugins?.entries?.["microsoft-graph"]?.config;
+      if (currentConfig && normalizedCriteria([currentConfig.enabled, currentConfig.policy, currentConfig.accountWorkers, currentConfig.accountPolicyCeilings, currentConfig.installationMode]) !== configSignature) throw new Error("graph_account_context_changed");
     } };
   };
   const scopedConfig = new Proxy(runtimeConfig, { get(target, key, receiver) { return key === "policy" && accountScope.getStore() ? accountScope.getStore()!.policy : Reflect.get(target, key, receiver); } });

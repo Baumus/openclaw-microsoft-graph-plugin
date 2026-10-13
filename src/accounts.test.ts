@@ -19,6 +19,22 @@ async function setup(workers: Record<string, string> = {}) {
   return { root, policy, store };
 }
 describe("protected account/session contract", () => {
+  it("single/multi deployment revisions invalidate even explicitly bound scopes and callbacks", async () => {
+    const { store } = await setup(); const t = target("bound"); await store.bind("A", "A", t, null);
+    await store.setInstallation("multi-user", () => {}); const old = await store.resolve(t);
+    await expect(store.setInstallation("single-user", () => {}, { soleProfileId: "A", digest: "a".repeat(64) })).rejects.toThrow("graph_account_conflict");
+    expect((await store.installationStatus())?.revision).toBe(1);
+    // A separate one-account installation can create deliberate deployment grants.
+    const root = await mkdtemp(join(tmpdir(), "graph-single-mode-")); dirs.push(root);
+    const one = new AccountStore(root, {}, graphPolicyFixture()); await one.setInstallation("single-user", () => {}, { soleProfileId: "A", digest: "a".repeat(64) });
+    const a = await one.provision("A", () => {}); await one.update("A", a.revision, graphPolicyFixture(), false, false, () => {}); await one.markConnected("A", 1, () => {});
+    const scope = (await one.resolve(target("cron"))).scope; await one.setInstallation("multi-user", () => {});
+    expect(() => scope.assertCurrent()).toThrow("graph_account_context_changed"); await expect(scope.assertFresh()).rejects.toThrow("graph_account_context_changed");
+    await expect(one.resolve(target("new-job"))).rejects.toThrow("graph_execution_account_required");
+    await one.setInstallation("single-user", () => {}, { soleProfileId: "A", digest: "a".repeat(64) });
+    expect((await one.resolve(target("unchanged-job"))).scope.identity).not.toBe(scope.identity);
+    expect(() => old.scope.assertCurrent()).not.toThrow(); // Failed mode change never revokes the valid previous deployment.
+  });
   it("keeps simultaneous A/B contexts, credentials and continuations separate", async () => {
     const { store } = await setup(); const A = target("A-session"), B = target("B-session");
     await store.bind("A", "A", A, null); await store.bind("B", "B", B, null);

@@ -2,7 +2,7 @@ import type { ControlUiHost } from "openclaw/plugin-sdk/control-ui";
 import type { Account, Binding } from "./accounts.js";
 import type { GraphPolicy } from "./policy.js";
 
-type Status = { profileId: string; account: Account | null; ceiling: GraphPolicy; workers: string[]; warning: string; automatic?: { profileId: string; invalidated: boolean }; credential: { result: string } };
+type Status = { installation?: { mode: "single-user" | "multi-user"; revision: number; profileId?: string }; profileId: string; account: Account | null; ceiling: GraphPolicy; workers: string[]; warning: string; automatic?: { profileId: string; invalidated: boolean }; credential: { result: string } };
 type SessionStatus = { binding: Binding | null; available: string[]; workerProfileId?: string };
 const serviceLabels = { calendar: "Kalender", mail: "E-Mail", todo: "To Do" };
 const actionLabels: Record<string, string> = { read: "Lesen", create: "Erstellen", update: "Bearbeiten", respond: "Antworten", attach: "Anhänge", delete: "Löschen", draft: "Entwürfe", move: "Verschieben", mark: "Markieren", send: "Senden", write: "Schreiben" };
@@ -112,15 +112,16 @@ export class AccountPage {
       main.append(node("h2", "Persönliche Anmeldung erforderlich"), node("p", "Einrichtung nicht abgeschlossen: Dieser Browser ist als gemeinsamer Gateway-Eigentümer verbunden, nicht als dein persönlicher Benutzer. Ein Dashboard-Token oder das Umbenennen des Profils ordnet die Microsoft-Verbindung nicht deiner Person zu."), node("p", "Prüfe Einstellungen → Profil → Identität. Verwende den vom Administrator eingerichteten persönlichen Anmeldeweg (zum Beispiel einen identitätsgeprüften Tailscale- oder SSO-Zugang). Ist kein solcher Zugang eingerichtet, muss der Administrator ihn zuerst konfigurieren. Unter Limited access → Request admin kannst du anschließend Administratorrechte anfordern, falls sie für die Übernahme fehlen."), button("Einrichtung erneut prüfen", () => { void this.load(); }));
       this.container.replaceChildren(main); return;
     }
+    main.append(node("p", `Installationsmodus: ${this.status.installation?.mode === "single-user" ? "Ein Benutzer" : this.status.installation?.mode === "multi-user" ? "Mehrere Benutzer" : "Einmalige Erkennung noch nicht abgeschlossen"}. Änderbar in den regulären Plugin-Einstellungen: installationMode. Vor weiteren Personen auf multi-user umstellen.`));
     main.append(node("p", `Bestätigtes persönliches OpenClaw-Profil: ${this.status.profileId}`));
     const setupReady = this.status.account?.connected === true && this.status.credential.result === "valid";
     const setup = node("section"); setup.setAttribute("role", "status");
     setup.append(node("h2", setupReady ? "Persönliche Verbindung eingerichtet" : "Einrichtung noch nicht abgeschlossen"), node("p", setupReady ? "Die Verbindung ist deinem bestätigten Profil zugeordnet. Ein erfolgreicher Lesezugriff und die Kontobindung der jeweiligen Session sind damit noch nicht geprüft." : "Beim Upgrade übernimmt der Assistent eine geeignete bestehende Verbindung für den nachgewiesenen einzigen persönlichen Benutzer. Bei einer Neuinstallation richtest du unten dein Konto ein, speicherst Agentrechte und meldest dich bei Microsoft an."));
     if (!setupReady && !this.host.connection.canAdmin) setup.append(node("p", "Nur für die ausdrückliche manuelle Übernahme einer bisherigen installationsweiten Verbindung brauchst du zusätzlich Administratorrechte: Limited access → Request admin. Deine persönliche Neuanmeldung benötigt diese Übernahme nicht."));
     main.append(setup);
-    const automatic = this.status.automatic?.profileId === this.status.profileId && !this.status.automatic.invalidated;
-    main.append(node("p", automatic ? "Automatische Einbenutzer-Übernahme aktiv: Bestehende Agentrechte gelten für Sessions, Jobs und normale Delegation ohne zusätzliche Kontobindung. Das vollständige Benutzerverzeichnis wird vor neuen Vorgängen und an sensiblen asynchronen Grenzen erneut geprüft. Bereits versendete Microsoft-Anfragen können nicht zurückgerufen werden." : this.status.warning));
-    if (this.status.automatic?.invalidated) main.append(node("p", "Automatischer Zugriff bleibt nach einer Benutzerverzeichnis- oder Kontorechteänderung ausgeschaltet. Nutze jetzt ausdrückliche Freigaben und feste Kontobindungen."));
+    const automatic = this.status.installation?.mode === "single-user" && this.status.installation.profileId === this.status.profileId;
+    main.append(node("p", automatic ? "Automatische Einbenutzer-Übernahme aktiv: Bestehende Agentrechte gelten für Sessions, Jobs und normale Delegation ohne zusätzliche Kontobindung. Der Installationsmodus ist dauerhaft gespeichert. Es gibt keine wiederholten Benutzerverzeichnis-Abfragen; der Betreiber muss vor dem Zugang weiterer Personen auf Mehrbenutzer umstellen. Bereits versendete Microsoft-Anfragen können nicht zurückgerufen werden." : this.status.warning));
+    if (this.status.automatic?.invalidated && !automatic) main.append(node("p", "Automatischer Zugriff bleibt nach einer Benutzerverzeichnis- oder Kontorechteänderung ausgeschaltet. Nutze jetzt ausdrückliche Freigaben und feste Kontobindungen."));
     if (this.error) { const e = node("p", this.error); e.className = "mg-error"; main.append(e); }
     if (this.notice) { const e = node("p", this.notice); e.className = "mg-success"; main.append(e); }
     const account = this.status.account;
@@ -173,7 +174,7 @@ export class AccountPage {
       }
     }
     permissions.append(roots);
-    if (automatic) permissions.append(node("p", "Das Speichern von Kontorechten beendet den automatischen Modus dauerhaft; anschließend gelten die ausdrücklichen Freigaben und Bindungen."));
+    if (automatic) permissions.append(node("p", "Kontorechte gelten auch im Einbenutzer-Modus; der dauerhaft gespeicherte Installationsmodus wird dadurch nicht geändert."));
     this.check(permissions, "Gemeinsame Nutzung dieses Kontos ausdrücklich freigeben", this.shared, v => this.shared = v);
     this.check(permissions, "Delegierte / unbeaufsichtigte Nutzung durch fest gebundene Worker freigeben", this.unattended, v => this.unattended = v);
     permissions.append(node("p", this.status.workers.length ? `Fest gebundene Worker: ${this.status.workers.join(", ")}` : "Keine fest gebundenen Worker konfiguriert."));

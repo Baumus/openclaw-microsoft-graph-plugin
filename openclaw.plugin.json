@@ -648,6 +648,16 @@
           }
         }
       },
+      "installationMode": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "single-user",
+          "multi-user"
+        ],
+        "default": "auto",
+        "description": "Initialize once from the supported host directory and persist the result. Single-user is an operator deployment contract: switch to multi-user BEFORE admitting another person; no recurring roster queries."
+      },
       "accountWorkers": {
         "type": "object",
         "patternProperties": {
@@ -737,9 +747,9 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/94b1585c5d3c5c5be6b1c7a0611563dea0d1ece1bd171edbab76370b9329ed21/index.js",
+    "entry": "dist/control-ui/965fc4338da4ac85f9eeb14422960ae78ebd1f83e2a1f94ac8b48b6ce4dc0dca/index.js",
     "styles": [
-      "dist/control-ui/94b1585c5d3c5c5be6b1c7a0611563dea0d1ece1bd171edbab76370b9329ed21/index.css"
+      "dist/control-ui/965fc4338da4ac85f9eeb14422960ae78ebd1f83e2a1f94ac8b48b6ce4dc0dca/index.css"
     ]
   },
   "uiCapabilities": [
@@ -751,6 +761,10 @@
     "enabled": {
       "label": "Enable Microsoft Graph",
       "help": "Enabled upgrades automatically preserve an existing valid connection at Gateway startup on a proven supported single-user host, without UI/login/button. New, multi-user or unprovable installations use Microsoft-Einrichtung / Mein Microsoft-Konto; enable custom plugin UI and verify personal identity for explicit setup. Run openclaw microsoft-graph accounts for guidance."
+    },
+    "installationMode": {
+      "label": "Installation type",
+      "help": "auto initializes once and retains the saved result across restarts and updates. Select single-user or multi-user to change it deliberately. Single-user keeps existing jobs and agent rights without per-job bindings; exclude other people until multi-user is applied. An ambiguous single-user change fails closed."
     }
   },
   "contracts": {

@@ -31,13 +31,13 @@ function scheduler() {
   return s;
 }
 const row = (id: string, mergedInto: string | null = null) => ({ id, mergedInto, displayName: id, avatarMime: null, createdAt: 1, updatedAt: 1, emails: [], githubIdentity: null, hasAvatar: false, roleSource: "default" });
-async function host(options: { mode?: string; enabled?: boolean; legacy?: boolean; users?: string[]; runtimeVersion?: string; strictCeiling?: boolean } = {}) {
+async function host(options: { installationMode?: "auto" | "single-user" | "multi-user"; mode?: string; enabled?: boolean; legacy?: boolean; users?: string[]; runtimeVersion?: string; strictCeiling?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "graph-startup-test-")); roots.push(root); const key = randomBytes(32).toString("base64url");
   const policy = graphPolicyFixture(); const config = { gateway: { mode: "local", port: 18789, bind: "loopback", auth: { mode: "token", token: "synthetic-only" } } };
   const methods = new Map<string, any>(), hooks = new Map<string, any>(), tools = new Map<string, any>(), services: any[] = [];
   let directory = () => JSON.stringify({ profiles: (options.users ?? ["gateway-owner", "A"]).map(id => row(id)) });
   const abort = new AbortController(), schedule = scheduler();
-  const pluginConfig = { enabled: options.enabled ?? true, credentialVaultKey: key, policy, ...(options.strictCeiling ? { accountPolicyCeilings: { A: blankAccountPolicy() } } : {}) };
+  const pluginConfig = { installationMode: options.installationMode, enabled: options.enabled ?? true, credentialVaultKey: key, policy, ...(options.strictCeiling ? { accountPolicyCeilings: { A: blankAccountPolicy() } } : {}) };
   const api: any = { registrationMode: options.mode ?? "full", pluginConfig,
     runtime: { version: options.runtimeVersion ?? "2026.10.1", config: { current: () => config }, state: { resolveStateDir: () => root },
       agent: { session: { getSessionEntry: () => ({ sessionId: "s", lifecycleRevision: "1" }) } },
@@ -61,6 +61,65 @@ async function host(options: { mode?: string; enabled?: boolean; legacy?: boolea
   return { api, config, pluginConfig, root, key, store, schedule, service, services, hooks, tools, abort, start, directory: (fn: () => string) => directory = fn };
 }
 describe("registered trusted host singleton startup", () => {
+  async function restart(h: Awaited<ReturnType<typeof host>>) {
+    await h.services.at(-1).stop(); entry.register(h.api); const next = scheduler();
+    await h.services.at(-1).start({ scheduler: next });
+    await h.hooks.get("gateway_start")({ port: 18789 }, { config: h.config, abortSignal: new AbortController().signal });
+    await next.flush(); return next;
+  }
+  it("durably initializes once and never enumerates on retained or replacement restarts", async () => {
+    const h = await host(); await h.start(); await h.schedule.flush();
+    expect(await h.store.installationStatus()).toMatchObject({ mode: "single-user", profileId: "A", revision: 1 });
+    const before = h.api.runtime.system.runCommandWithTimeout.mock.calls.length;
+    h.directory(() => { throw new Error("no_more_directory_reads"); });
+    await restart(h); expect(h.api.runtime.system.runCommandWithTimeout.mock.calls.length).toBe(before);
+    const retained = scheduler(); await h.services.at(-1).stop(); await h.services.at(-1).start({ scheduler: retained }); await retained.flush();
+    expect(h.api.runtime.system.runCommandWithTimeout.mock.calls.length).toBe(before);
+    expect(h.api.logger.warn).not.toHaveBeenCalled();
+  });
+  it("persists ambiguous multi-user detection when the directory later becomes single", async () => {
+    const h = await host({ users: ["gateway-owner", "A", "B"] }); await h.start(); await h.schedule.flush();
+    expect(await h.store.installationStatus()).toEqual({ mode: "multi-user", revision: 1 });
+    const before = h.api.runtime.system.runCommandWithTimeout.mock.calls.length;
+    h.directory(() => JSON.stringify({ profiles: [row("A")] })); await restart(h);
+    expect(await h.store.installationStatus()).toEqual({ mode: "multi-user", revision: 1 }); expect(h.api.runtime.system.runCommandWithTimeout.mock.calls.length).toBe(before);
+  });
+  it("initializes a fresh single installation without fabricating OAuth or provisioning accounts", async () => {
+    const h = await host({ legacy: false }); await h.start(); await h.schedule.flush();
+    expect(await h.store.installationStatus()).toMatchObject({ mode: "single-user", profileId: "A" }); expect(await h.store.readAccount("A")).toBeUndefined();
+    await expect(h.store.provision("B", () => {})).rejects.toThrow("access_denied");
+    expect(await h.store.provision("A", () => {})).toMatchObject({ connected: false });
+  });
+  it("preserves the existing installation-policy edit workflow for migrated single-user jobs", async () => {
+    const h = await host(); await h.start(); await h.schedule.flush();
+    const original = await h.store.readAccount("A"); expect(original?.policySource).toBe("installation");
+    const next = structuredClone(h.pluginConfig.policy);
+    delete next.services.mail.agents.main;
+    next.services.mail.agents["existing-job-agent"] = { operations: ["read"], resources: ["me"] };
+    h.pluginConfig.policy = next; await restart(h);
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(url.includes("login.microsoftonline") ? { access_token: "synthetic-token", expires_in: 3600 } : { value: [{ id: "unchanged-job" }] }))));
+    const factory = h.tools.get("outlook_mail_read");
+    const ctx = (agentId: string) => ({ agentId, sessionKey: `agent:${agentId}:old-job`, sessionId: "s", assertInvocationCurrent() {} });
+    expect((await factory.create(ctx("main")).execute("revoked-grant", { action: "list_messages" })).details.error).toBe("access_denied");
+    expect((await factory.create(ctx("existing-job-agent")).execute("new-approved-grant", { action: "list_messages" })).details.ok).toBe(true);
+    expect(await h.store.readAccount("A")).toEqual(original); // No silent personal grant mutation.
+  });
+  it("operator mode changes revoke convenience; returning single is a new grant without resetting old tombstones", async () => {
+    const h = await host(); await h.start(); await h.schedule.flush(); const account = await h.store.readAccount("A");
+    h.pluginConfig.installationMode = "multi-user"; const before = h.api.runtime.system.runCommandWithTimeout.mock.calls.length; await restart(h);
+    expect(await h.store.installationStatus()).toEqual({ mode: "multi-user", revision: 2 }); expect(h.api.runtime.system.runCommandWithTimeout.mock.calls.length).toBe(before);
+    expect(await h.store.automaticStatus()).toMatchObject({ invalidated: true });
+    h.pluginConfig.installationMode = "single-user"; await restart(h);
+    expect(await h.store.installationStatus()).toEqual({ mode: "single-user", profileId: "A", revision: 3 });
+    expect(await h.store.automaticStatus()).toMatchObject({ invalidated: true }); expect(await h.store.readAccount("A")).toEqual(account);
+  });
+  it("ambiguous explicit single transition fails closed without altering the previous deployment", async () => {
+    const h = await host(); await h.start(); await h.schedule.flush();
+    h.pluginConfig.installationMode = "multi-user"; await restart(h);
+    h.directory(() => JSON.stringify({ profiles: [row("A"), row("B")] })); h.pluginConfig.installationMode = "single-user"; await restart(h);
+    expect(await h.store.installationStatus()).toEqual({ mode: "multi-user", revision: 2 });
+    expect(await h.store.automaticStatus()).toMatchObject({ invalidated: true }); expect(h.api.logger.warn).toHaveBeenCalled();
+  });
   it("migrates on post-ready full-mode startup with no personal RPC, UI, admin or provider access; preserves backup and ordinary tool rights", async () => {
     const h = await host(); const original = await readFile(vaultCredentialPath(h.root)); const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
     h.directory(() => JSON.stringify({ profiles: [row("gateway-owner"), row("alias", "A"), row("A")] }));
@@ -164,6 +223,38 @@ describe("registered trusted host singleton startup", () => {
     await h.hooks.get("gateway_start")({ port: 18789 }, { config: h.config, abortSignal: new AbortController().signal });
     await restarted.flush();
     expect(await h.store.automaticStatus()).toMatchObject({ invalidated: true }); expect((await h.store.readAccount("A"))?.connected).toBe(false);
+  });
+  it.each(["none", "config", "drain"])("durably revokes completed migration on final setup mismatch despite %s cancellation", async reason => {
+    const h = await host(); let reads = 0;
+    h.directory(() => {
+      if (++reads === 5) {
+        if (reason === "drain") h.abort.abort(); else if (reason === "config") h.pluginConfig.enabled = false;
+        return JSON.stringify({ profiles: [row("gateway-owner"), row("A"), row("B")] });
+      }
+      return JSON.stringify({ profiles: [row("gateway-owner"), row("A")] });
+    });
+    await h.start(); await h.schedule.flush(); expect(reads).toBe(5);
+    // Migration was already published; the final safety write only revokes its
+    // convenience grant and must not discard the account or invent a mode.
+    const account = await h.store.readAccount("A"); expect(account?.connected).toBe(true);
+    expect(await h.store.automaticStatus()).toMatchObject({ profileId: "A", invalidated: true });
+    expect(await h.store.installationStatus()).toBeUndefined();
+    h.pluginConfig.enabled = true;
+    h.directory(() => { throw new Error("revoked_auto_setup_must_not_retry_directory"); });
+    await restart(h);
+    expect(await h.store.installationStatus()).toEqual({ mode: "multi-user", revision: 1 });
+    expect(await h.store.automaticStatus()).toMatchObject({ profileId: "A", invalidated: true });
+    expect(await h.store.readAccount("A")).toEqual(account); expect(reads).toBe(5);
+  });
+  it.each(["config", "drain"])("does not publish single-user mode on a matching final setup read canceled by %s", async reason => {
+    const h = await host(); let reads = 0;
+    h.directory(() => {
+      if (++reads === 5) { if (reason === "drain") h.abort.abort(); else h.pluginConfig.enabled = false; }
+      return JSON.stringify({ profiles: [row("gateway-owner"), row("A")] });
+    });
+    await h.start(); await h.schedule.flush(); expect(reads).toBe(5);
+    expect(await h.store.installationStatus()).toBeUndefined();
+    expect(await h.store.automaticStatus()).toMatchObject({ profileId: "A", invalidated: false });
   });
   it.each(["in_flight", "quarantined", "malformed"])("startup retains source %s refresh markers without laundering credentials", async state => {
     const h = await host(); const original = await readFile(vaultCredentialPath(h.root));

@@ -7,7 +7,7 @@ function mount(connected = false, canAdmin = false, automatic = false, assistanc
   const account = { profileId: "A", generation: 1, revision: 1, connected, shared: false, unattended: false, policy };
   const replies: Record<string, any> = {
     "automatic-migration": { automatic },
-    "status": { ...(automatic ? { automatic: { profileId: "A", invalidated: false } } : {}), profileId: "A", account, ceiling: policy, workers: [], warning: "Andere zugelassene Benutzer können freigegebene Aktionen auslösen. Tokens bleiben persönlich.", credential: { result: connected ? "valid" : "missing" } },
+    "status": { ...(automatic ? { installation: { mode: "single-user", profileId: "A", revision: 1 }, automatic: { profileId: "A", invalidated: false } } : {}), profileId: "A", account, ceiling: policy, workers: [], warning: "Andere zugelassene Benutzer können freigegebene Aktionen auslösen. Tokens bleiben persönlich.", credential: { result: connected ? "valid" : "missing" } },
     "session-status": { binding: null, available: connected ? ["A", "shared-B"] : [] },
     "device-start": { sessionId: "sign-in-A", userCode: "ABCD-EFGH", verificationUri: "https://microsoft.com/devicelogin", expiresAt: new Date(Date.now() + 600000).toISOString() },
     "device-status": { state: "pending" }, "device-cancel": { state: "failed" }, "configure": account, "bind": {}, "disconnect": { disconnected: true },
@@ -47,6 +47,9 @@ describe("personal Control UI flow", () => {
     expect(r.calls.some(c => c.method.endsWith("automatic-migration"))).toBe(false);
     expect(r.container.textContent).toContain("Automatische Einbenutzer-Übernahme aktiv");
     expect(r.container.textContent).toContain("keine Session- oder Worker-Konfiguration nötig");
+    expect(r.container.textContent).toContain("Installationsmodus: Ein Benutzer");
+    expect(r.container.textContent).toContain("keine wiederholten Benutzerverzeichnis-Abfragen");
+    expect(r.container.textContent).toContain("vor dem Zugang weiterer Personen");
     expect(r.calls.some(c => /bind|configure|device-start/.test(c.method))).toBe(false);
     expect(confirm).not.toHaveBeenCalled(); expect(localStorage.length).toBe(0); r.dispose();
   });

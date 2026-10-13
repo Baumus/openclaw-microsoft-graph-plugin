@@ -64,24 +64,48 @@ export function registerAccountBootstrap(api: OpenClawPluginApi, store: AccountS
     const run = async () => {
       try {
         admittedCurrent();
+        const installation = await store.installationStatus(); admittedCurrent();
+        const requested = config.installationMode ?? "auto";
+        // Durable initialization is deliberately not a recurring directory lease.
+        if (installation && (requested === "auto" || requested === installation.mode)) return;
+        if (requested === "multi-user") { await store.setInstallation("multi-user", admittedCurrent); return; }
         const existing = await store.automaticStatus(); admittedCurrent();
-        // Never reset a sticky revocation, even when the user returns to singleton.
-        if (existing?.invalidated) return;
-        const legacy = await inspectVaultCredential(root, config.credentialVaultKey as string); admittedCurrent();
-        if (legacy.result === "missing" && !existing) return;
-        const snapshot = await store.directory?.read(admittedController.signal);
-        // Preserve observed safety facts independently of positive startup authority.
-        if (existing) { await store.checkAutomatic(snapshot); admittedCurrent(); return; }
-        admittedCurrent();
+        if (existing?.invalidated && requested === "auto") { await store.setInstallation("multi-user", admittedCurrent); return; }
+        const snapshot = await store.directory?.read(admittedController.signal); admittedCurrent();
         if (!snapshot) throw new Error("graph_single_user_directory_unavailable");
-        if (!snapshot.soleProfileId || snapshot.soleProfileId === "gateway-owner") return;
-        if (legacy.result !== "valid") throw new Error("graph_account_conflict");
-        await migrateLegacyAccount(store, config, snapshot.soleProfileId, admittedCurrent, snapshot, { signal: admittedController.signal, requireEmptyRegistry: true });
+        if (!snapshot.soleProfileId || snapshot.soleProfileId === "gateway-owner") {
+          if (requested === "auto") await store.setInstallation("multi-user", admittedCurrent);
+          else throw new Error("graph_single_user_directory_unavailable");
+          return;
+        }
+        if (!installation) {
+          // Never promote an existing explicit account/binding as an automatic grant.
+          const owner = await store.readAccount(snapshot.soleProfileId); admittedCurrent();
+          if (existing && !existing.invalidated) await store.checkAutomatic(snapshot);
+          else if (!owner) {
+            const legacy = await inspectVaultCredential(root, config.credentialVaultKey as string); admittedCurrent();
+            if (legacy.result === "valid") await migrateLegacyAccount(store, config, snapshot.soleProfileId, admittedCurrent, snapshot, { signal: admittedController.signal, requireEmptyRegistry: true });
+            else if (legacy.result !== "missing") throw new Error("graph_account_conflict");
+          } else if (requested === "auto") { await store.setInstallation("multi-user", admittedCurrent); return; }
+        }
+        admittedCurrent();
+        // Fresh proof at publication is initialization/mode-change work only.
+        const final = await store.directory?.read(admittedController.signal);
+        if (!final || final.soleProfileId !== snapshot.soleProfileId || final.digest !== snapshot.digest) {
+          // Migration may already have published its convenience grant. Keep a
+          // completed safety observation even if this host generation drained
+          // during the read; this write only revokes, never publishes a mode.
+          await store.mutate(r => { if (r.automatic) r.automatic.invalidated = true; }, () => {});
+          throw new Error("graph_single_user_topology_changed");
+        }
+        admittedCurrent();
+        await store.setInstallation("single-user", admittedCurrent, final);
+
       } catch (error) {
         // No raw directory, stderr, tokens, IDs or paths reach logs.
         if (error instanceof Error && error.message === "graph_single_user_directory_unavailable" && ++attempts < 3 && !admittedController.signal.aborted && !admittedScheduler.signal.aborted) {
           try { admittedCurrent(); admittedScheduler.schedule({ id: "singleton-bootstrap", delayMs: 2000, run }); } catch { /* retired generation */ }
-        } else if (!admittedController.signal.aborted && !admittedScheduler.signal.aborted) api.logger.warn("Microsoft Graph automatic startup setup unavailable; explicit personal setup remains available.");
+        } else if (!admittedController.signal.aborted && !admittedScheduler.signal.aborted) api.logger.warn("Microsoft Graph installation mode/setup could not be applied; verify the saved mode and personal setup.");
       }
     };
     scheduler.schedule({ id: "singleton-bootstrap", delayMs: 0, run });

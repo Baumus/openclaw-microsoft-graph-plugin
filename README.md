@@ -31,6 +31,8 @@ openclaw plugins install clawhub:@baumus/openclaw-microsoft-graph
 
 **Upgrade with an existing connection (OpenClaw 2026.10.1 or 2026.10.2):** after an enabled plugin is activated and the Gateway starts, the plugin automatically checks this exact host's complete user directory. Exactly one canonical personal user (excluding the technical `gateway-owner` and resolving merged aliases) receives the existing valid connection with its nonwidening rights. **No Control UI, personal login, administrator role, confirmation button, session binding or worker configuration is required.** Merely extracting an archive is not activation; admission remains fail-closed while startup setup is pending. The encrypted legacy backup is retained.
 
+**Installation type:** the regular plugin setting `installationMode` accepts `auto` (initialize once, keep the result), `single-user`, or `multi-user`. Updates never overwrite the protected effective selection. Single-user keeps existing jobs/automations/delegation and agent rights without recurring user-directory queries or per-job changes. **Switch to multi-user and apply BEFORE admitting another person.** See [the exact deployment contract](docs/MULTI_USER.md#persistent-installation-mode).
+
 **New installations, multiple users or an unprovable directory:** no account is guessed. Use the explicit setup routine:
 
 1. Open this Gateway's Control UI. Enable **Settings → Labs → Custom plugin UI** if Microsoft pages are absent.
@@ -38,7 +40,7 @@ openclaw plugins install clawhub:@baumus/openclaw-microsoft-graph
 3. Choose **Microsoft-Einrichtung** or **Mein Microsoft-Konto**. Save personal rights and sign into Microsoft for a new connection. Explicit legacy migration requires administrator authority; **Limited access → Request admin** grants authority, not identity.
 4. Verify the [first permitted read](#3-verify-your-first-request) with the intended account authority. Unknown/quarantined credentials remain incomplete; no global fallback exists.
 
-`openclaw microsoft-graph accounts` prints guidance only. The bounded automatic upgrade uses the supported post-ready `gateway_start` hook and a lifetime-owned scheduler, not an authenticated installer callback or a browser wizard. See [the supported-host and snapshot boundaries](docs/MULTI_USER.md#automatic-single-user-assistant-snapshot-semantics). Existing installations should review changes before updating; this guide does not change the running installation.
+`openclaw microsoft-graph accounts` prints guidance only. The bounded automatic upgrade uses the supported post-ready `gateway_start` hook and a lifetime-owned scheduler, not an authenticated installer callback or a browser wizard. See [the persistent installation mode and supported-host boundaries](docs/MULTI_USER.md#persistent-installation-mode). Existing installations should review changes before updating; this guide does not change the running installation.
 
 ### 2. Choose access and connect Microsoft
 
@@ -194,7 +196,7 @@ openclaw plugins enable microsoft-graph
 
 Open **Mein Microsoft-Konto** in the authenticated Control UI. Create your own account, choose account-specific agent rights within the administrator's policy ceiling, save them, and sign in using the approved Microsoft app and your device code. Team sharing and unattended-worker consent are separate default-off choices. Select a controllable session and explicitly bind your account or an owner-shared account. The plugin does not infer account ownership from request text or the most recent speaker.
 
-On supported single-user installations, post-ready Gateway startup automatically preserves the existing connection and nonwidening rights; no manual session/worker configuration is needed. This candidate uses fresh whole-host directory snapshots, not an instant-revocation catalog lease. Other installations retain the explicit self-migration operation. See [MULTI_USER.md](docs/MULTI_USER.md) for exact supported-host, bootstrap and safety boundaries. No production migration or activation has been performed. Legacy global credential RPCs and token-export CLI commands are not registered in version 4. Use `openclaw microsoft-graph accounts` for setup guidance.
+On supported single-user installations, post-ready Gateway startup automatically preserves the existing connection and nonwidening rights; no manual session/worker configuration is needed. The installation type is initialized once and retained. Single-user tools and ordinary restarts do not query the directory. Set installationMode to multi-user and apply BEFORE admitting additional people; this is an operator deployment contract, not automatic isolation of new humans. Other installations retain the explicit self-migration operation. See [MULTI_USER.md](docs/MULTI_USER.md) for exact supported-host, bootstrap and safety boundaries. No production migration or activation has been performed. Legacy global credential RPCs and token-export CLI commands are not registered in version 4. Use `openclaw microsoft-graph accounts` for setup guidance.
 
 Verify a read-only request in each of two separately bound sessions, then a denied unbound/foreign-account request. Synthetic tests are not a production OAuth canary. The source candidate does not modify live configuration or credentials.
 

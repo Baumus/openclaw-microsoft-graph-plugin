@@ -10,11 +10,13 @@ import { validatePolicy, authorizeOperation, authorizeRoot, type GraphPolicy } f
 
 export const blankAccountPolicy = (): GraphPolicy => ({ version: 2, rules: { default: "deny" }, services: { onedrive: { allowed_roots: [] }, calendar: { agents: {} }, mail: { agents: {} }, todo: { agents: {} } } });
 export const SHARING_WARNING = "Gemeinsam bedienbare Agents können die hier freigegebenen Microsoft-Aktionen in diesem Konto auch auf Anweisung anderer zugelassener Benutzer ausführen. Leser gemeinsamer Sessions können dort ausgegebene Microsoft-Daten sehen. OAuth-Tokens und die Verwaltung deiner Verbindung werden dadurch nicht geteilt.";
-export type Account = { profileId: string; generation: number; revision: number; connected: boolean; shared: boolean; unattended: boolean; policy: GraphPolicy };
+export type Account = { profileId: string; generation: number; revision: number; connected: boolean; shared: boolean; unattended: boolean; policySource?: "installation" | "personal"; policy: GraphPolicy };
 export type SessionTarget = { agentId: string; sessionKey: string; sessionId: string; lifecycleRevision?: string };
 export type Binding = SessionTarget & { profileId: string; generation: number; revision: number; privateOwner?: string };
 export type AutomaticAccount = { profileId: string; generation: number; topologyDigest: string; invalidated: boolean };
-export type AccountRegistry = { automatic?: AutomaticAccount; legacyMigration?: { profileId: string; generation: number; sourceDigest: string }; version: 1; accounts: Record<string, Account>; sessions: Record<string, Binding> };
+export type InstallationMode = "auto" | "single-user" | "multi-user";
+export type Installation = { mode: Exclude<InstallationMode, "auto">; revision: number; profileId?: string };
+export type AccountRegistry = { installation?: Installation; automatic?: AutomaticAccount; legacyMigration?: { profileId: string; generation: number; sourceDigest: string }; version: 1; accounts: Record<string, Account>; sessions: Record<string, Binding> };
 type Registry = AccountRegistry;
 export type AccountHostContext = SessionTarget & { assertCurrent: () => void; privateOwner?: string };
 export type WorkerBindings = Record<string, string>;
@@ -26,15 +28,22 @@ function validateRegistry(value: unknown): Registry {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("graph_account_store_unavailable");
   const r = value as Registry;
   const closed = (v: unknown, fields: string[]) => !!v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).every(k => fields.includes(k));
-  if (!closed(r, ["version", "accounts", "sessions", "legacyMigration", "automatic"])) throw new Error("graph_account_store_unavailable");
+  if (!closed(r, ["version", "accounts", "sessions", "legacyMigration", "automatic", "installation"])) throw new Error("graph_account_store_unavailable");
+  if (r.installation) {
+    const i = r.installation;
+    if (!closed(i, ["mode", "revision", "profileId"]) || !["single-user", "multi-user"].includes(i.mode) || !Number.isSafeInteger(i.revision) || i.revision < 1) throw new Error("graph_account_store_unavailable");
+    if (i.mode === "single-user") { validProfile(i.profileId); if (i.profileId === "gateway-owner") throw new Error("graph_account_store_unavailable"); }
+    else if (i.profileId !== undefined) throw new Error("graph_account_store_unavailable");
+  }
   if (r.automatic) validProfile(r.automatic.profileId);
   if (r.automatic && (!closed(r.automatic, ["profileId", "generation", "topologyDigest", "invalidated"]) || !r.automatic.profileId || !Number.isSafeInteger(r.automatic.generation) || r.automatic.generation < 1 || !/^[a-f0-9]{64}$/.test(r.automatic.topologyDigest) || typeof r.automatic.invalidated !== "boolean")) throw new Error("graph_account_store_unavailable");
   if (r.legacyMigration && (!closed(r.legacyMigration, ["profileId", "generation", "sourceDigest"]) || typeof r.legacyMigration.profileId !== "string" || !Number.isSafeInteger(r.legacyMigration.generation) || !/^[A-Za-z0-9_-]{43}$/.test(r.legacyMigration.sourceDigest))) throw new Error("graph_account_store_unavailable");
   if (r.version !== 1 || !r.accounts || !r.sessions || typeof r.accounts !== "object" || typeof r.sessions !== "object" || Array.isArray(r.accounts) || Array.isArray(r.sessions)) throw new Error("graph_account_store_unavailable");
   for (const [key, a] of Object.entries(r.accounts)) {
-    if (!closed(a, ["profileId", "generation", "revision", "connected", "shared", "unattended", "policy"])) throw new Error("graph_account_store_unavailable");
+    if (!closed(a, ["profileId", "generation", "revision", "connected", "shared", "unattended", "policySource", "policy"])) throw new Error("graph_account_store_unavailable");
     validProfile(a.profileId);
     if (key !== profileKey(a.profileId) || !Number.isSafeInteger(a.generation) || a.generation < 1 || !Number.isSafeInteger(a.revision) || a.revision < 1 || [a.connected, a.shared, a.unattended].some(x => typeof x !== "boolean")) throw new Error("graph_account_store_unavailable");
+    if (a.policySource !== undefined && !["installation", "personal"].includes(a.policySource)) throw new Error("graph_account_store_unavailable");
     validatePolicy(a.policy);
   }
   if (r.automatic && !r.automatic.invalidated) {
@@ -59,11 +68,51 @@ export function assertPolicyCeiling(policy: GraphPolicy, ceiling: GraphPolicy): 
   }
   for (const service of ["onedrive", "calendar", "mail", "todo"] as const) if (policy.rules.warningApprovalsByService?.[service] === false && ceiling.rules.warningApprovalsByService?.[service] !== false) throw new Error("access_denied");
 }
+/** Migration keeps only legacy grants that the destination profile ceiling still permits. */
+export function intersectMigrationPolicy(legacy: GraphPolicy, ceiling: GraphPolicy): GraphPolicy {
+  const policy = structuredClone(legacy);
+  for (const service of ["calendar", "mail", "todo"] as const) {
+    const grants = policy.services[service].agents;
+    for (const [agent, grant] of Object.entries(grants)) {
+      const cap = ceiling.services[service].agents[agent];
+      if (!cap) { delete grants[agent]; continue; }
+      const operations = grant.operations.filter(operation => cap.operations.includes(operation));
+      const resources = (grant.resources ?? ["me"]).filter(resource => (cap.resources ?? ["me"]).includes(resource));
+      if (!operations.length || !resources.length) { delete grants[agent]; continue; }
+      grant.operations = operations;
+      if (grant.resources !== undefined) grant.resources = resources;
+    }
+  }
+  policy.services.onedrive.allowed_roots = policy.services.onedrive.allowed_roots.flatMap(root => {
+    const cap = ceiling.services.onedrive.allowed_roots.find(candidate => candidate.label === root.label);
+    if (!cap || root.path !== cap.path || root.drive_id !== cap.drive_id || root.item_id !== cap.item_id || root.include_descendants !== cap.include_descendants || root.agents_instructions !== cap.agents_instructions) return [];
+    for (const operation of ["read", "write", "delete"] as const) root.permissions[operation] = root.permissions[operation] && cap.permissions[operation];
+    for (const [agent, grant] of Object.entries(root.agents)) {
+      const capGrant = cap.agents[agent];
+      for (const operation of ["read", "write", "delete"] as const) if (grant.permissions[operation]) grant.permissions[operation] = !!(root.permissions[operation] && capGrant?.permissions[operation]);
+      if (!(["read", "write", "delete"] as const).some(operation => grant.permissions[operation] === true)) delete root.agents[agent];
+    }
+    return Object.keys(root.agents).length ? [root] : [];
+  });
+  for (const service of ["onedrive", "calendar", "mail", "todo"] as const) {
+    const former = legacy.rules.warningApprovalsByService?.[service];
+    const cap = ceiling.rules.warningApprovalsByService?.[service];
+    if (former === false && cap !== false) {
+      if (cap === true) (policy.rules.warningApprovalsByService ??= {})[service] = true;
+      else delete policy.rules.warningApprovalsByService?.[service];
+    } else if (former === undefined && cap === true) (policy.rules.warningApprovalsByService ??= {})[service] = true;
+  }
+  validatePolicy(policy);
+  assertPolicyCeiling(policy, legacy);
+  assertPolicyCeiling(policy, ceiling);
+  return policy;
+}
+
 export class AccountStore {
   private registry: Registry = { version: 1, accounts: {}, sessions: {} };
   private readonly holds = new Map<string, number>();
   private readonly pending = new Map<string, { target: string; expires: number }>();
-  constructor(readonly root: string, readonly workers: WorkerBindings = {}, readonly ceiling: GraphPolicy = blankAccountPolicy(), readonly ceilings: Record<string, GraphPolicy> = {}, readonly hostBusy: (target: SessionTarget) => boolean = () => false, readonly directory?: AccountDirectory) {}
+  constructor(readonly root: string, readonly workers: WorkerBindings = {}, readonly ceiling: GraphPolicy = blankAccountPolicy(), readonly ceilings: Record<string, GraphPolicy> = {}, readonly hostBusy: (target: SessionTarget) => boolean = () => false, readonly directory?: AccountDirectory, readonly installationMode: InstallationMode = "auto") {}
   ceilingFor(profileId: string): GraphPolicy { return this.ceilings[profileId] ?? this.ceiling; }
   private get file() { return join(this.root, "plugin-data", "microsoft-graph", "accounts", "registry.json"); }
   private async load(): Promise<Registry> {
@@ -77,6 +126,38 @@ export class AccountStore {
       for (let i = 0; i < 5 && e && typeof e === "object"; i++, e = (e as { cause?: unknown }).cause) if (["ENOENT", "not-found"].includes(String((e as { code?: unknown }).code))) return { version: 1, accounts: {}, sessions: {} };
       throw new Error("graph_account_store_unavailable");
     }
+  }
+  assertInstallationCurrent(expected: Installation | undefined): void {
+    if (fingerprint(this.registry.installation ?? null) !== fingerprint(expected ?? null)) throw new Error("graph_account_context_changed");
+  }
+  async installationStatus(): Promise<Installation | undefined> { await this.refresh(); return this.registry.installation ? structuredClone(this.registry.installation) : undefined; }
+  /** Initialization-only detection; an explicit config change creates a new deployment grant.
+   * Old automatic tombstones and credential generations are never reset. */
+  async setInstallation(mode: Installation["mode"], current: () => void, snapshot?: DirectorySnapshot): Promise<Installation> {
+    return this.mutate(r => {
+      if (r.installation?.mode === mode) return r.installation;
+      if (mode === "single-user") {
+        const id = snapshot?.soleProfileId;
+        if (!id || id === "gateway-owner") throw new Error("graph_single_user_directory_unavailable");
+        const accounts = Object.values(r.accounts);
+        if (accounts.some(a => a.profileId !== id) || Object.values(r.sessions).some(b => b.profileId !== id)) throw new Error("graph_account_conflict");
+        // Only fresh installs may select an owner before personal OAuth exists.
+        if (r.installation && !accounts.find(a => a.profileId === id)?.connected) throw new Error("graph_execution_account_required");
+        r.installation = { mode, revision: (r.installation?.revision ?? 0) + 1, profileId: id };
+      } else {
+        r.installation = { mode, revision: (r.installation?.revision ?? 0) + 1 };
+        if (r.automatic) r.automatic.invalidated = true;
+      }
+      return r.installation;
+    }, current);
+  }
+  private assertPersonalOwner(profileId: string): void {
+    if (this.registry.installation?.mode === "single-user" && this.registry.installation.profileId !== profileId) throw new Error("access_denied");
+  }
+  async effectivePolicy(account: Account): Promise<GraphPolicy> {
+    await this.refresh();
+    return this.registry.installation?.mode === "single-user" && this.registry.installation.profileId === account.profileId && account.policySource === "installation"
+      ? intersectMigrationPolicy(this.ceiling, this.ceilingFor(account.profileId)) : structuredClone(account.policy);
   }
   async automaticStatus(): Promise<AutomaticAccount | undefined> { await this.refresh(); return this.registry.automatic ? structuredClone(this.registry.automatic) : undefined; }
   async checkAutomatic(snapshot?: DirectorySnapshot): Promise<AutomaticAccount | undefined> {
@@ -147,6 +228,7 @@ export class AccountStore {
   async provision(profileId: string, assertCurrent: () => void, requireEmptyRegistry = false): Promise<Account> {
     validProfile(profileId);
     return this.mutate(r => {
+      this.assertPersonalOwner(profileId);
       if (requireEmptyRegistry && (Object.keys(r.accounts).length || Object.keys(r.sessions).length || r.legacyMigration || r.automatic)) throw new Error("graph_account_conflict");
       return r.accounts[profileKey(profileId)] ??= { profileId, generation: 1, revision: 1, connected: false, shared: false, unattended: false, policy: blankAccountPolicy() };
     }, assertCurrent);
@@ -157,7 +239,7 @@ export class AccountStore {
       const a = r.accounts[profileKey(profileId)];
       if (!a || a.revision !== expectedRevision) throw new Error("graph_account_conflict");
       if (r.automatic?.profileId === profileId) r.automatic.invalidated = true;
-      a.policy = structuredClone(policy); a.shared = shared; a.unattended = unattended; a.revision++;
+      a.policy = structuredClone(policy); a.policySource = "personal"; a.shared = shared; a.unattended = unattended; a.revision++;
       return a;
     }, assertCurrent);
   }
@@ -194,25 +276,32 @@ export class AccountStore {
     await this.refresh(); target.assertCurrent();
     const key = sessionKey(target); const binding = this.registry.sessions[key]; const worker = this.workers[target.agentId];
     if (worker && binding && binding.profileId !== worker) throw new Error("graph_execution_account_conflict");
-    const automatic = !worker && !binding ? await this.checkAutomatic() : undefined;
+    const installation = this.registry.installation;
+    if (this.installationMode !== "auto" && installation?.mode !== this.installationMode) throw new Error("graph_account_context_changed");
+    // An initialization-only deployment contract, NOT a cached directory lease.
+    // The host SDK exposes no canonical current-human identity on tool contexts.
+    // Do not invent one from session owners, prompt text or requesterSenderId.
+    const single = installation?.mode === "single-user" ? installation.profileId : undefined;
+    if (single && (worker && worker !== single || binding && binding.profileId !== single)) throw new Error("graph_execution_account_conflict");
+    const convenience = !!single && !worker && !binding;
     target.assertCurrent();
-    const profileId = worker ?? binding?.profileId ?? automatic?.profileId;
+    const profileId = worker ?? binding?.profileId ?? (convenience ? single : undefined);
     if (!profileId) throw new Error("graph_execution_account_required");
     const a = this.registry.accounts[profileKey(profileId)];
     if (!a?.connected || (binding && binding.generation !== a.generation)) throw new Error("graph_execution_account_required");
-    if (automatic && automatic.generation !== a.generation) throw new Error("graph_account_context_changed");
-    if (!automatic && (!a.shared || (worker && !a.unattended))) throw new Error("access_denied");
-    assertPolicyCeiling(a.policy, this.ceilingFor(profileId));
-    const selection = worker ?? binding ?? automatic;
-    const signature = fingerprint([a, selection]);
+    if (!convenience && (!a.shared || (worker && !a.unattended))) throw new Error("access_denied");
+    const policy = single && a.policySource === "installation" ? intersectMigrationPolicy(this.ceiling, this.ceilingFor(profileId)) : a.policy;
+    assertPolicyCeiling(policy, this.ceilingFor(profileId));
+    const selection = worker ?? binding ?? installation;
+    const signature = fingerprint([a, selection, installation]);
     const assertCurrent = () => {
       target.assertCurrent();
       const current = this.registry.accounts[profileKey(profileId)];
-      const currentBinding = worker ?? this.registry.sessions[key] ?? (automatic ? this.registry.automatic : undefined);
-      if (fingerprint([current, currentBinding]) !== signature) throw new Error("graph_account_context_changed");
+      const currentBinding = worker ?? this.registry.sessions[key] ?? (convenience ? this.registry.installation : undefined);
+      if (fingerprint([current, currentBinding, this.registry.installation]) !== signature) throw new Error("graph_account_context_changed");
     };
-    const holdKey = worker || automatic ? `worker:${profileId}` : key;
-    return { holdKey, scope: { identity: fingerprint([profileId, a.generation, a.revision, selection]), stateDir: this.accountPath(profileId, a.generation), policy: structuredClone(a.policy), assertCurrent, assertFresh: async () => { if (automatic) await this.checkAutomatic(); await this.refresh(); assertCurrent(); } } };
+    const holdKey = worker || convenience ? `worker:${profileId}` : key;
+    return { holdKey, scope: { identity: fingerprint([profileId, a.generation, a.revision, selection, installation, policy]), stateDir: this.accountPath(profileId, a.generation), policy: structuredClone(policy), assertCurrent, assertFresh: async () => { await this.refresh(); assertCurrent(); } } };
   }
   hold(key: string): () => void { this.holds.set(key, (this.holds.get(key) ?? 0) + 1); let done = false; return () => { if (done) return; done = true; const n = (this.holds.get(key) ?? 1) - 1; if (n) this.holds.set(key, n); else this.holds.delete(key); }; }
   pendingApproval(id: string, key: string): void { this.pending.set(id, { target: key, expires: Date.now() + 180000 }); }

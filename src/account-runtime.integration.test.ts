@@ -66,11 +66,11 @@ async function runtime(worker = false, accountPolicyCeilings: Record<string, Gra
   const context = (id: string, agentId = "main", visibility = "shared") => {
     const sessionKey = `agent:${agentId}:${id}`; const e = { sessionId: id, lifecycleRevision: "1", visibility, createdActor: { type: "human", source: "profile", id: "A" } }; entries.set(sessionKey, e);
     let active = true;
-    const ctx = { agentId, sessionKey, sessionId: id, assertInvocationCurrent: () => { if (!active) throw new Error("host_invocation_revoked"); } };
+    const ctx = { agentId, sessionKey, sessionId: id, getRuntimeConfig: () => ({ plugins: { entries: { "microsoft-graph": { config: api.pluginConfig } } } }), assertInvocationCurrent: () => { if (!active) throw new Error("host_invocation_revoked"); } };
     return { ctx, idle: () => active = false, resume: () => active = true, revoke: () => active = false, authority: { target: { ...ctx, lifecycleRevision: "1" }, assertCurrent: () => {} } };
   };
   const bind = async (actor: string, profileId: string, c: ReturnType<typeof context>, expectedRevision: number | null = null) => rpc(actor, "bind", { agentId: c.ctx.agentId, sessionKey: c.ctx.sessionKey, sessionId: c.ctx.sessionId, profileId, expectedRevision }, () => true, c.authority);
-  return { root, key, policy, methods, tools, hooks, rpc, store, provision, context, bind, entries };
+  return { root, key, policy, methods, tools, hooks, rpc, store, provision, context, bind, entries, api };
 }
 describe("unmocked public V2 Graph host boundary", () => {
   it("requires authenticated profile on all personal methods, never registers legacy global credential APIs", async () => {
@@ -143,6 +143,17 @@ describe("unmocked public V2 Graph host boundary", () => {
     accountScope.run(scope, () => snapshots.record("x", { agentId: "main", sessionId: "s", toolName: "t", params: "{}" }));
     expect(accountScope.run({ ...scope, identity: "B:1" }, () => snapshots.consume("x", "main", "s", "t", {}))).toBe(false);
     trust.grant({ accountIdentity: "A:1", agentId: "main", toolName: "t", action: "a" }); expect(trust.has({ accountIdentity: "B:1", agentId: "main", toolName: "t", action: "a" })).toBe(false);
+  });
+  it("revokes personal management scopes after a deployment switch during OAuth", async () => {
+    const r = await runtime(); await r.provision("A", false, false);
+    await r.store.setInstallation("single-user", () => {}, { soleProfileId: "A", digest: "a".repeat(64) });
+    let requests = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      requests++; await r.store.setInstallation("multi-user", () => {});
+      return new Response(JSON.stringify({ access_token: "do-not-dispatch-after-mode-change", expires_in: 3600 }));
+    }));
+    await expect(r.rpc("A", "resolve-folder", { path: "/Documents" })).rejects.toThrow("graph_account_context_changed");
+    expect(requests).toBe(1);
   });
   it("keeps device sign-in codes/status per profile and denies foreign session handles", async () => {
     const r = await runtime();
@@ -354,47 +365,47 @@ describe("automatic sole-user legacy continuity", () => {
     }
     const denied = r.context("new-unapproved-agent", "unknown-agent"); const result = await r.tools.get("outlook_mail_read").create(denied.ctx).execute("denied", { action: "list_messages" }); expect(result.details.error).toBe("access_denied");
   });
-  it("durably invalidates automatic access on second human/identity change and never resurrects", async () => {
-    let ids = ["gateway-owner", "A"];
-    const r = await runtime(false, {}, graphPolicyFixture(), () => hostRoster(ids)); await legacy(r); await r.rpc("A", "automatic-migration");
-    const c = r.context("old"); const tool = r.tools.get("outlook_mail_read").create(c.ctx); const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
-    ids = ["gateway-owner", "A", "B"];
-    expect((await tool.execute("second", { action: "list_messages" })).details.error).toBe("graph_single_user_topology_changed"); expect(fetch).not.toHaveBeenCalled();
-    ids = ["gateway-owner", "A"];
-    expect((await tool.execute("returned", { action: "list_messages" })).details.error).toBe("graph_single_user_topology_changed");
-    await expect(r.rpc("A", "automatic-migration")).rejects.toThrow("graph_single_user_topology_changed");
-    expect((await r.store.automaticStatus())!.invalidated).toBe(true);
+  it("never reads the directory on old/new/jobs/delegation tools after durable single initialization", async () => {
+    let reads = 0, unavailable = false;
+    const r = await runtime(false, {}, graphPolicyFixture(), () => { reads++; if (unavailable) throw new Error("no_directory_after_setup"); return hostRoster(); });
+    await legacy(r); await r.rpc("A", "automatic-migration"); const initializedReads = reads; unavailable = true;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(url.includes("login.microsoftonline") ? { access_token: "synthetic-token", expires_in: 3600 } : { value: [] }))));
+    for (const id of ["old", "new", "cron", "automation", "delegated"]) {
+      const c = r.context(id); expect((await r.tools.get("outlook_mail_read").create(c.ctx).execute(id, { action: "list_messages" })).details.ok).toBe(true);
+    }
+    expect(reads).toBe(initializedReads);
+    await expect(r.rpc("B", "provision")).rejects.toThrow("access_denied");
+    await expect(r.rpc("B", "status")).rejects.toThrow("access_denied");
   });
-  it("rechecks topology after OAuth/response waits and withholds output after detected transition", async () => {
-    let ids = ["gateway-owner", "A"];
-    const r = await runtime(false, {}, graphPolicyFixture(), () => hostRoster(ids)); await legacy(r); await r.rpc("A", "automatic-migration");
+  it("mode transition after OAuth wait blocks the next provider effect", async () => {
+    const r = await runtime(false, {}, graphPolicyFixture(), () => hostRoster()); await legacy(r); await r.rpc("A", "automatic-migration");
     const c = r.context("wait"); let requests = 0;
-    vi.stubGlobal("fetch", vi.fn(async () => { requests++; ids.push("B"); return new Response(JSON.stringify({ access_token: "must-not-be-dispatched", expires_in: 3600 })); }));
+    vi.stubGlobal("fetch", vi.fn(async () => { requests++; await r.store.setInstallation("multi-user", () => {}); return new Response(JSON.stringify({ access_token: "must-not-be-dispatched", expires_in: 3600 })); }));
     const result = await r.tools.get("outlook_mail_read").create(c.ctx).execute("after-oauth", { action: "list_messages" });
     expect(result.details.ok).toBe(false); expect(requests).toBe(1); expect(JSON.stringify(result)).not.toContain("must-not-be-dispatched");
   });
-  it("withholds fetched output and invalidates pending approvals after a detected topology transition", async () => {
-    let ids = ["gateway-owner", "A"];
-    const r = await runtime(false, {}, graphPolicyFixture(), () => hostRoster(ids)); await legacy(r); await r.rpc("A", "automatic-migration");
+  it("mode changes invalidate pending approvals and withhold fetched output", async () => {
+    const r = await runtime(false, {}, graphPolicyFixture(), () => hostRoster()); await legacy(r); await r.rpc("A", "automatic-migration");
     const c = r.context("approval-snapshot"); r.tools.get("outlook_mail_write").create(c.ctx);
     const approval = await r.hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: "auto-approval", params: { action: "mark_read", messageId: "synthetic-id", isRead: true } }, c.ctx);
-    expect(approval.requireApproval).toBeDefined(); ids.push("B");
-    await expect(approval.requireApproval.onResolution("allow-once")).rejects.toThrow("graph_single_user_topology_changed");
-    const second = await runtime(false, {}, graphPolicyFixture(), () => hostRoster(ids)); ids = ["gateway-owner", "A"]; await legacy(second); await second.rpc("A", "automatic-migration");
+    expect(approval.requireApproval).toBeDefined(); await r.store.setInstallation("multi-user", () => {});
+    await expect(approval.requireApproval.onResolution("allow-once")).rejects.toThrow("graph_account_context_changed");
+    const second = await runtime(false, {}, graphPolicyFixture(), () => hostRoster()); await legacy(second); await second.rpc("A", "automatic-migration");
     const read = second.context("output");
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (url.includes("login.microsoftonline.com")) return new Response(JSON.stringify({ access_token: "synthetic-token", expires_in: 3600 }));
-      ids.push("B"); return new Response(JSON.stringify({ value: [{ subject: "must-never-release-topology-private-output" }] }));
+      await second.store.setInstallation("multi-user", () => {}); return new Response(JSON.stringify({ value: [{ subject: "must-never-release-mode-private-output" }] }));
     }));
     const result = await second.tools.get("outlook_mail_read").create(read.ctx).execute("output", { action: "list_messages" });
-    expect(result.details.ok).toBe(false); expect(JSON.stringify(result)).not.toContain("must-never-release-topology-private-output");
+    expect(result.details.ok).toBe(false); expect(JSON.stringify(result)).not.toContain("must-never-release-mode-private-output");
   });
-  it("fails closed on outages, migration authority loss, and preserves explicit worker precedence", async () => {
-    let unavailable = false;
-    const r = await runtime(true, {}, graphPolicyFixture(), () => unavailable ? "malformed" : hostRoster()); await legacy(r); await r.rpc("A", "automatic-migration");
+  it("retains explicit worker consent and rejects old registered tools immediately on config mode change", async () => {
+    const r = await runtime(true, {}, graphPolicyFixture(), () => hostRoster()); await legacy(r); await r.rpc("A", "automatic-migration");
     const worker = r.context("fixed", "graph-a"); const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
     expect((await r.tools.get("outlook_mail_read").create(worker.ctx).execute("fixed", { action: "list_messages" })).details.error).toBe("access_denied");
-    unavailable = true; const c = r.context("outage"); expect((await r.tools.get("outlook_mail_read").create(c.ctx).execute("outage", { action: "list_messages" })).details.error).toBe("graph_single_user_directory_unavailable"); expect(fetch).not.toHaveBeenCalled();
+    const c = r.context("old-registration"); const tool = r.tools.get("outlook_mail_read").create(c.ctx);
+    (r.api.pluginConfig as any).installationMode = "multi-user";
+    expect((await tool.execute("changed", { action: "list_messages" })).details.error).toBe("graph_account_context_changed"); expect(fetch).not.toHaveBeenCalled();
     const second = await runtime(false, {}, graphPolicyFixture(), () => hostRoster()); await legacy(second);
     await expect(second.rpc("A", "automatic-migration", {}, () => false)).rejects.toThrow("graph_authenticated_profile_required"); expect((await second.rpc("A", "status")).account).toBeNull();
   });
@@ -428,10 +439,10 @@ describe("automatic sole-user legacy continuity", () => {
     expect((await r.store.automaticStatus())!.invalidated).toBe(true);
     const c = r.context("disconnected"); vi.stubGlobal("fetch", vi.fn());
     const result = await r.tools.get("outlook_mail_write").create(c.ctx).execute("disconnected", { action: "mark_read", messageId: "synthetic-id", isRead: true });
-    expect(result.details.error).toBe("graph_single_user_topology_changed"); expect(result.details.remoteEffectsMayHaveOccurred).toBe(true); expect(result.details.outcome).toBe("unknown");
+    expect(result.details.error).toBe("graph_execution_account_required");
     expect(fetch).not.toHaveBeenCalled();
   });
-  it("honors stricter profile ceiling and explicit account-policy changes end automatic mode", async () => {
+  it("honors stricter profile ceiling and personal-policy updates without changing the installation mode", async () => {
     const cap = structuredClone(graphPolicyFixture()); cap.services.mail.agents.main.operations = ["read"];
     const r = await runtime(false, { A: cap }, graphPolicyFixture(), () => hostRoster()); await legacy(r); await r.rpc("A", "automatic-migration");
     const a = (await r.rpc("A", "status")).account; expect(a.policy.services.mail.agents.main.operations).toEqual(["read"]);

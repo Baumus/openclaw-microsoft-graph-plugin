@@ -62,6 +62,7 @@ const Config = Type.Object({
   credentialVaultKey: Type.Optional(SecretRefOnly),
   policy: Type.Optional(GraphPolicySchema),
   accountPolicyCeilings: Type.Optional(Type.Record(Type.String({ minLength: 1 }), GraphPolicySchema)),
+  installationMode: Type.Optional(Type.Unsafe<import("./accounts.js").InstallationMode>({ type: "string", enum: ["auto", "single-user", "multi-user"], default: "auto", description: "Initialize once from the supported host directory and persist the result. Single-user is an operator deployment contract: switch to multi-user BEFORE admitting another person; no recurring roster queries." })),
   accountWorkers: Type.Optional(Type.Record(Type.String({ minLength: 1 }), Type.String({ minLength: 1, maxLength: 256 }))),
   requestTimeoutMs: Type.Optional(Type.Integer({ minimum: 1000, maximum: 30000, default: 5000 })),
   readOperationTimeoutMs: Type.Optional(Type.Integer({ minimum: 5000, maximum: 300000, default: DEFAULT_READ_OPERATION_TIMEOUT_MS, description: "Whole-operation deadline for multi-request reads; each Graph request remains bounded by requestTimeoutMs." })),
@@ -74,7 +75,7 @@ const Config = Type.Object({
   oneDriveTransferTimeoutMs: Type.Optional(Type.Integer({ minimum: 30000, maximum: 7 * 24 * 60 * 60 * 1000, default: DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS, description: "Whole-operation deadline for OneDrive private-media downloads and uploads; each Graph request remains bounded by requestTimeoutMs." })),
 }, { additionalProperties: false });
 
-export type RuntimeConfig = { accountPolicyCeilings?: Record<string, GraphPolicy>; accountWorkers?: WorkerBindings; enabled?: boolean; warningApprovalsRequired?: boolean; credentialVaultKey?: unknown; policy?: GraphPolicy; requestTimeoutMs?: number; readOperationTimeoutMs?: number; calendarMultiwriteTimeoutMs?: number; maxConcurrent?: number; maxReadBytes?: number; maxReadOutputBytes?: number; maxAttachmentDownloadBytes?: number; attachmentDownloadTimeoutMs?: number; oneDriveTransferTimeoutMs?: number };
+export type RuntimeConfig = { installationMode?: import("./accounts.js").InstallationMode; accountPolicyCeilings?: Record<string, GraphPolicy>; accountWorkers?: WorkerBindings; enabled?: boolean; warningApprovalsRequired?: boolean; credentialVaultKey?: unknown; policy?: GraphPolicy; requestTimeoutMs?: number; readOperationTimeoutMs?: number; calendarMultiwriteTimeoutMs?: number; maxConcurrent?: number; maxReadBytes?: number; maxReadOutputBytes?: number; maxAttachmentDownloadBytes?: number; attachmentDownloadTimeoutMs?: number; oneDriveTransferTimeoutMs?: number };
 type OneDriveApprovalRoot = Pick<AllowedRoot, "label" | "drive_id" | "item_id">;
 type Logger = { info: (message: string) => void; warn: (message: string) => void };
 let activeRequests = 0;
