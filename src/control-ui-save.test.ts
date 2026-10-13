@@ -8,14 +8,14 @@ const clone = <T>(v: T): T => structuredClone(v);
 const hash = (v: unknown) => createHash("sha256").update(canonicalPolicy(v)).digest("hex");
 function deferred<T>() { let resolve!: (v: T) => void; let reject!: (v: unknown) => void; const promise = new Promise<T>((r,j) => { resolve=r; reject=j; }); return { promise, resolve, reject }; }
 type Mode = "active" | "pending" | "persist-reject" | "reject" | "hang" | "persist-hang" | "unavailable";
-function harness(mode: Mode = "active") {
+function harness(mode: Mode = "active", pluginsInclude = false) {
   let saved = clone(initial); let active = hash(saved); let revision = "r1";
   let page: { mount(container: HTMLElement, context: unknown): { dispose(): void } };
   let listener = () => {};
   const patch = deferred<unknown>(); const reload = deferred<unknown>();
   const calls: { method: string; params: Record<string, unknown> }[] = [];
   let getOverride: (() => Promise<unknown>) | undefined;
-  const snapshot = () => ({ hash: revision, configRevisionHash: "unrelated-new", appliedConfigHash: "unrelated-old", config: { plugins: { entries: { "microsoft-graph": { enabled: true, config: { credentialVaultKey: "synthetic-secret-ref", policy: clone(saved) } } } } } });
+  const snapshot = () => ({ hash: revision, configRevisionHash: "unrelated-new", appliedConfigHash: "unrelated-old", parsed: pluginsInclude ? { plugins: { $include: "plugins.json" } } : undefined, config: { plugins: { entries: { "microsoft-graph": { enabled: true, config: { credentialVaultKey: "synthetic-secret-ref", policy: clone(saved) } } } } } });
   const host = { locale: "de", connection: { connected: true, canAdmin: true }, agents: { rows: [{ id: "main", name: "Main" }] },
     subscribe: (fn: () => void) => { listener = fn; return () => { listener = () => {}; }; },
     request: async (method: string, params: Record<string, unknown>) => {
@@ -47,10 +47,11 @@ function harness(mode: Mode = "active") {
   return { host, calls, container, settle, click, edit, patch, reload, snapshot, setGet: (fn?: () => Promise<unknown>) => { getOverride=fn; }, notify: () => listener(), setActive: () => { active=hash(saved); }, changeSaved: () => { saved.services.mail.agents.main.operations.push("draft"); revision="external"; }, remount: () => { mounted.dispose(); controller.abort(); mount(); }, dispose: () => { mounted.dispose(); controller.abort(); if (typeof stop === "function") stop(); container.remove(); } };
 }
 const cleanup: (() => void)[] = [];
-function view(mode?: Mode) { const h=harness(mode); cleanup.push(h.dispose); return h; }
+function view(mode?: Mode, pluginsInclude = false) { const h=harness(mode, pluginsInclude); cleanup.push(h.dispose); return h; }
 beforeEach(() => { localStorage.clear(); vi.useFakeTimers(); });
 afterEach(() => { for (const fn of cleanup.splice(0)) fn(); vi.useRealTimers(); });
 describe("policy save and application lifecycle", () => {
+  it("edits a policy under one top-level plugins include without changing the patch path", async () => { const h=view("active", true); await h.settle(); await h.edit(); expect(h.container.textContent).toContain("Konfigurationsquelle: plugins.json"); h.click("Speichern und anwenden"); await h.settle(); expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1); expect(JSON.parse(h.calls.find(c=>c.method==="config.patch")!.params.raw as string).plugins.entries["microsoft-graph"].config.policy).toBeTruthy(); expect(h.container.textContent).toContain("Gespeichert und aktiv"); });
   it("proves Graph activation despite unrelated global revision mismatch and preserves connection", async () => { const h=view(); await h.settle(); expect(h.container.textContent).toContain("Verbindung hergestellt"); expect(h.container.textContent).not.toContain("Aktivierung noch nicht bestätigt"); expect(h.calls.filter(c=>c.method==="microsoft-graph.updateStatus")).toHaveLength(1); });
   it("locks editing immediately and issues one write for duplicate clicks, then confirms saved and active", async () => { const h=view(); await h.settle(); await h.edit(); h.click("Speichern und anwenden"); h.click("Speichert …"); expect([...h.container.querySelectorAll(".mg-steps button")].every(b=>(b as HTMLButtonElement).disabled)).toBe(true); await h.settle(); expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1); expect(h.container.textContent).toContain("Gespeichert und aktiv"); expect(h.calls.some(c=>c.method==="plugins.reload")).toBe(false); });
   it("recognizes persistence after a rejected response and applies without resaving", async () => { const h=view("persist-reject"); await h.settle(); await h.edit(); h.click("Speichern und anwenden"); await h.settle(); expect(h.container.textContent).toContain("Gespeichert"); expect(h.container.textContent).toContain("Verbindung hergestellt"); expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1); expect(h.calls.filter(c=>c.method==="plugins.reload")[0]?.params).toEqual({ plugins: [{ pluginId: "microsoft-graph" }], waitForDrain: true }); h.setActive(); h.reload.resolve({ ok:true }); await h.settle(); expect(h.container.textContent).toContain("Gespeichert und aktiv"); });

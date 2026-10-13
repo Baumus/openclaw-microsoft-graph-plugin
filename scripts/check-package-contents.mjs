@@ -21,6 +21,7 @@ const expected = [
   "openclaw.plugin.json",
   "package.json",
   "scripts/bounded-json.mjs",
+  "scripts/migrate-plugins-include.mjs",
   "src/control-ui.ts",
   "src/control-ui-i18n.ts",
   "src/control-ui.css",

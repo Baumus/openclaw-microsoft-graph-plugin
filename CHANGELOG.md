@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Document a single `plugins.json` include containing all plugin settings and an inline Microsoft Graph policy, so OpenClaw can update plugin config without a nested-include write refusal.
+- Add a fail-closed, one-time pre-upgrade migration helper with dry-run, a byte-exact private backup, preservation of other plugin entries and root comments, and no live installation or provider effect. OpenClaw cannot run this migration automatically from a newly installed plugin because its config write occurs first and npm install scripts are disabled.
+- Show the top-level included config source in the Control UI while retaining policy-only, revision-checked saves.
+
 ## 3.12.1 - 2026-10-10
 
 - Distinguish saving from activation, lock duplicate writes immediately, and reconcile persisted policies even when the save response times out or disconnects. Keep drafts and operation state in authenticated host memory across page remounts.
