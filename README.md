@@ -107,7 +107,7 @@ You may instead use an `env`, `file`, or `exec` SecretRef backed by a correctly 
 
 ### Create a version-2 default-deny policy
 
-Copy [the shipped v2 example](examples/microsoft-graph-policy-v2.json5) to `microsoft-graph-policy.json5` beside `openclaw.json`, then replace every placeholder. `$include` paths are resolved relative to the file that contains them and normally must remain inside the top-level config directory.
+Use [the shipped v2 example](examples/microsoft-graph-policy-v2.json5) as a template, then replace every placeholder. Put the resulting policy object directly in `plugins.json`; do not add another `$include` inside that file.
 
 A conservative OneDrive read-only policy looks like this:
 
@@ -148,32 +148,67 @@ Keep `rules.default: "deny"`. `include_descendants` must be literal `true`; remo
 
 ### Configure and enable the plugin
 
-Add the following shape to `openclaw.json`. If you already use `tools.allow`, merge `microsoft-graph` into that existing allowlist instead of replacing unrelated entries.
+Keep one include for the whole plugin section in `openclaw.json`. If you already use `tools.allow`, merge `microsoft-graph` into that existing allowlist instead of replacing unrelated entries.
 
 ```json5
 {
-  plugins: {
-    entries: {
-      "microsoft-graph": {
-        enabled: true,
-        config: {
-          enabled: true,
-          warningApprovalsRequired: true,
-          credentialVaultKey: {
-            source: "store",
-            provider: "default",
-            id: "MICROSOFT_GRAPH_CREDENTIAL_VAULT_KEY",
-          },
-          policy: { $include: "./microsoft-graph-policy.json5" },
-        },
-      },
-    },
-  },
+  plugins: { $include: "plugins.json" },
   tools: { allow: ["microsoft-graph"] },
 }
 ```
 
-`$include` is OpenClaw host-config composition. The plugin receives the resolved policy object and does not read policy files itself. If the plugin remains disabled after saving valid configuration, enable it explicitly and accept capabilities only after review:
+Create `plugins.json` beside `openclaw.json`. It contains **all** plugin settings, including other installed plugins and the complete Microsoft Graph policy:
+
+```json5
+{
+  // Preserve any existing plugins.allow, plugins.load, and other entries.
+  entries: {
+    "microsoft-graph": {
+      enabled: true,
+      config: {
+        enabled: true,
+        warningApprovalsRequired: true,
+        credentialVaultKey: {
+          source: "store",
+          provider: "default",
+          id: "MICROSOFT_GRAPH_CREDENTIAL_VAULT_KEY",
+        },
+        policy: {
+          version: 2,
+          rules: { default: "deny" },
+          services: {
+            onedrive: { allowed_roots: [] },
+            calendar: { agents: {} },
+            mail: { agents: {} },
+            todo: { agents: {} },
+          },
+        },
+      },
+    },
+  },
+}
+```
+
+`$include` is OpenClaw host-config composition. The plugin receives the resolved policy object and does not read policy files itself. A single-file include at `plugins` lets OpenClaw's plugin installer and config writer update `plugins.json`. Nested includes inside `plugins.json` block those writes.
+
+#### One-time migration before upgrading an existing installation
+
+If your existing `openclaw.json` has `plugins.entries["microsoft-graph"].config.policy: { $include: "./microsoft-graph-policy.json5" }`, run the bundled migration helper **before** the first `openclaw plugins update microsoft-graph`. OpenClaw refuses the update's plugin-config write before new plugin code can run, and managed npm installs use `--ignore-scripts`; the plugin cannot silently migrate itself during installation.
+
+From a checkout of this version of the plugin, run `npm ci`, then:
+
+```bash
+node scripts/migrate-plugins-include.mjs --config "$HOME/.openclaw/openclaw.json"
+node scripts/migrate-plugins-include.mjs --config "$HOME/.openclaw/openclaw.json" --apply
+openclaw config validate --json
+openclaw plugins update microsoft-graph
+```
+
+The first invocation is read-only. The apply step creates `plugins.json` with all prior plugin settings and the resolved Graph policy, preserves the rest of `openclaw.json` including comments, and keeps a byte-exact, private backup of the old root config. Comments inside the old `plugins` section are preserved in the backup, not copied into the generated `plugins.json`. It does **not** delete the old policy file, update the plugin, restart the Gateway, change grants, or contact Microsoft. It refuses unexpected nested includes, an existing `plugins.json`, paths outside the config directory, and concurrent changes. Running it again after success reports `already-migrated`. Check that `openclaw config validate --json` returns `valid: true` before updating. If validation fails, restore the reported `.bak` file over `openclaw.json`; the original policy file remains available. Stop concurrent config edits during the migration and verify the plugin state after the update.
+
+If your current layout differs from that exact legacy shape, do not force the helper; migrate manually after reviewing the actual include ownership.
+
+If the plugin remains disabled after saving valid configuration, enable it explicitly and accept capabilities only after review:
 
 `warningApprovalsRequired` defaults to `true` when omitted. Set it to `false` only when policy-authorized warning-level mutations should run without an approval prompt. This setting never affects critical approvals and never bypasses policy authorization, parameter validation, managed-root instruction checks, protected-media checks, or write preconditions.
 
