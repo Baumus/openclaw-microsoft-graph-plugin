@@ -82,7 +82,7 @@
     "clawhub": "0.23.3",
     "esbuild": "^0.28.2",
     "happy-dom": "^20.14.5",
-    "openclaw": "2026.9.8",
+    "openclaw": "2026.10.3",
     "typescript": "^7.0.2",
     "vitest": "^5.0.2"
   },
@@ -98,8 +98,8 @@
       "minGatewayVersion": ">=2026.9.6"
     },
     "build": {
-      "openclawVersion": "2026.9.8",
-      "pluginSdkVersion": "2026.9.8"
+      "openclawVersion": "2026.10.3",
+      "pluginSdkVersion": "2026.10.3"
     },
     "install": {
       "clawhubSpec": "clawhub:@baumus/openclaw-microsoft-graph",
