@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 3.13.1 - 2026-10-14
+
+- Explain the temporary ClawHub `manifest-unknown-contracts` false positive for the required `contracts.tools` declaration, linking the merged Inspector fix. Plugin behavior, permissions, and tool contracts are unchanged.
+
 ## 3.13.0 - 2026-10-13
 
 - Document a single `plugins.json` include containing all plugin settings and an inline Microsoft Graph policy, so OpenClaw can update plugin config without a nested-include write refusal.
