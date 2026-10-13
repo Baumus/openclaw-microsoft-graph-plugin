@@ -34,8 +34,8 @@ if (manifest.controlUi?.entry) expected.push(manifest.controlUi.entry);
 for (const style of manifest.controlUi?.styles ?? []) expected.push(style);
 expected.sort();
 
-// npm pack --dry-run can return [] on supported host/npm combinations. Pack
-// into a disposable directory so this check inspects the actual release files.
+// Pack into a disposable directory so this check inspects the actual release
+// files without leaving an artifact in the worktree.
 const packDir = await mkdtemp(join(tmpdir(), "microsoft-graph-package-check-"));
 let payload;
 try {
@@ -47,8 +47,14 @@ try {
 } finally {
   await rm(packDir, { recursive: true, force: true });
 }
-if (!Array.isArray(payload) || payload.length !== 1 || !Array.isArray(payload[0]?.files)) throw new Error("invalid_npm_pack_output");
-const actual = payload[0].files.map((entry) => entry.path).sort();
+// npm emits an array when called directly, but some versions key the JSON by
+// package name when npm pack runs inside npm run.
+const packageName = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).name;
+const packEntry = Array.isArray(payload)
+  ? (payload.length === 1 ? payload[0] : undefined)
+  : (payload && typeof payload === "object" && Object.keys(payload).length === 1 ? payload[packageName] : undefined);
+if (!Array.isArray(packEntry?.files)) throw new Error("invalid_npm_pack_output");
+const actual = packEntry.files.map((entry) => entry.path).sort();
 if (JSON.stringify(actual) !== JSON.stringify(expected)) {
   const missing = expected.filter((entry) => !actual.includes(entry));
   const unexpected = actual.filter((entry) => !expected.includes(entry));
