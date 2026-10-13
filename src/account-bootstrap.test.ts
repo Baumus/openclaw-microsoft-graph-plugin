@@ -7,6 +7,18 @@ import entry from "./index.js";
 import { AccountStore, blankAccountPolicy } from "./accounts.js";
 import { createVaultCredential, readVaultCredential, vaultCredentialPath, vaultQuarantinePath } from "./credential-vault.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
+// Deterministic public-client seam for lifecycle/policy tests. Real transport
+// admission and framing are separately exercised by directory/package canaries.
+const transport = vi.hoisted(() => ({ current: undefined as undefined | ((method: string, opts: any) => Promise<unknown>) }));
+vi.mock("openclaw/plugin-sdk/gateway-runtime", async importOriginal => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/gateway-runtime")>();
+  return { ...actual, GatewayClient: class {
+    constructor(private options: any) {}
+    start() { this.options.onHelloOk({}); }
+    request(method: string, _params: unknown, options: any) { return transport.current!(method, options); }
+    stop() {} async stopAndWait() {}
+  } };
+});
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 function scheduler() {
@@ -38,6 +50,11 @@ async function host(options: { mode?: string; enabled?: boolean; legacy?: boolea
     registerService: (service: any) => services.push(service), on: (name: string, fn: any) => hooks.set(name, fn), logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } };
   const store = new AccountStore(root, {}, policy);
   if (options.legacy !== false) await createVaultCredential(root, { clientId: "synthetic-client", tenant: "common", refreshToken: "synthetic-never-real", scopes: ["Mail.Read", "offline_access"] }, key);
+  transport.current = async (method, options) => {
+    const result = await api.runtime.system.runCommandWithTimeout([method === "users.list" ? "users" : "proof"], options);
+    if (result.stdoutTruncatedBytes || result.code !== 0) throw new Error("synthetic_incomplete_transport");
+    return JSON.parse(result.stdout);
+  };
   entry.register(api);
   const service = services[0];
   const start = async () => { await service?.start({ scheduler: schedule }); await hooks.get("gateway_start")?.({ port: 18789 }, { config, abortSignal: abort.signal }); };

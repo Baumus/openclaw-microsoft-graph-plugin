@@ -8,7 +8,7 @@ import { join, resolve, dirname } from 'node:path';
 import { createRequire } from 'node:module';
 // Synthetic Gateway/providers only. The entry's own dependency tree selects the
 // actual OpenClaw release; --entry can target an extracted npm archive.
-const { values } = parseArgs({ options: { entry: { type: 'string' }, receipt: { type: 'string' }, auth: { type: 'string', default: 'token' }, owner: { type: 'string', default: 'independent-person' } } });
+const { values } = parseArgs({ options: { entry: { type: 'string' }, receipt: { type: 'string' }, benchmark: { type: 'string', default: '1' }, auth: { type: 'string', default: 'token' }, owner: { type: 'string', default: 'independent-person' } } });
 assert.ok(['token','password'].includes(values.auth));
 const entryUrl = values.entry ? pathToFileURL(resolve(values.entry)) : new URL('../dist/index.js', import.meta.url);
 const { default: entry } = await import(entryUrl.href);
@@ -24,20 +24,24 @@ const manifestPath = join(dirname(fileURLToPath(entryUrl)), '..', 'openclaw.plug
 const { WebSocketServer }=createRequire(cliEntry)('ws');
 const roster=ids=>({profiles:ids.map(id=>({id,displayName:id,avatarMime:null,mergedInto:id==='synthetic-merged-alias'?owner:null,createdAt:1,updatedAt:1,emails:[],githubIdentity:null,hasAvatar:false,roleSource:'default'}))});
 const policy={version:2,rules:{default:'deny'},services:{onedrive:{allowed_roots:[]},calendar:{agents:{}},mail:{agents:{main:{operations:['read'],resources:['me']}}},todo:{agents:{}}}};
-const results={entrySelection:values.entry?'explicit':'source-built',startupEntry:true,noPersonalRpc:true,realPublicCli:true,providerFetches:0,commandCalls:[],checks:[],runtimeVersion, authMode:values.auth, ownerSynthetic:true};
+const benchmarkRuns=Number(values.benchmark);assert.ok(Number.isSafeInteger(benchmarkRuns)&&benchmarkRuns>=1&&benchmarkRuns<=20);
+let connections=0;const rpcCalls=[];
+const results={entrySelection:values.entry?'explicit':'source-built',startupEntry:true,noPersonalRpc:true,publicTransport:true,providerFetches:0,commandCalls:[],checks:[],runtimeVersion, authMode:values.auth, ownerSynthetic:true};
 const server=new WebSocketServer({host:'127.0.0.1',port:0});
 await new Promise(r=>server.once('listening',r));
-let ids=['gateway-owner',owner,'synthetic-merged-alias'];let methods;let realCommands=true;
+let ids=['gateway-owner',owner,'synthetic-merged-alias'];let methods;
 const config={gateway:{mode:'local',port:server.address().port,bind:'loopback',auth: values.auth==='password'?{password:'synthetic-packed-host-auth'}:{token:'synthetic-packed-host-auth'}}};
 server.on('connection',socket=>{
+ connections++;
  socket.send(JSON.stringify({type:'event',event:'connect.challenge',payload:{nonce:'synthetic-challenge',ts:Date.now()}}));
  socket.on('message',bytes=>{
   const req=JSON.parse(bytes.toString());
   if(req.method==='connect'){
    assert.equal(req.params.auth?.[values.auth],'synthetic-packed-host-auth');
+   assert.equal(req.params.client.id,'cli');assert.equal(req.params.client.mode,'cli');assert.equal(req.params.role,'operator');assert.equal(req.params.device,undefined);if(results.commandCalls.length===0)assert.deepEqual(req.params.scopes,['operator.read']);
    socket.send(JSON.stringify({type:'res',id:req.id,ok:true,payload:{type:'hello-ok',protocol:req.params.maxProtocol,server:{version:runtimeVersion,connId:'synthetic'},features:{methods:['users.list','microsoft-graph.directory-host'],events:[]},snapshot:{},policy:{maxPayload:1048576,maxBufferedBytes:1048576,tickIntervalMs:30000}}}));
   }else{
-   assert.ok(['users.list','microsoft-graph.directory-host'].includes(req.method));
+   assert.ok(['users.list','microsoft-graph.directory-host'].includes(req.method));rpcCalls.push(req.method);
    let payload;if(req.method==='users.list')payload=roster(ids);else methods.get(req.method).handler({params:{},respond:(_ok,value)=>payload=value});
    socket.send(JSON.stringify({type:'res',id:req.id,ok:true,payload}));
   }
@@ -61,10 +65,8 @@ async function host(name){
  methods=new Map();const tools=new Map();const sessions=new Map();const logs=[];const hooks=new Map(),services=[];let schedule=scheduler();const hostAbort=new AbortController();
  const api={registrationMode:'full',pluginConfig:{enabled:true,credentialVaultKey:key,policy},runtime:{version:runtimeVersion,config:{current:()=>config},state:{resolveStateDir:()=>state},agent:{session:{getSessionEntry:({sessionKey})=>sessions.get(sessionKey)}},system:{runCommandWithTimeout:async(argv,opts)=>{
   assert.ok(!JSON.stringify(argv).includes((config.gateway.auth.token??config.gateway.auth.password)));assert.ok(dirname(opts.baseEnv.OPENCLAW_STATE_DIR)===tmpdir());assert.ok(opts.baseEnv.OPENCLAW_STATE_DIR.includes('msgraph-users-read-'));assert.notEqual(opts.baseEnv.OPENCLAW_STATE_DIR,state);
-  results.commandCalls.push({kind:argv.includes('users')?'users.list':'proof',real:realCommands});
-  if(realCommands)return runCommandWithTimeout(argv,opts);
-  let value;if(argv.includes('users'))value=roster(ids);else methods.get('microsoft-graph.directory-host').handler({params:{},respond:(_ok,v)=>value=v});
-  return {stdout:JSON.stringify(value),stderr:'',code:0,killed:false,signal:null,termination:'exit'};
+  results.commandCalls.push({kind:argv.includes('users')?'users.list':'proof'});
+  return runCommandWithTimeout(argv,opts);
  }}},registerTool:(factory,options)=>tools.set(options.name??options.names[0],factory),registerGatewayMethod:(name,handler,options)=>methods.set(name,{handler,options}),registerService:service=>services.push(service),on:(name,handler)=>hooks.set(name,handler),logger:{info:v=>logs.push(v),warn:v=>logs.push(v),error:v=>logs.push(v)}};
  entry.register(api);
  const start=async()=>{await services.at(-1).start({scheduler:schedule});assert.equal(schedule.pending.size,0,'initial start cannot schedule before publication');await hooks.get('gateway_start')({port:config.gateway.port},{config,abortSignal:hostAbort.signal});};
@@ -83,17 +85,16 @@ try{
  const accountDirectory=join(h.state,'plugin-data/microsoft-graph');
  await h.start();assert.equal((await readdir(accountDirectory)).includes('accounts'),false);
  await h.restartRetained();assert.equal(results.commandCalls.length,0,'cancelled queued generation did not read directory');
- await h.flush();results.checks.push('installed-shaped queued service stop/start of same registration resumes without replaying gateway_start; unrelated UI config does not revoke authority');results.startupLogs=[...h.logs];assert.equal(results.providerFetches,0);assert.ok(results.commandCalls.length>0,'startup must actually read exact host roster');const registry=JSON.parse(await readFile(join(accountDirectory,'accounts/registry.json'),'utf8'));assert.equal(registry.automatic.profileId,owner);assert.equal(registry.automatic.invalidated,false);assert.equal(Object.values(registry.accounts)[0].connected,true);
- assert.equal(await readFile(h.vault.path,'utf8'),h.vault.value);results.checks.push('post-ready registered service/hook startup uses real exported CLI/public runner with no account RPC/UI/profile/admin/provider; encrypted legacy backup unchanged');
+ await h.flush();results.checks.push('installed-shaped queued service stop/start of same registration resumes without replaying gateway_start; unrelated UI config does not revoke authority');results.startupLogs=[...h.logs];assert.equal(results.providerFetches,0);assert.ok(rpcCalls.includes('users.list'),'startup must actually read exact host roster');const registry=JSON.parse(await readFile(join(accountDirectory,'accounts/registry.json'),'utf8'));assert.equal(registry.automatic.profileId,owner);assert.equal(registry.automatic.invalidated,false);assert.equal(Object.values(registry.accounts)[0].connected,true);
+ assert.equal(await readFile(h.vault.path,'utf8'),h.vault.value);results.checks.push('post-ready registered service/hook startup uses real exported public host transport with no account RPC/UI/profile/admin/provider; encrypted legacy backup unchanged');
  globalThis.fetch=async(url,options)=>{results.providerFetches++;const value=String(url);if(value.startsWith('https://login.microsoftonline.com/')){assert.ok(String(options.body).includes('synthetic-canary-refresh-never-real'));return new Response(JSON.stringify({access_token:'synthetic-canary-token-never-real',expires_in:3600}));}if(value.startsWith('https://graph.microsoft.com/')){assert.equal(new Headers(options.headers).get('authorization'),'Bearer synthetic-canary-token-never-real');return new Response(JSON.stringify({value:[{id:'packed-synthetic-mail',subject:'packaged path'}]}));}throw new Error('unexpected_provider_url');};
- const result=await h.tool('main').execute('packed-allowed',{action:'list_messages'},AbortSignal.timeout(90000));assert.equal(result.details.ok,true);assert.ok(JSON.stringify(result).includes('packed-synthetic-mail'));assert.ok(!JSON.stringify(result).includes('synthetic-canary-token-never-real'));assert.ok(!JSON.stringify(result).includes('synthetic-canary-refresh-never-real'));results.checks.push('real public CLI authorized unbound packaged mail tool to synthetic OAuth/Graph; no model-facing credentials');
- // Remaining package negatives use synthetic argv output: avoid redundant slow CLI startups.
- realCommands=false;const dispatched=results.providerFetches;
+ results.performance=[];let result;for(let i=0;i<benchmarkRuns;i++){const before={at:performance.now(),processes:results.commandCalls.length,connections,rpcs:rpcCalls.length,rosters:rpcCalls.filter(m=>m==='users.list').length};result=await h.tool('main').execute('packed-allowed-'+i,{action:'list_messages'},AbortSignal.timeout(90000));results.performance.push({durationMs:performance.now()-before.at,processes:results.commandCalls.length-before.processes,connections:connections-before.connections,rpcs:rpcCalls.length-before.rpcs,rosterReads:rpcCalls.filter(m=>m==='users.list').length-before.rosters});assert.equal(result.details.ok,true);}assert.equal(result.details.ok,true);assert.ok(JSON.stringify(result).includes('packed-synthetic-mail'));assert.ok(!JSON.stringify(result).includes('synthetic-canary-token-never-real'));assert.ok(!JSON.stringify(result).includes('synthetic-canary-refresh-never-real'));results.checks.push('real public transport authorized unbound packaged mail tool to synthetic OAuth/Graph; no model-facing credentials');
+ const dispatched=results.providerFetches;
  const denied=await h.tool('not-authorized').execute('packed-denied',{action:'list_messages'});assert.equal(denied.details.error,'access_denied');assert.equal(results.providerFetches,dispatched);results.checks.push('unapproved agent denies before OAuth/Graph');
  ids.push('second-independent-person');const changed=await h.tool('main').execute('packed-multi',{action:'list_messages'});assert.equal(changed.details.error,'graph_single_user_topology_changed');assert.equal(results.providerFetches,dispatched);results.checks.push('second canonical human permanently disables automatic tool path before provider');
  ids=['gateway-owner',owner,'synthetic-merged-alias'];await h.restart();const sticky=await h.tool('main').execute('packed-sticky',{action:'list_messages'});assert.equal(sticky.details.error,'graph_single_user_topology_changed');results.checks.push('singleton return plus fresh service generation/restart cannot revive automatic grant');
  ids=['gateway-owner',owner,'second-independent-person'];const second=await host('synthetic-multiuser');await second.start();await second.flush();
  const multi=await second.tool('main').execute('packed-multi-fresh',{action:'list_messages'});assert.equal(multi.details.ok,false);results.checks.push('fresh multi-user startup does not choose a legacy owner');
  assert.equal(await readFile(second.vault.path,'utf8'),second.vault.value);assert.equal(results.providerFetches,dispatched);assert.deepEqual(second.logs,[]);await second.stop();await h.stop();
- results.pass=true;if(values.receipt)await writeFile(resolve(values.receipt),JSON.stringify(results,null,2)+'\n');console.log(JSON.stringify({pass:true,checks:results.checks,providerFetches:results.providerFetches,commands:results.commandCalls.length}));
+ results.transportCounts={connections,rpcs:rpcCalls.length,rosterReads:rpcCalls.filter(m=>m==='users.list').length,processes:results.commandCalls.length};results.pass=true;if(values.receipt)await writeFile(resolve(values.receipt),JSON.stringify(results,null,2)+'\n');console.log(JSON.stringify({pass:true,checks:results.checks,providerFetches:results.providerFetches,commands:results.commandCalls.length,performance:results.performance}));
 }catch(error){results.pass=false;results.error={message:error.message,stack:error.stack};if(values.receipt)await writeFile(resolve(values.receipt),JSON.stringify(results,null,2)+'\n');throw error;}finally{for(const client of server.clients)client.terminate();await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}

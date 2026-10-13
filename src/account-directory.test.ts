@@ -23,26 +23,23 @@ describe("supported full-host directory oracle", () => {
   function api(outputs?: unknown[]) {
     const config = { gateway: { mode: "local", port: 18789, bind: "loopback", auth: { mode: "token", token: "synthetic-host-auth" } } };
     const replies = outputs ?? [{ hostInstanceId: "same-host" }, JSON.parse(raw()), { hostInstanceId: "same-host" }];
-    const run = vi.fn(async () => ({ stdout: JSON.stringify(replies.shift()), stderr: "", code: 0, killed: false, signal: null, termination: "exit" }));
-    return { config, run, host: { runtime: { version: "2026.10.1", config: { current: () => config }, system: { runCommandWithTimeout: run } } } };
+    const request = vi.fn(async () => replies.shift());
+    const stop = vi.fn(); const stopAndWait = vi.fn(async () => {});
+    let options: any; const Client = vi.fn(function(this: any, opts: any) { options = opts; Object.assign(this, { start: () => opts.onHelloOk({}), request, stop, stopAndWait }); });
+    const host = { runtime: { version: "2026.10.1", config: { current: () => config } } };
+    const read = (signal?: AbortSignal) => createAccountDirectory(host as any, "same-host", Client as any).read(signal);
+    return { config, request, Client, host, read, stop, stopAndWait, options: () => options };
   }
-  it("pins public CLI export, this exact instance and loopback auth via env only", async () => {
+  it("uses one fresh public read-only CLI client and three bounded RPCs, with no persistent state", async () => {
     vi.stubEnv("OPENCLAW_GATEWAY_URL", "wss://foreign.invalid"); vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", undefined); vi.stubEnv("OPENCLAW_GATEWAY_PORT", undefined);
-    const r = api(); const result = await createAccountDirectory(r.host as any, "same-host").read(); expect(result.soleProfileId).toBe("A");
-    expect(r.run).toHaveBeenCalledTimes(3);
-    for (const [argv, options] of r.run.mock.calls as unknown as [string[], any][]) {
-      expect(argv[0]).toBe(process.execPath); expect(argv[1]).toMatch(/openclaw\.mjs$/);
-      expect(JSON.stringify(argv)).not.toContain("synthetic-host-auth");
-      expect(options.baseEnv.OPENCLAW_GATEWAY_URL).toBe("ws://127.0.0.1:18789");
-      expect(options.baseEnv.OPENCLAW_GATEWAY_TOKEN).toBe("synthetic-host-auth");
-      expect(options.baseEnv.NODE_OPTIONS).toBeUndefined();
-      expect(options.baseEnv.OPENCLAW_STATE_DIR).toMatch(/msgraph-users-read-/);
-      expect(options.baseEnv.OPENCLAW_CONFIG_PATH).toContain(options.baseEnv.OPENCLAW_STATE_DIR);
-      expect(options.baseEnv.OPENCLAW_CONFIG_PATH.endsWith("absent-config.json")).toBe(true);
-      expect(options.requireProcessTreeExtinction).toBe(true);
-    }
+    const r = api(); expect((await r.read()).soleProfileId).toBe("A");
+    expect(r.Client).toHaveBeenCalledTimes(1); expect(r.request).toHaveBeenCalledTimes(3);
+    expect(r.request.mock.calls.map((args: any) => args[0])).toEqual(["microsoft-graph.directory-host", "users.list", "microsoft-graph.directory-host"]);
+    expect(r.options()).toMatchObject({ url: "ws://127.0.0.1:18789", token: "synthetic-host-auth", clientName: "cli", mode: "cli", role: "operator", scopes: ["operator.read"], deviceIdentity: null, sharedStateMode: "read-only", env: {} });
+    expect(r.stopAndWait).toHaveBeenCalledWith({ timeoutMs: 1000 });
+    expect(r.request.mock.calls.every((args: any) => args[2].timeoutMs === 5000)).toBe(true);
   });
-  it.each(["2026.10.1", "2026.10.2"])("supports %s independent canonical IDs, aliases, defaults and local listeners", async version => {
+  it.each(["2026.10.1", "2026.10.2"])("supports %s independent IDs, aliases, defaults and local listeners", async version => {
     vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", undefined); vi.stubEnv("OPENCLAW_GATEWAY_PASSWORD", undefined); vi.stubEnv("OPENCLAW_GATEWAY_PORT", undefined); vi.stubEnv("OPENCLAW_PROFILE", undefined);
     for (const shape of [
       { bind: "loopback", port: 24567, auth: { token: "synthetic-config-first" } },
@@ -52,57 +49,52 @@ describe("supported full-host directory oracle", () => {
     ]) {
       const r = api([{ hostInstanceId: "same-host" }, { profiles: [row("gateway-owner"), row("person-independent"), row("merged-alias", "person-independent")] }, { hostInstanceId: "same-host" }]);
       r.host.runtime.version = version; r.config.gateway = shape as any;
-      const snapshot = await createAccountDirectory(r.host as any, "same-host").read(); expect(snapshot.soleProfileId).toBe("person-independent");
-      const env = (r.run.mock.calls as any)[0][1].baseEnv;
-      expect(env.OPENCLAW_GATEWAY_URL).toBe(`ws://127.0.0.1:${shape.port ?? 18789}`);
-      expect(env.OPENCLAW_GATEWAY_PASSWORD ?? env.OPENCLAW_GATEWAY_TOKEN).toBe(shape.auth.password ?? shape.auth.token);
-      expect(Object.keys(env).filter(k => /GATEWAY_(TOKEN|PASSWORD)/.test(k))).toHaveLength(1);
+      expect((await r.read()).soleProfileId).toBe("person-independent");
+      expect(r.options().url).toBe(`ws://127.0.0.1:${shape.port ?? 18789}`);
+      expect(r.options().password ?? r.options().token).toBe(shape.auth.password ?? shape.auth.token);
+      expect(Object.keys(r.options()).filter(k => ["token", "password"].includes(k))).toHaveLength(1);
     }
   });
-  it("uses public config-first auth and named-profile/environment port rules without copying host paths", async () => {
+  it("uses public config-first auth and named-profile/env port without inheriting host paths", async () => {
     vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", "synthetic-environment-token"); vi.stubEnv("OPENCLAW_GATEWAY_PASSWORD", undefined); vi.stubEnv("OPENCLAW_GATEWAY_PORT", "127.0.0.1:29123"); vi.stubEnv("OPENCLAW_PROFILE", "different-installation");
-    vi.stubEnv("OPENCLAW_STATE_DIR", "C:\\Users\\Another\\AppData\\Local\\OpenClaw"); vi.stubEnv("OPENCLAW_CONFIG_PATH", "/srv/another-install/config.json");
-    const r = api(); await createAccountDirectory(r.host as any, "same-host").read(); let env = (r.run.mock.calls as any)[0][1].baseEnv;
-    expect(env.OPENCLAW_GATEWAY_URL).toBe("ws://127.0.0.1:29123"); expect(env.OPENCLAW_GATEWAY_TOKEN).toBe("synthetic-host-auth"); expect(env.OPENCLAW_PROFILE).toBeUndefined(); expect(env.OPENCLAW_CONFIG_PATH).not.toContain("/srv/");
+    vi.stubEnv("OPENCLAW_STATE_DIR", "C:\\Users\\Another\\OpenClaw"); vi.stubEnv("OPENCLAW_CONFIG_PATH", "/srv/another-install/config.json");
+    const r = api(); await r.read(); expect(r.options().url).toBe("ws://127.0.0.1:29123"); expect(r.options().token).toBe("synthetic-host-auth"); expect(r.options().env).toEqual({});
     vi.stubEnv("OPENCLAW_GATEWAY_PORT", undefined); const named = api(); delete (named.config.gateway as any).port;
-    await createAccountDirectory(named.host as any, "same-host").read(); env = (named.run.mock.calls as any)[0][1].baseEnv;
-    const { resolveGatewayPort } = await import("openclaw/plugin-sdk/core"); expect(env.OPENCLAW_GATEWAY_URL).toBe(`ws://127.0.0.1:${resolveGatewayPort(named.config as any, process.env)}`); expect(env.OPENCLAW_GATEWAY_URL).not.toBe("ws://127.0.0.1:18789");
+    await named.read(); const { resolveGatewayPort } = await import("openclaw/plugin-sdk/core"); expect(named.options().url).toBe(`ws://127.0.0.1:${resolveGatewayPort(named.config as any, process.env)}`); expect(named.options().url).not.toBe("ws://127.0.0.1:18789");
   });
-  it.each(["token", "password"])("does not substitute env credentials for unresolved active %s SecretRef", async mode => {
+  it.each(["token", "password"])("does not substitute env for unresolved active %s SecretRef", async mode => {
     vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", "synthetic-env-token"); vi.stubEnv("OPENCLAW_GATEWAY_PASSWORD", "synthetic-env-password");
     const r = api(); r.config.gateway.auth = { mode, [mode]: { source: "env", provider: "default", id: "SYNTHETIC_UNRESOLVED" } } as any;
-    await expect(createAccountDirectory(r.host as any, "same-host").read()).rejects.toThrow("graph_single_user_directory_unavailable"); expect(r.run).not.toHaveBeenCalled();
+    await expect(r.read()).rejects.toThrow("graph_single_user_directory_unavailable"); expect(r.Client).not.toHaveBeenCalled();
   });
-  it.each(["2026.10.0", "2026.10.3", "2026.10.2-beta.1", "unknown"])("rejects unverified runtime %s before launching CLI", async version => {
-    const r = api(); r.host.runtime.version = version; await expect(createAccountDirectory(r.host as any, "same-host").read()).rejects.toThrow("graph_single_user_directory_unavailable"); expect(r.run).not.toHaveBeenCalled();
+  it.each(["2026.10.0", "2026.10.3", "2026.10.2-beta.1", "unknown"])("rejects unverified runtime %s", async version => {
+    const r = api(); r.host.runtime.version = version; await expect(r.read()).rejects.toThrow("graph_single_user_directory_unavailable"); expect(r.Client).not.toHaveBeenCalled();
   });
-  it.each(["OPENCLAW_PROFILE", "OPENCLAW_GATEWAY_PASSWORD", "OPENCLAW_GATEWAY_PORT", "OPENCLAW_GATEWAY_TOKEN"])("pins changing transport environment %s and denies an aborted read", async key => {
-    const r = api(); const original = r.run.getMockImplementation()!; r.run.mockImplementation(async () => { vi.stubEnv(key, "changed-synthetic"); return original(); });
-    await expect(createAccountDirectory(r.host as any, "same-host").read()).rejects.toThrow("graph_single_user_directory_unavailable");
-    const abort = new AbortController(); abort.abort(); const stopped = api(); await expect(createAccountDirectory(stopped.host as any, "same-host").read(abort.signal)).rejects.toThrow("graph_single_user_directory_unavailable"); expect(stopped.run).not.toHaveBeenCalled();
+  it.each(["OPENCLAW_PROFILE", "OPENCLAW_GATEWAY_PASSWORD", "OPENCLAW_GATEWAY_PORT", "OPENCLAW_GATEWAY_TOKEN"])("pins changed transport environment %s", async key => {
+    const r = api(); r.request.mockImplementation(async () => { vi.stubEnv(key, "changed-synthetic"); return { hostInstanceId: "same-host" }; });
+    await expect(r.read()).rejects.toThrow("graph_single_user_directory_unavailable"); expect(r.stopAndWait).toHaveBeenCalled();
   });
-  it("completes bounded same-host safety proof after a full roster arrives during drain", async () => {
-    vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", undefined); vi.stubEnv("OPENCLAW_GATEWAY_PORT", undefined);
+  it("cancels before/while connecting and joins cleanup", async () => {
+    const abort = new AbortController(); abort.abort(); const r = api(); await expect(r.read(abort.signal)).rejects.toThrow("graph_single_user_directory_unavailable"); expect(r.Client).not.toHaveBeenCalled();
+    const waiting = api(); const pending = new AbortController(); waiting.Client.mockImplementation(function(this: any, options: any) { Object.assign(this, { start: () => pending.abort(), stopAndWait: waiting.stopAndWait }); });
+    await expect(waiting.read(pending.signal)).rejects.toThrow("graph_single_user_directory_unavailable"); expect(waiting.stopAndWait).toHaveBeenCalled();
+  });
+  it("completes bounded safety after-proof if drain follows a fully observed roster", async () => {
     const r = api(), abort = new AbortController(); let calls = 0;
-    r.run.mockImplementation(async () => { const stdout = JSON.stringify(++calls === 2 ? JSON.parse(raw([row("gateway-owner"), row("A"), row("B")])) : { hostInstanceId: "same-host" }); if (calls === 2) abort.abort(); return { stdout, stderr: "", code: 0, killed: false, signal: null, termination: "exit" }; });
-    const snapshot = await createAccountDirectory(r.host as any, "same-host").read(abort.signal);
-    expect(snapshot.soleProfileId).toBeUndefined(); expect(abort.signal.aborted).toBe(true); expect(calls).toBe(3);
-    expect((r.run.mock.calls as any)[0][1].signal).toBe(abort.signal); expect((r.run.mock.calls as any)[2][1].signal).toBeUndefined();
+    r.request.mockImplementation(async () => { if (++calls === 2) { abort.abort(); return JSON.parse(raw([row("gateway-owner"), row("A"), row("B")])); } return { hostInstanceId: "same-host" }; });
+    expect((await r.read(abort.signal)).soleProfileId).toBeUndefined(); expect(calls).toBe(3);
+    expect((r.request.mock.calls as any)[0][2].signal).toBe(abort.signal); expect((r.request.mock.calls as any)[2][2].signal).toBeUndefined();
   });
-  it("rejects foreign instance, truncation, timeout, runtime/schema and configuration changes", async () => {
-    vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", undefined); vi.stubEnv("OPENCLAW_GATEWAY_PORT", undefined);
-    const foreign = api([{ hostInstanceId: "foreign" }]); await expect(createAccountDirectory(foreign.host as any, "same-host").read()).rejects.toThrow("graph_single_user_directory_unavailable"); expect(foreign.run).toHaveBeenCalledTimes(1);
-    const truncated = api(); truncated.run.mockImplementation(async () => ({ stdout: raw(), stdoutTruncatedBytes: 1, stderr: "sensitive-secret-must-not-leak", code: 0, killed: false, signal: null, termination: "exit" }));
-    await expect(createAccountDirectory(truncated.host as any, "same-host").read()).rejects.toThrow("graph_single_user_directory_unavailable");
-    const changed = api(); changed.run.mockImplementation(async () => { changed.config.gateway.port++; return { stdout: JSON.stringify({ hostInstanceId: "same-host" }), stderr: "", code: 0, killed: false, signal: null, termination: "exit" }; });
-    await expect(createAccountDirectory(changed.host as any, "same-host").read()).rejects.toThrow("graph_single_user_directory_unavailable");
-    for (const change of [{ mode: "remote" }, { tls: { enabled: true } }, { auth: { mode: "none" } }, { auth: { mode: "token", token: { source: "env" } } }]) {
-      const r = api(); Object.assign(r.config.gateway, change); await expect(createAccountDirectory(r.host as any, "same-host").read()).rejects.toThrow("graph_single_user_directory_unavailable"); expect(r.run).not.toHaveBeenCalled();
-    }
+  it("rejects foreign instance, oversize, timeout, disconnect/reconnect and config changes without leaking", async () => {
+    const foreign = api([{ hostInstanceId: "foreign" }]); await expect(foreign.read()).rejects.toThrow("graph_single_user_directory_unavailable"); expect(foreign.request).toHaveBeenCalledTimes(1);
+    for (const value of [undefined, { hostInstanceId: "same-host", extra: true }, { hostInstanceId: "x".repeat(1024 * 1024) }]) { const r = api([value]); await expect(r.read()).rejects.toThrow("graph_single_user_directory_unavailable"); }
+    const timeout = api(); timeout.request.mockRejectedValue(new Error("sensitive-sdk-error")); await expect(timeout.read()).rejects.toThrow(/^graph_single_user_directory_unavailable$/);
+    for (const mutate of [(r: any) => r.config.gateway.port++, (r: any) => r.options().onClose(), (r: any) => r.options().onHelloOk({})]) { const r = api(); r.request.mockImplementation(async () => { mutate(r); return { hostInstanceId: "same-host" }; }); await expect(r.read()).rejects.toThrow("graph_single_user_directory_unavailable"); }
+    for (const change of [{ mode: "remote" }, { tls: { enabled: true } }, { auth: { mode: "none" } }, { auth: { mode: "token", token: { source: "env" } } }]) { const r = api(); Object.assign(r.config.gateway, change); await expect(r.read()).rejects.toThrow("graph_single_user_directory_unavailable"); expect(r.Client).not.toHaveBeenCalled(); }
   });
 });
 
-it("exercises exported CLI and public process runner against an isolated synthetic Gateway", async () => {
+it("exercises exported SDK client against an isolated synthetic Gateway", async () => {
   const { createRequire } = await import("node:module");
   const { mkdtemp, writeFile, readdir, rm } = await import("node:fs/promises");
   const { join } = await import("node:path"); const { tmpdir } = await import("node:os");
@@ -124,6 +116,7 @@ it("exercises exported CLI and public process runner against an isolated synthet
     socket.on("message", (bytes: Buffer) => {
       const request = JSON.parse(bytes.toString());
       if (request.method === "connect") {
+        expect(request.params.client.id).toBe("cli"); expect(request.params.client.mode).toBe("cli"); expect(request.params.role).toBe("operator"); expect(request.params.scopes).toEqual(["operator.read"]); expect(request.params.device).toBeUndefined();
         if (request.params.auth?.token !== "synthetic-only-shared-auth") { socket.close(); return; }
         authenticated++;
         socket.send(JSON.stringify({ type: "res", id: request.id, ok: true, payload: { type: "hello-ok", protocol: request.params.maxProtocol, server: { version: "2026.10.1", connId: "synthetic" }, features: { methods: ["users.list", "microsoft-graph.directory-host"], events: [] }, snapshot: {}, policy: { maxPayload: 1048576, maxBufferedBytes: 1048576, tickIntervalMs: 30000 } } }));
@@ -138,12 +131,12 @@ it("exercises exported CLI and public process runner against an isolated synthet
     vi.stubEnv("OPENCLAW_GATEWAY_PORT", undefined); vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", undefined);
     const api = { runtime: { version: "2026.10.1", config: { current: () => config }, system: { runCommandWithTimeout } } };
     const snapshot = await createAccountDirectory(api as any, "synthetic-instance").read();
-    expect(snapshot.soleProfileId).toBe("A"); expect(authenticated).toBe(3);
+    expect(snapshot.soleProfileId).toBe("A"); expect(authenticated).toBe(1);
     expect(called).toEqual(["microsoft-graph.directory-host", "users.list", "microsoft-graph.directory-host"]);
     expect(await readdir(root)).toEqual(["openclaw.json"]); // No device/token/config side effects.
     expect(fileURLToPath(import.meta.resolve("openclaw/cli-entry"))).toMatch(/openclaw\.mjs$/);
 
-    // Prove default tool timing with genuine CLI directory transport and only
+    // Prove default tool timing with genuine SDK directory transport and only
     // synthetic OAuth/Graph provider responses. No production state/provider.
     const { default: entry } = await import("./index.js");
     const { createVaultCredential } = await import("./credential-vault.js");

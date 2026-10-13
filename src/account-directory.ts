@@ -1,15 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { resolveGatewayPort, type OpenClawPluginApi } from "openclaw/plugin-sdk/core";
-import { resolveGatewayAuth } from "openclaw/plugin-sdk/gateway-runtime";
+import { GatewayClient, resolveGatewayAuth } from "openclaw/plugin-sdk/gateway-runtime";
 
 /** A fresh whole-host snapshot, NOT an atomic catalog lease. */
 export type DirectorySnapshot = { soleProfileId?: string; digest: string };
 export type AccountDirectory = { read: (signal?: AbortSignal) => Promise<DirectorySnapshot> };
-// These exact releases share the verified public roster/auth/CLI contracts.
+// These exact releases share the verified public roster/auth/SDK contracts.
 // A future release is not silently assumed compatible.
 const directoryRuntimeVersions = new Set(["2026.10.1", "2026.10.2"]);
 const transportEnvironment = () => [process.env.OPENCLAW_GATEWAY_PORT, process.env.OPENCLAW_PROFILE, process.env.OPENCLAW_GATEWAY_TOKEN, process.env.OPENCLAW_GATEWAY_PASSWORD];
@@ -41,63 +37,76 @@ export function parseDirectorySnapshot(raw: string): DirectorySnapshot {
     if (current.id === "gateway-owner") throw fail();
   }
   const humans = rows.filter(row => row.mergedInto === null && row.id !== "gateway-owner");
-  // Stable key ordering prevents CLI object ordering changes from revoking grants.
+  // Stable key ordering prevents RPC object ordering changes from revoking grants.
   const projection = rows.sort((a, b) => a.id.localeCompare(b.id)).map(row => Object.fromEntries(Object.keys(row).sort().map(k => [k, row[k]])));
   return { ...(humans.length === 1 ? { soleProfileId: humans[0].id } : {}), digest: createHash("sha256").update(JSON.stringify(projection)).digest("hex") };
 }
 
-/** Public CLI entry and public process runner; never private dispatch or host DB. */
-export function createAccountDirectory(api: OpenClawPluginApi, hostInstanceId: string): AccountDirectory {
+/** Public SDK client; never restricted runtime dispatch or private host storage.
+ * A new read-only connection for each snapshot avoids cached auth/roster leases.
+ */
+export function createAccountDirectory(api: OpenClawPluginApi, hostInstanceId: string, Client: typeof GatewayClient = GatewayClient): AccountDirectory {
   return { async read(signal?: AbortSignal) {
-    let scratch: string | undefined;
+    let client: GatewayClient | undefined;
+    let connectTimer: ReturnType<typeof setTimeout> | undefined;
+    let rejectConnect: (() => void) | undefined;
+    const cancelConnect = () => rejectConnect?.();
     try {
       signal?.throwIfAborted();
       if (!directoryRuntimeVersions.has(api.runtime.version)) throw fail();
       const config = api.runtime.config.current();
       const gateway = config.gateway;
-      // The public helpers only read config; retain its runtime SecretRef facts
-      // instead of cloning/serializing away authority metadata.
       const port = resolveGatewayPort(config as Parameters<typeof resolveGatewayPort>[0], process.env);
-      // Use the host's public precedence/default rules, including inferred auth,
-      // named-profile/default ports and resolved runtime configuration. SecretRef
-      // authority that the public resolver cannot materialize stays fail-closed.
+      // Keep the current runtime snapshot's SecretRef authority metadata intact.
       const auth = resolveGatewayAuth({ authConfig: gateway?.auth as Parameters<typeof resolveGatewayAuth>[0]["authConfig"], env: process.env, tailscaleMode: gateway?.tailscale?.mode });
       if ([gateway?.auth?.token, gateway?.auth?.password].some(value => value !== undefined && typeof value !== "string")) throw fail();
       const secret = auth.mode === "token" ? auth.token : auth.mode === "password" ? auth.password : undefined;
-      // LAN/auto listeners also accept loopback; the proof sandwich must still
-      // identify this exact plugin instance. Never connect to a remote target.
-      if (gateway?.mode === "remote" || gateway?.tls?.enabled || ![undefined, "loopback", "lan", "auto"].includes(gateway?.bind) || typeof secret !== "string" || !secret.trim() || !Number.isSafeInteger(port) || port < 1 || port > 65535 || !api.runtime.system?.runCommandWithTimeout) throw fail();
-      const entry = fileURLToPath(import.meta.resolve("openclaw/cli-entry"));
-      // The public CLI may initialize its own runtime state even for a read.
-      // Give it private disposable scratch state, never the host's real store.
-      scratch = await mkdtemp(join(tmpdir(), "msgraph-users-read-"));
-      const env: NodeJS.ProcessEnv = {};
-      for (const key of ["HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "XDG_CONFIG_HOME"]) if (process.env[key]) env[key] = process.env[key];
-      env.OPENCLAW_STATE_DIR = scratch;
-      env.OPENCLAW_CONFIG_PATH = join(scratch, "absent-config.json");
-      env.OPENCLAW_GATEWAY_URL = `ws://127.0.0.1:${port}`;
-      env[auth.mode === "password" ? "OPENCLAW_GATEWAY_PASSWORD" : "OPENCLAW_GATEWAY_TOKEN"] = secret;
+      if (gateway?.mode === "remote" || gateway?.tls?.enabled || ![undefined, "loopback", "lan", "auto"].includes(gateway?.bind) || typeof secret !== "string" || !secret.trim() || !Number.isSafeInteger(port) || port < 1 || port > 65535) throw fail();
       const identity = () => JSON.stringify([api.runtime.config.current().gateway, transportEnvironment()]);
       const before = identity();
-      const run = (args: string[], commandSignal: AbortSignal | null | undefined = signal) => api.runtime.system.runCommandWithTimeout([process.execPath, entry, ...args], { baseEnv: env, signal: commandSignal ?? undefined, timeoutMs: 10000, maxOutputBytes: { stdout: 1024 * 1024, stderr: 4096 }, maxCombinedOutputBytes: 1024 * 1024 + 4096, terminateOnOutputLimit: true, killProcessTree: true, requireProcessTreeExtinction: true });
-      const valid = (result: Awaited<ReturnType<typeof run>>) => result.code === 0 && !result.killed && !result.signal && result.termination === "exit" && !result.stdoutTruncatedBytes && !result.stderrTruncatedBytes && !result.outputLimitExceeded && result.cleanup !== "uncertain";
-      const proveHost = async (safetyCompletion = false) => {
-        const proof = await run(["gateway", "call", "microsoft-graph.directory-host", "--json", "--timeout", "5000"], safetyCompletion ? null : signal);
-        if (!valid(proof)) throw fail();
-        const value = JSON.parse(proof.stdout);
+      let closed = false, hellos = 0;
+      const connected = new Promise<void>((resolve, reject) => {
+        rejectConnect = () => reject(fail());
+        // Ordinary local CLI/shared-auth admission, NOT the reserved backend
+        // identity. No device identity, stored token, write, argv or subprocess.
+        client = new Client({
+          url: `ws://127.0.0.1:${port}`, [auth.mode]: secret,
+          clientName: "cli", mode: "cli", role: "operator", scopes: ["operator.read"],
+          deviceIdentity: null, sharedStateMode: "read-only", env: {},
+          hostDeps: { logDebug() {}, logError() {} },
+          connectChallengeTimeoutMs: 5000, requestTimeoutMs: 5000,
+          onHelloOk: () => { if (++hellos !== 1 || closed) { closed = true; client?.stop(); rejectConnect?.(); } else resolve(); },
+          onConnectError: () => { closed = true; rejectConnect?.(); },
+          onClose: () => { closed = true; rejectConnect?.(); },
+        });
+        connectTimer = setTimeout(() => rejectConnect?.(), 5000);
+        signal?.addEventListener("abort", cancelConnect, { once: true });
+        if (signal?.aborted) rejectConnect(); else client.start();
+      });
+      await connected;
+      clearTimeout(connectTimer); signal?.removeEventListener("abort", cancelConnect);
+      const request = async (method: string, requestSignal?: AbortSignal) => {
+        if (closed || hellos !== 1 || before !== identity()) throw fail();
+        const value = await client!.request(method, {}, { signal: requestSignal, timeoutMs: 5000 });
+        if (closed || hellos !== 1 || before !== identity()) throw fail();
+        const raw = JSON.stringify(value);
+        if (typeof raw !== "string" || Buffer.byteLength(raw) > 1024 * 1024) throw fail();
+        return raw;
+      };
+      const proveHost = async (requestSignal?: AbortSignal) => {
+        const value = JSON.parse(await request("microsoft-graph.directory-host", requestSignal));
         if (value?.hostInstanceId !== hostInstanceId || Object.keys(value).join() !== "hostInstanceId") throw fail();
       };
-      await proveHost(); signal?.throwIfAborted();
-      const result = await run(["users", "list", "--json", "--timeout", "5000"]);
-      if (before !== identity() || !valid(result)) throw fail();
-      const snapshot = parseDirectorySnapshot(result.stdout);
-      // Once a complete roster is observed, finish its bounded after-proof even
-      // during drain. This returns safety evidence only: positive callers must
-      // still check their live authority after awaiting the snapshot.
-      await proveHost(true);
-      if (before !== identity()) throw fail();
+      await proveHost(signal); signal?.throwIfAborted();
+      const snapshot = parseDirectorySnapshot(await request("users.list", signal));
+      // A fully observed roster still receives its bounded safety after-proof
+      // during drain. Positive consumers must recheck their own live authority.
+      await proveHost();
       return snapshot;
-    } catch { throw fail(); } // Never expose subprocess stderr, roster, or shared auth.
-    finally { if (scratch) await rm(scratch, { recursive: true, force: true }); }
+    } catch { throw fail(); } // No roster, auth, transport errors or SDK logs escape.
+    finally {
+      clearTimeout(connectTimer); signal?.removeEventListener("abort", cancelConnect);
+      if (client) { try { await client.stopAndWait({ timeoutMs: 1000 }); } catch { throw fail(); } }
+    }
   } };
 }

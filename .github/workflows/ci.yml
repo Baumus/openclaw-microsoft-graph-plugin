@@ -51,7 +51,7 @@ jobs:
       - name: Build plugin and Control UI
         run: npm run plugin:build
 
-      - name: Exercise synthetic automatic migration with actual host CLI
+      - name: Exercise synthetic automatic migration with actual host SDK
         run: npm run migration:canary -- --auth password --owner ci-independent-person
 
       - name: Check generated OpenClaw metadata

@@ -10,6 +10,18 @@ import { AccountStore } from "./accounts.js";
 import { acquireVaultLock, createVaultCredential, readVaultCredential, vaultCredentialPath, vaultQuarantinePath } from "./credential-vault.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 import { authorizeOperation, authorizeRoot, type GraphPolicy } from "./policy.js";
+// Deterministic public-client seam for lifecycle/policy tests. Real transport
+// admission and framing are separately exercised by directory/package canaries.
+const transport = vi.hoisted(() => ({ current: undefined as undefined | ((method: string, opts: any) => Promise<unknown>) }));
+vi.mock("openclaw/plugin-sdk/gateway-runtime", async importOriginal => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/gateway-runtime")>();
+  return { ...actual, GatewayClient: class {
+    constructor(private options: any) {}
+    start() { this.options.onHelloOk({}); }
+    request(method: string, _params: unknown, options: any) { return transport.current!(method, options); }
+    stop() {} async stopAndWait() {}
+  } };
+});
 const dirs: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
 async function runtime(worker = false, accountPolicyCeilings: Record<string, GraphPolicy> = {}, legacyPolicy: GraphPolicy = graphPolicyFixture(), directory?: () => string) {
@@ -21,7 +33,7 @@ async function runtime(worker = false, accountPolicyCeilings: Record<string, Gra
   const hostConfig = { gateway: { mode: "local", port: 18789, bind: "loopback", auth: { mode: "token", token: "synthetic-gateway-auth" } } };
   const api = {
     pluginConfig: { enabled: true, credentialVaultKey: key, policy, accountWorkers: worker ? { "graph-a": "A" } : {}, accountPolicyCeilings },
-    runtime: { ...(directory ? { version: "2026.10.1", config: { current: () => hostConfig }, system: { runCommandWithTimeout: vi.fn(async (argv: string[]) => {
+    runtime: { ...(directory ? { version: "2026.10.1", config: { current: () => hostConfig }, system: { runCommandWithTimeout: vi.fn(async (argv: string[], _options?: unknown) => {
       let stdout: string;
       if (argv.includes("users")) stdout = directory();
       else { let proof: unknown; await methods.get("microsoft-graph.directory-host")!.handler({ params: {}, respond: (_ok: boolean, value: unknown) => { proof = value; } }); stdout = JSON.stringify(proof); }
@@ -32,6 +44,11 @@ async function runtime(worker = false, accountPolicyCeilings: Record<string, Gra
     on: (name: string, handler: any) => hooks[name] = handler,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   };
+  transport.current = directory ? async (method, options) => {
+    const result = await api.runtime.system!.runCommandWithTimeout!([method === "users.list" ? "users" : "proof"], options);
+    if ((result as any).stdoutTruncatedBytes || result.code !== 0) throw new Error("synthetic_incomplete_transport");
+    return JSON.parse(result.stdout);
+  } : undefined;
   entry.register(api as any);
   const rpc = async (actor: string | undefined, name: string, params: Record<string, unknown> = {}, current = () => true, authority?: any, signal?: AbortSignal) => {
     let reply: any;

@@ -212,7 +212,7 @@ export class AccountStore {
       if (fingerprint([current, currentBinding]) !== signature) throw new Error("graph_account_context_changed");
     };
     const holdKey = worker || automatic ? `worker:${profileId}` : key;
-    return { holdKey, scope: { ...(automatic ? { directoryAdmissionAllowanceMs: 90000 } : {}), identity: fingerprint([profileId, a.generation, a.revision, selection]), stateDir: this.accountPath(profileId, a.generation), policy: structuredClone(a.policy), assertCurrent, assertFresh: async () => { if (automatic) await this.checkAutomatic(); await this.refresh(); assertCurrent(); } } };
+    return { holdKey, scope: { identity: fingerprint([profileId, a.generation, a.revision, selection]), stateDir: this.accountPath(profileId, a.generation), policy: structuredClone(a.policy), assertCurrent, assertFresh: async () => { if (automatic) await this.checkAutomatic(); await this.refresh(); assertCurrent(); } } };
   }
   hold(key: string): () => void { this.holds.set(key, (this.holds.get(key) ?? 0) + 1); let done = false; return () => { if (done) return; done = true; const n = (this.holds.get(key) ?? 1) - 1; if (n) this.holds.set(key, n); else this.holds.delete(key); }; }
   pendingApproval(id: string, key: string): void { this.pending.set(id, { target: key, expires: Date.now() + 180000 }); }

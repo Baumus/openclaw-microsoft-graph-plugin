@@ -254,11 +254,7 @@ export async function withConcurrency<T>(limit: number, action: () => Promise<T>
   try { return await action(); } finally { activeRequests -= 1; }
 }
 export function deadlineSignal(signal: AbortSignal | undefined, operationTimeoutMs: number, requestTimeoutMs = operationTimeoutMs): AbortSignal {
-  // After tool entry, CLI-backed checks add a finite operation allowance;
-  // initial hook/account admission precedes this timer (not a wall-time lease).
-  // HTTP request deadlines stay unchanged. Caller cancellation denies later
-  // effects but does not immediately stop the separately bounded CLI reader.
-  return graphOperationSignal(signal, operationTimeoutMs + (accountScope.getStore()?.directoryAdmissionAllowanceMs ?? 0), requestTimeoutMs);
+  return graphOperationSignal(signal, operationTimeoutMs, requestTimeoutMs);
 }
 
 const SCOPES: Record<string, string[]> = {
