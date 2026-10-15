@@ -3,7 +3,7 @@ import { canonicalPolicy } from "./config-policy-identity.js";
 import { requiredPolicyScopes } from "./credential-cli.js";
 import { validatePolicy } from "./policy.js";
 import { tokenForAuthorizedOperation } from "./credential.js";
-import { graphRequest } from "./graph.js";
+import { canonicalGraphContinuation, graphRequest, safeId } from "./graph.js";
 
 type HandlerContext = { params: unknown; respond(ok: boolean, payload?: unknown, error?: unknown): void };
 type GatewayApi = { version?: string; registerGatewayMethod(method: string, handler: (context: HandlerContext) => void | Promise<void>, options: { scope: "operator.admin" }): void };
@@ -53,5 +53,35 @@ export function registerConfigurationUiMethods(api: GatewayApi, config?: { polic
         respond(true, { path, drive_id: item.parentReference.driveId, item_id: item.id });
       } finally { clearTimeout(timer); }
     } catch { respond(false, undefined, { code: "INVALID_REQUEST", message: "OneDrive folder could not be verified" }); }
+  }, { scope: "operator.admin" });
+  api.registerGatewayMethod("microsoft-graph.configuration.calendars", async ({ params, respond }) => {
+    try {
+      if (!config?.policy || !stateDir || !params || typeof params !== "object" || Array.isArray(params) || Object.keys(params).length) throw new Error("invalid_rpc_parameters");
+      const policy = validatePolicy(config.policy);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
+      try {
+        const token = await tokenForAuthorizedOperation({ config, policy, allowedScopes: ["Calendars.Read"], stateDir: stateDir(), signal: controller.signal, requestTimeoutMs: config.requestTimeoutMs ?? 5000 });
+        const primary = await graphRequest(token, "/me/calendar?$select=id,name", { signal: controller.signal, maxBytes: 16_384 });
+        if (typeof primary?.id !== "string" || !primary.id || typeof primary?.name !== "string") throw new Error("invalid_provider_response");
+        const calendars: Array<{ id: string; name: string }> = [];
+        const seen = new Set<string>();
+        let path: string | undefined = "/me/calendars?$select=id,name&$top=100";
+        for (let page = 0; path && page < 10; page++) {
+          const data = await graphRequest(token, path, { signal: controller.signal, maxBytes: 128_000 });
+          if (!Array.isArray(data?.value)) throw new Error("invalid_provider_response");
+          for (const item of data.value) {
+            if (typeof item?.id !== "string" || typeof item?.name !== "string" || item.name.length > 512) throw new Error("invalid_provider_response");
+            try { safeId(item.id); } catch { throw new Error("invalid_provider_response"); }
+            if (!seen.has(item.id)) { seen.add(item.id); calendars.push({ id: item.id, name: item.name }); }
+            if (calendars.length > 500) throw new Error("calendar_list_too_large");
+          }
+          const next = data["@odata.nextLink"];
+          path = next === undefined ? undefined : canonicalGraphContinuation(next, "/v1.0/me/calendars", "invalid_provider_response").slice("/v1.0".length);
+          if (page === 9 && path) throw new Error("calendar_list_too_large");
+        }
+        respond(true, { defaultCalendarId: primary.id, calendars });
+      } finally { clearTimeout(timer); }
+    } catch { respond(false, undefined, { code: "INVALID_REQUEST", message: "Calendar list could not be loaded" }); }
   }, { scope: "operator.admin" });
 }

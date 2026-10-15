@@ -4,6 +4,8 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Show each agent's effective calendar scope in the Control UI, including the legacy default-calendar-only fallback. Let administrators select available calendars per agent without altering operation rights; preserve unresolvable IDs, show explicit grant changes before save, and use a bounded admin-only calendar-name lookup.
+
 ## 3.13.1 - 2026-10-14
 
 - Explain the temporary ClawHub `manifest-unknown-contracts` false positive for the required `contracts.tools` declaration, linking the merged Inspector fix. Plugin behavior, permissions, and tool contracts are unchanged.
