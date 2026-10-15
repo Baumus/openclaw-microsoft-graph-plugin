@@ -4,11 +4,11 @@ import plugin from "./control-ui.js";
 
 type Page = { mount(container: HTMLElement, context: { host: unknown; signal: AbortSignal }): { dispose(): void } };
 const initial = { version: 2, rules: { default: "deny" }, services: { onedrive: { allowed_roots: [] }, calendar: { agents: { main: { operations: ["read"], resources: undefined as string[] | undefined }, other: { operations: ["read"], resources: ["me"] } } }, mail: { agents: {} }, todo: { agents: {} } } };
-function mount(policy = initial, calendarReply: unknown = { defaultCalendarId: "default-id", calendars: [{ id: "default-id", name: "Main" }, { id: "team-id", name: "Team" }, { id: "family-id", name: "Family" }] }) {
+function mount(policy = initial, calendarReply: unknown = { defaultCalendarId: "default-id", calendars: [{ id: "default-id", name: "Main" }, { id: "team-id", name: "Team" }, { id: "family-id", name: "Family" }] }, locale = "de") {
   let page: Page | undefined;
   const calls: Array<{ method: string; params: unknown }> = [];
   const host = {
-    locale: "de", connection: { connected: true, canAdmin: true }, agents: { rows: [{ id: "main", name: "Main" }, { id: "other", name: "Other" }] },
+    locale, connection: { connected: true, canAdmin: true }, agents: { rows: [{ id: "main", name: "Main" }, { id: "other", name: "Other" }] },
     subscribe: () => () => undefined,
     request: async (method: string, params: unknown) => {
       calls.push({ method, params });
@@ -64,6 +64,22 @@ describe("agent calendar access editor", () => {
     expect(view.container.textContent).toContain("Eingeschränkt · nur Standardkalender");
     expect(view.container.textContent).toContain("Kalenderliste nicht ladbar");
     expect(view.container.textContent).not.toContain("von 3 Kalendern");
+    view.dispose();
+  });
+  it("shows loading while the admin lookup is pending", async () => {
+    let finish!: (value: unknown) => void;
+    const pending = new Promise<unknown>(resolve => { finish = resolve; });
+    const view = mount(initial, pending); await view.settle(); click(view.container, "Dienste"); await view.settle();
+    expect(view.container.textContent).toContain("Verfügbare Kalender werden geladen");
+    finish({ defaultCalendarId: "default-id", calendars: [] }); await view.settle(); view.dispose();
+  });
+  it("recognizes the exact default-calendar ID as verified and localizes labels", async () => {
+    const policy = structuredClone(initial); policy.services.calendar.agents.main.resources = ["default-id", "old-id"];
+    const view = mount(policy, { defaultCalendarId: "default-id", calendars: [{ id: "default-id", name: "Primary" }] }, "en");
+    await view.settle(); click(view.container, "Services"); await view.settle();
+    expect(view.container.textContent).toContain("Default calendar (direct calendar ID)");
+    expect(view.container.textContent).toContain("Calendar ID: old-id · cannot be verified");
+    expect(view.container.textContent).not.toContain("default-id · cannot be verified");
     view.dispose();
   });
 });

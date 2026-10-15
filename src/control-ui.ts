@@ -107,6 +107,7 @@ class ConfigurationPage {
   private removedServiceGrants: Record<string, Grant> = {};
   private calendarCatalog?: CalendarCatalog;
   private calendarCatalogState: "idle" | "loading" | "ready" | "error" = "idle";
+  private calendarLoadScheduled = false;
   private busy = false;
   private operation?: SaveOperation;
   private activePolicyHash?: string;
@@ -305,7 +306,7 @@ class ConfigurationPage {
     ["OneDrive", "Dienste", "Freigaben", "Prüfen"].forEach((name, index) => { const tab = this.action(`${index + 1}  ${localize(name)}`, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost"); tab.disabled = this.locked; tab.setAttribute("aria-current", index === this.step ? "step" : "false"); append(rail, tab); }); append(main, rail);
     if (this.included && (this.dirty || !!this.error)) append(main, el("p", "mg-banner", format("Konfigurationsquelle: {name}. Änderungen werden beim Speichern in diese Datei geschrieben.", { name: this.includeName.slice(this.includeName.indexOf(":") + 1) })));
     this.renderSaveStatus(main);
-    const body = el("section", "mg-body"); if (this.step === 0) this.renderOneDrive(body); else if (this.step === 1) { this.renderServices(body); if (this.calendarCatalogState === "idle") void this.loadCalendars(); } else if (this.step === 2) this.renderApprovals(body); else this.renderReview(body); append(main, body);
+    const body = el("section", "mg-body"); if (this.step === 0) this.renderOneDrive(body); else if (this.step === 1) this.renderServices(body); else if (this.step === 2) this.renderApprovals(body); else this.renderReview(body); append(main, body);
     if (this.error) append(main, el("p", "mg-error", this.error)); if (this.success) append(main, el("p", "mg-success", this.success));
     const footer = el("footer", "mg-footer"); append(footer, el("span", "mg-dirty", this.dirty ? "Ungespeicherte Änderungen" : "Keine ungespeicherten Änderungen"));
     if (this.dirty) append(footer, this.action("Änderungen verwerfen", () => { if (window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { this.policy = clone(this.initial!); this.error = ""; this.success = ""; this.render(); } }, "ghost"));
@@ -328,6 +329,10 @@ class ConfigurationPage {
     const focusLabel = focused?.closest("label")?.textContent;
     const selection = focused instanceof HTMLInputElement ? [focused.selectionStart, focused.selectionEnd] : undefined;
     this.container.replaceChildren(main);
+    if (this.step === 1 && this.calendarCatalogState === "idle" && !this.calendarLoadScheduled) {
+      this.calendarLoadScheduled = true;
+      queueMicrotask(() => { this.calendarLoadScheduled = false; if (this.step === 1 && this.calendarCatalogState === "idle" && !this.disposed) void this.loadCalendars(); });
+    }
     if (focused) {
       const candidates = [...main.querySelectorAll<HTMLElement>("button, input, select, textarea, summary, [tabindex]")];
       const replacement = candidates.find(node => node.tagName === focused.tagName && (focusLabel ? node.closest("label")?.textContent === focusLabel : node.textContent === focusText)) ?? candidates[focusIndex];
@@ -688,15 +693,17 @@ class ConfigurationPage {
       .filter(calendar => calendar.id !== this.calendarCatalog?.defaultCalendarId && calendar.id !== "me")];
   }
   private calendarName(id: string): string {
-    return this.calendarChoices().find(calendar => calendar.id === id)?.name ?? (id === this.calendarCatalog?.defaultCalendarId ? "Standardkalender (Kalender-ID)" : `Kalender-ID: ${id}`);
+    return this.calendarChoices().find(calendar => calendar.id === id)?.name ?? (id === this.calendarCatalog?.defaultCalendarId ? localize("Standardkalender (direkte Kalender-ID)") : format("Kalender-ID: {id}", { id }));
   }
   private renderCalendarAccess(card: HTMLElement, agentId: string, grant?: Grant) {
     if (!grant) { append(card, el("p", "mg-hint", "Gesperrt · kein Kalender freigegeben.")); return; }
     const selected = grant.resources ?? ["me"];
     const choices = this.calendarChoices();
-    const known = new Set(choices.map(choice => choice.id));
+    const defaultId = this.calendarCatalog?.defaultCalendarId;
+    const known = new Set([...choices.map(choice => choice.id), ...(defaultId ? [defaultId] : [])]);
     const unknown = selected.filter(resource => !known.has(resource));
     const summary = selected.length === 1 && selected[0] === "me" ? localize("Eingeschränkt · nur Standardkalender")
+      : defaultId && selected.includes(defaultId) ? format("{count} Kalender-Ressourcen freigegeben (inkl. Standardkalender-ID)", { count: selected.length })
       : this.calendarCatalogState === "ready" && !unknown.length ? format("{selected} von {total} Kalendern freigegeben", { selected: selected.length, total: choices.length })
       : format("{count} Kalender freigegeben · Liste nicht vollständig prüfbar", { count: selected.length });
     append(card, el("p", "mg-calendar-summary", summary));
@@ -706,8 +713,9 @@ class ConfigurationPage {
       append(card, this.action("Kalenderliste erneut laden", () => { void this.loadCalendars(); }));
     }
     const list = el("div", "mg-calendar-list");
-    for (const choice of [...choices, ...unknown.map(id => ({ id, name: this.calendarName(id) }))]) {
-      const label = unknown.includes(choice.id) ? `${choice.name} · nicht verifizierbar` : choice.name;
+    const defaultIdChoice = defaultId && selected.includes(defaultId) ? [{ id: defaultId, name: localize("Standardkalender (direkte Kalender-ID)") }] : [];
+    for (const choice of [...choices, ...defaultIdChoice, ...unknown.map(id => ({ id, name: this.calendarName(id) }))]) {
+      const label = unknown.includes(choice.id) ? format("{name} · nicht verifizierbar", { name: choice.name }) : choice.name;
       this.checkbox(list, label, selected.includes(choice.id), checked => {
         const next = checked ? [...new Set([...selected, choice.id])] : selected.filter(id => id !== choice.id);
         if (next.length) grant.resources = next;
@@ -740,8 +748,8 @@ class ConfigurationPage {
       const after = this.policy.services.calendar.agents[agentId]?.resources ?? (this.policy.services.calendar.agents[agentId] ? ["me"] : []);
       const added = after.filter(id => !before.includes(id)); const removed = before.filter(id => !after.includes(id));
       const name = this.host.agents.rows.find(agent => agent.id === agentId)?.name || agentId;
-      if (added.length) append(body, el("p", "mg-calendar-review", `${name}: freigegeben · ${added.map(id => this.calendarName(id)).join(", ")}`));
-      if (removed.length) append(body, el("p", "mg-calendar-review", `${name}: entzogen · ${removed.map(id => this.calendarName(id)).join(", ")}`));
+      if (added.length) append(body, el("p", "mg-calendar-review", format("{agent}: freigegeben · {calendars}", { agent: name, calendars: added.map(id => this.calendarName(id)).join(", ") })));
+      if (removed.length) append(body, el("p", "mg-calendar-review", format("{agent}: entzogen · {calendars}", { agent: name, calendars: removed.map(id => this.calendarName(id)).join(", ") })));
     }
 
     const newScopes = this.scopes.filter(scope => !this.initialScopes.includes(scope));
