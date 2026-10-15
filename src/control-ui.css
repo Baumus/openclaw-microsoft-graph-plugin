@@ -44,6 +44,10 @@
 .mg-check { display: inline-flex; align-items: center; gap: 9px; min-height: 35px; margin: 2px 0; color: var(--mg-text); cursor: pointer; }
 .mg-check input { width: 17px; height: 17px; margin: 0; accent-color: var(--mg-accent); }
 .mg-check-grid { display: flex; flex-wrap: wrap; column-gap: 26px; row-gap: 3px; margin: 12px 0 8px; }
+.mg-calendar-summary { margin: 7px 0 12px; font-weight: 650; color: var(--mg-text); }
+.mg-calendar-list { display: grid; gap: 2px; margin: 8px 0 12px; }
+.mg-calendar-list .mg-check { min-width: 0; overflow-wrap: anywhere; }
+.mg-calendar-review { margin: 8px 0; padding: 10px 13px; border-inline-start: 3px solid var(--mg-accent); background: var(--mg-panel); overflow-wrap: anywhere; }
 .mg-banner, .mg-warning, .mg-error, .mg-success, .mg-message, .mg-status { color: var(--mg-text); background: var(--mg-panel); border: 1px solid var(--mg-border); border-radius: 9px; padding: 12px 15px; margin: 16px 0; line-height: 1.45; overflow-wrap: anywhere; }
 .mg-banner { border-inline-start: 4px solid #a77728; background: color-mix(in srgb, #a77728 8%, var(--mg-panel)); }
 .mg-warning { border-inline-start: 4px solid #a77728; }

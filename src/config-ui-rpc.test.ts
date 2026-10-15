@@ -16,6 +16,7 @@ describe("configuration UI validation RPC", () => {
     respond.mockClear(); handler({ params: { policy: { ...policy, rules: { default: "allow" } } }, respond });
     expect(respond).toHaveBeenCalledWith(false, undefined, { code: "INVALID_REQUEST", message: "Invalid Microsoft Graph policy" });
     expect(api.registerGatewayMethod).toHaveBeenCalledWith("microsoft-graph.configuration.resolveFolder", expect.any(Function), { scope: "operator.admin" });
+    expect(api.registerGatewayMethod).toHaveBeenCalledWith("microsoft-graph.configuration.calendars", expect.any(Function), { scope: "operator.admin" });
     const folder = handlers.get("microsoft-graph.configuration.resolveFolder")!;
     const denied = vi.fn();
     folder({ params: { path: "/Safe/../Escape" }, respond: denied });

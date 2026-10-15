@@ -2,7 +2,9 @@
 
 All notable changes to this project are documented here.
 
-## Unreleased
+## 3.14.0 - 2026-10-15
+
+- Show each agent's effective calendar scope in the Control UI, including the legacy default-calendar-only fallback. Let administrators select available calendars per agent without altering operation rights; preserve unresolvable IDs, show explicit grant changes before save, and use a bounded admin-only calendar-name lookup.
 
 ## 3.13.1 - 2026-10-14
 

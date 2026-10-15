@@ -11,6 +11,7 @@ type Policy = { version: 2; rules: { default: "deny"; warningApprovalsByService?
 type CredentialStatus = { policyVersion: 2; credential: { result: "missing" | "valid" | "quarantined" | "unavailable" } };
 type DeviceStart = { sessionId: string; userCode: string; verificationUri: string; expiresAt: string; scopes: string[] };
 type UpdateStatus = { updateAvailable: boolean; latestVersion?: string };
+type CalendarCatalog = { defaultCalendarId: string; calendars: Array<{ id: string; name: string }> };
 type DeviceStatus = { state: "pending" | "created" | "failed"; error?: string; scopes?: string[] };
 type CredentialReply<T> = { ok: true; value: T } | { ok: false; error: string };
 type ConfigSnapshot = { hash: string; config: { plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; parsed?: { plugins?: { $include?: unknown; entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; configRevisionHash?: string; appliedConfigHash?: string };
@@ -104,6 +105,9 @@ class ConfigurationPage {
   private newFolderPath = "";
   private editingAccess?: { rootLabel: string; agentId: string; permissions: Record<"read" | "write" | "delete", boolean> };
   private removedServiceGrants: Record<string, Grant> = {};
+  private calendarCatalog?: CalendarCatalog;
+  private calendarCatalogState: "idle" | "loading" | "ready" | "error" = "idle";
+  private calendarLoadScheduled = false;
   private busy = false;
   private operation?: SaveOperation;
   private activePolicyHash?: string;
@@ -128,6 +132,17 @@ class ConfigurationPage {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try { return await Promise.race([this.host.request<T>(method, params), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("status_timeout")), 15000); })]); }
     finally { if (timer) clearTimeout(timer); }
+  }
+  private async loadCalendars() {
+    if (!this.authorized || this.calendarCatalogState === "loading" || this.disposed) return;
+    this.calendarCatalogState = "loading"; this.render();
+    try {
+      const result = await this.read<CalendarCatalog>("microsoft-graph.configuration.calendars");
+      if (this.disposed || this.signal.aborted) return;
+      if (!result || typeof result.defaultCalendarId !== "string" || !Array.isArray(result.calendars)) throw new Error("invalid_calendar_catalog");
+      this.calendarCatalog = result; this.calendarCatalogState = "ready";
+    } catch { if (!this.disposed) { this.calendarCatalog = undefined; this.calendarCatalogState = "error"; } }
+    finally { if (!this.disposed) this.render(); }
   }
   private get locked() { return this.busy || !!this.operation && !["idle", "failed", "applied"].includes(this.operation.phase); }
   private error = "";
@@ -314,6 +329,10 @@ class ConfigurationPage {
     const focusLabel = focused?.closest("label")?.textContent;
     const selection = focused instanceof HTMLInputElement ? [focused.selectionStart, focused.selectionEnd] : undefined;
     this.container.replaceChildren(main);
+    if (this.step === 1 && this.calendarCatalogState === "idle" && !this.calendarLoadScheduled) {
+      this.calendarLoadScheduled = true;
+      queueMicrotask(() => { this.calendarLoadScheduled = false; if (this.step === 1 && this.calendarCatalogState === "idle" && !this.disposed) void this.loadCalendars(); });
+    }
     if (focused) {
       const candidates = [...main.querySelectorAll<HTMLElement>("button, input, select, textarea, summary, [tabindex]")];
       const replacement = candidates.find(node => node.tagName === focused.tagName && (focusLabel ? node.closest("label")?.textContent === focusLabel : node.textContent === focusText)) ?? candidates[focusIndex];
@@ -665,8 +684,46 @@ class ConfigurationPage {
         this.render();
       });
       if (existing && existing.operations.length < operations[service].length) append(card, el("p", "mg-hint", "Bestehender Zugang ist auf einzelne Funktionen eingeschränkt. Diese Einschränkung bleibt erhalten."));
+      if (service === "calendar") this.renderCalendarAccess(card, agentId, existing);
       append(body, card);
     }
+  }
+  private calendarChoices(): Array<{ id: string; name: string }> {
+    return [{ id: "me", name: "Standardkalender" }, ...(this.calendarCatalog?.calendars ?? [])
+      .filter(calendar => calendar.id !== this.calendarCatalog?.defaultCalendarId && calendar.id !== "me")];
+  }
+  private calendarName(id: string): string {
+    return this.calendarChoices().find(calendar => calendar.id === id)?.name ?? (id === this.calendarCatalog?.defaultCalendarId ? localize("Standardkalender (direkte Kalender-ID)") : format("Kalender-ID: {id}", { id }));
+  }
+  private renderCalendarAccess(card: HTMLElement, agentId: string, grant?: Grant) {
+    if (!grant) { append(card, el("p", "mg-hint", "Gesperrt · kein Kalender freigegeben.")); return; }
+    const selected = grant.resources ?? ["me"];
+    const choices = this.calendarChoices();
+    const defaultId = this.calendarCatalog?.defaultCalendarId;
+    const known = new Set([...choices.map(choice => choice.id), ...(defaultId ? [defaultId] : [])]);
+    const unknown = selected.filter(resource => !known.has(resource));
+    const summary = selected.length === 1 && selected[0] === "me" ? localize("Eingeschränkt · nur Standardkalender")
+      : defaultId && selected.includes(defaultId) ? format("{count} Kalender-Ressourcen freigegeben (inkl. Standardkalender-ID)", { count: selected.length })
+      : this.calendarCatalogState === "ready" && !unknown.length ? format("{selected} von {total} Kalendern freigegeben", { selected: selected.length, total: choices.length })
+      : format("{count} Kalender freigegeben · Liste nicht vollständig prüfbar", { count: selected.length });
+    append(card, el("p", "mg-calendar-summary", summary));
+    if (this.calendarCatalogState === "loading") append(card, el("p", "mg-hint", "Verfügbare Kalender werden geladen …"));
+    if (this.calendarCatalogState === "error") {
+      append(card, el("p", "mg-warning", "Kalenderliste nicht ladbar. Bestehende Freigaben bleiben erhalten; weitere Kalender können erst nach erneutem Laden ausgewählt werden."));
+      append(card, this.action("Kalenderliste erneut laden", () => { void this.loadCalendars(); }));
+    }
+    const list = el("div", "mg-calendar-list");
+    const defaultIdChoice = defaultId && selected.includes(defaultId) ? [{ id: defaultId, name: localize("Standardkalender (direkte Kalender-ID)") }] : [];
+    for (const choice of [...choices, ...defaultIdChoice, ...unknown.map(id => ({ id, name: this.calendarName(id) }))]) {
+      const label = unknown.includes(choice.id) ? format("{name} · nicht verifizierbar", { name: choice.name }) : choice.name;
+      this.checkbox(list, label, selected.includes(choice.id), checked => {
+        const next = checked ? [...new Set([...selected, choice.id])] : selected.filter(id => id !== choice.id);
+        if (next.length) grant.resources = next;
+        else { delete this.policy.services.calendar.agents[agentId]; this.removedServiceGrants[`calendar:${agentId}`] = clone(grant); }
+        this.confirmedRemoval = false; this.render();
+      });
+    }
+    append(card, list, el("p", "mg-hint", "Die Auswahl gilt nur für diesen Agenten. Funktionsrechte bleiben unverändert; Änderungen werden erst nach Prüfen und Speichern aktiv."));
   }
   private renderApprovals(body: HTMLElement) {
     append(body, el("h2", "", "Wann ist eine Freigabe nötig?"), el("p", "", "Eine Freigabe ist eine Rückfrage vor der konkreten Aktion. Die Agentenrechte aus den ersten beiden Schritten gelten immer zusätzlich."));
@@ -686,6 +743,14 @@ class ConfigurationPage {
   private renderReview(body: HTMLElement) {
     append(body, el("h2", "", "Änderungen prüfen"), el("p", "", "Prüfe die Zugriffe und Rückfragen. Nur diese Microsoft-Graph-Regeln werden geändert."));
     append(body, el("p", "mg-status", policySummary(this.policy).join(" · ")));
+    for (const agentId of new Set([...Object.keys(this.initial?.services.calendar.agents ?? {}), ...Object.keys(this.policy.services.calendar.agents)])) {
+      const before = this.initial?.services.calendar.agents[agentId]?.resources ?? (this.initial?.services.calendar.agents[agentId] ? ["me"] : []);
+      const after = this.policy.services.calendar.agents[agentId]?.resources ?? (this.policy.services.calendar.agents[agentId] ? ["me"] : []);
+      const added = after.filter(id => !before.includes(id)); const removed = before.filter(id => !after.includes(id));
+      const name = this.host.agents.rows.find(agent => agent.id === agentId)?.name || agentId;
+      if (added.length) append(body, el("p", "mg-calendar-review", format("{agent}: freigegeben · {calendars}", { agent: name, calendars: added.map(id => this.calendarName(id)).join(", ") })));
+      if (removed.length) append(body, el("p", "mg-calendar-review", format("{agent}: entzogen · {calendars}", { agent: name, calendars: removed.map(id => this.calendarName(id)).join(", ") })));
+    }
 
     const newScopes = this.scopes.filter(scope => !this.initialScopes.includes(scope));
     if (this.pluginEnabled && newScopes.length) append(body, el("p", "mg-warning", format("Für neue Zugriffe kann eine Microsoft-Einwilligung nötig sein ({scopes}). Solange das Plugin aktiv ist, kann diese Seite erweiterte Rechte nicht speichern.", { scopes: newScopes.join(", ") })));
