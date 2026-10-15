@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented here.
 
+## 3.14.1 - 2026-10-15
+
+- Explain on the ClawHub package page why the v3.14.0 `getSessionEntry` deprecation warnings are not actionable on OpenClaw 2026.10.3, and link the upstream request for target-version-aware diagnostics. Documentation only; runtime behavior, permissions, and compatibility floors are unchanged.
+
 ## 3.14.0 - 2026-10-15
 
 - Show each agent's effective calendar scope in the Control UI, including the legacy default-calendar-only fallback. Let administrators select available calendars per agent without altering operation rights; preserve unresolvable IDs, show explicit grant changes before save, and use a bounded admin-only calendar-name lookup.
