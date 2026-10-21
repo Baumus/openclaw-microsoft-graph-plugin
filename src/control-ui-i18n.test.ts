@@ -31,6 +31,8 @@ describe("Microsoft Graph Control UI localization", () => {
       expect(localize("Microsoft-Zugang erneut autorisieren")).toBeTruthy();
       expect(format("Diese Berechtigungen fehlen: {scopes}. Bis zur Erneuerung bleiben die betreffenden Aktionen gesperrt.", { scopes: "Contacts.ReadWrite" })).toContain("Contacts.ReadWrite");
       if (code !== "de") expect(localize("Berechtigungen erneut prüfen")).not.toBe("Berechtigungen erneut prüfen");
+      expect(localize("Anwendungs-ID (Client-ID)")).toContain(code === "de" ? "Client-ID" : "client");
+      expect(localize("Die vorhandene App und der vorhandene Mandant werden sicher wiederverwendet. Du musst keine Kennungen eingeben und keine neue App anlegen.")).not.toContain("terminal");
     }
   });
 

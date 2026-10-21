@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Guide existing-vault permission renewal entirely through the administrator Control UI, reusing authoritative app/tenant identifiers and retaining consent/binding/quarantine safeguards.
+- Preserve open disclosures, in-progress text, focus and caret during background UI renders; clarify German Entra identifier labels and sanitized conflict recovery.
+
+
 All notable changes to this project are documented here.
 
 ## 3.16.0 - 2026-10-21

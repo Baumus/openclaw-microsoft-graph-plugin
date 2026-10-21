@@ -4,6 +4,7 @@ import { localize, format, setLocale, isRtl } from "./control-ui-i18n.js";
 import { isMicrosoftDeviceVerificationUri } from "./device-verification.js";
 import { canonicalPolicy } from "./config-policy-identity.js";
 import { isConnectionEstablished } from "./control-ui-status.js";
+import { validClientId, validTenant } from "./app-identifiers.js";
 
 type Grant = { operations: string[]; resources?: string[] };
 type Root = { label: string; path: string; drive_id: string; item_id: string; include_descendants: true; agents_instructions?: "trusted"; permissions: Record<"read" | "write" | "delete", boolean>; agents: Record<string, { permissions: Partial<Record<"read" | "write" | "delete", boolean>> }> };
@@ -34,8 +35,6 @@ function authoredPolicySource(snapshot: ConfigSnapshot): string {
   return "";
 }
 const appIdsStorageKey = "microsoft-graph.app-ids.v1";
-const validClientId = (value: string) => /^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$/.test(value);
-const validTenant = (value: string) => /^(?:[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}|[A-Za-z0-9.-]{1,253})$/.test(value) && !value.includes("..");
 function savedAppIds(): { clientId: string; tenant: string } | undefined {
   try {
     const value = JSON.parse(localStorage.getItem(appIdsStorageKey) ?? "null") as unknown;
@@ -56,7 +55,7 @@ const blankPolicy = (): Policy => ({ version: 2, rules: { default: "deny" }, ser
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", value?: string): HTMLElementTagNameMap[K] { const node = document.createElement(tag); if (className) node.className = className; if (value !== undefined) node.textContent = localize(value); return node; }
 function append(parent: HTMLElement, ...children: HTMLElement[]) { parent.append(...children); }
 function field(parent: HTMLElement, label: string, value: string, set: (value: string) => void, hint?: string) {
-  const wrap = el("label", "mg-field"); const title = el("span", "mg-label", label); const input = el("input"); input.value = value; input.autocomplete = "off"; input.addEventListener("change", () => set(input.value.trim())); append(wrap, title, input); if (hint) append(wrap, el("small", "mg-hint", hint)); append(parent, wrap); return input;
+  const wrap = el("label", "mg-field"); const title = el("span", "mg-label", label); const input = el("input"); input.value = value; input.autocomplete = "off"; input.addEventListener("input", () => set(input.value)); input.addEventListener("change", () => set(input.value.trim())); append(wrap, title, input); if (hint) append(wrap, el("small", "mg-hint", hint)); append(parent, wrap); return input;
 }
 function checkbox(parent: HTMLElement, label: string, checked: boolean, set: (value: boolean) => void) {
   const wrap = el("label", "mg-check"); const input = el("input"); input.type = "checkbox"; input.checked = checked; input.addEventListener("change", () => set(input.checked)); append(wrap, input, el("span", "", label)); append(parent, wrap); return input;
@@ -165,6 +164,7 @@ class ConfigurationPage {
   private authState: "idle" | "pending" | "created" | "failed" = "idle";
   private authError = "";
   private authBusy = false;
+  private readonly disclosureState = new Map<string, boolean>();
   private readonly unsubscribe: () => void;
   constructor(private container: HTMLElement, private host: ControlUiHost, private signal: AbortSignal) {
     this.operation = operationsByHost.get(host);
@@ -328,7 +328,13 @@ class ConfigurationPage {
     const focusText = focused?.textContent;
     const focusLabel = focused?.closest("label")?.textContent;
     const selection = focused instanceof HTMLInputElement ? [focused.selectionStart, focused.selectionEnd] : undefined;
+    // Background status/update renders must not collapse reading context.
+    const disclosureKey = (node: HTMLDetailsElement) => node.querySelector("summary")?.textContent ?? "";
+    for (const details of this.container.querySelectorAll("details")) this.disclosureState.set(disclosureKey(details), details.open);
+    for (const details of main.querySelectorAll("details")) details.open = this.disclosureState.get(disclosureKey(details)) ?? details.open;
+    const scrollTop = this.container.scrollTop;
     this.container.replaceChildren(main);
+    this.container.scrollTop = scrollTop;
     if (this.step === 1 && this.calendarCatalogState === "idle" && !this.calendarLoadScheduled) {
       this.calendarLoadScheduled = true;
       queueMicrotask(() => { this.calendarLoadScheduled = false; if (this.step === 1 && this.calendarCatalogState === "idle" && !this.disposed) void this.loadCalendars(); });
@@ -458,7 +464,12 @@ class ConfigurationPage {
   private signInError(code: string): string {
     const messages: Record<string, string> = {
       credential_scope_missing: "Die Microsoft-Freigabe enthält nicht alle benötigten Berechtigungen. Prüfe die Einwilligung und starte erneut.",
-      credential_vault_conflict: "Es gibt bereits einen Zugang. Dieser Assistent überschreibt ihn nicht.",
+      credential_vault_conflict: "Der Zugang hat sich geändert. Prüfe den Status und starte die Erneuerung erneut. Der Assistent überschreibt keinen ungeprüften Zugang.",
+      credential_vault_conflict_exists: "Es gibt bereits einen Zugang. Prüfe den Status und nutze Microsoft-Berechtigungen erneuern statt einer neuen Verbindung.",
+      credential_vault_conflict_identity: "App oder Mandant stimmen nicht mit dem bestehenden Zugang überein. Erneuere mit den vorhandenen Kennungen; lege keine neue App an.",
+      credential_vault_conflict_changed: "Der Zugang wurde während der Anmeldung geändert, etwa durch eine Token-Erneuerung. Prüfe den Status und starte die Erneuerung erneut. Der aktuelle Zugang bleibt erhalten.",
+      credential_vault_conflict_policy_changed: "Die benötigten Berechtigungen wurden während der Anmeldung geändert. Prüfe die angewendeten Regeln und starte die Erneuerung erneut.",
+      credential_vault_conflict_quarantined: "Ein früherer Token-Austausch hat einen unklaren Ausgang. Der Zugang bleibt gesperrt; ein Admin muss die Wiederherstellung prüfen. Nicht löschen oder erneut verbinden.",
       credential_vault_locked: "Der Zugang wird gerade geändert. Bitte später erneut versuchen.",
       credential_vault_unavailable: "Der verschlüsselte Zugang ist nicht bereit. Prüfe den Vault-Schlüssel in der Plugin-Konfiguration.",
       device_authorization_declined: "Die Anmeldung wurde bei Microsoft abgelehnt. Du kannst erneut starten.",
@@ -487,14 +498,15 @@ class ConfigurationPage {
     this.render();
   }
   private async startAuth() {
-    if (this.authBusy || this.authState === "pending" || this.credential?.result !== "missing" || !this.signInReady) return;
-    if (!validClientId(this.authClientId.trim()) || !validTenant(this.authTenant.trim())) { this.authError = "Bitte eine gültige Microsoft App-ID und Tenant-ID oder -Domain eingeben."; this.render(); return; }
+    if (this.authBusy || this.authState === "pending" || !["missing", "valid"].includes(this.credential?.result ?? "") || !this.signInReady) return;
+    const renewal = this.credential?.result === "valid";
+    if (!renewal && (!validClientId(this.authClientId.trim()) || !validTenant(this.authTenant.trim()))) { this.authError = "Bitte eine gültige Microsoft App-ID und Tenant-ID oder -Domain eingeben."; this.render(); return; }
     this.authBusy = true; this.authError = ""; this.render();
     try {
-      const started = await this.credentialCall<DeviceStart>("microsoft-graph.credentials.device-start", { clientId: this.authClientId.trim(), tenant: this.authTenant.trim() });
+      const started = await this.credentialCall<DeviceStart>(renewal ? "microsoft-graph.credentials.reauthorize-start" : "microsoft-graph.credentials.device-start", renewal ? {} : { clientId: this.authClientId.trim(), tenant: this.authTenant.trim() });
       if (this.disposed || this.signal.aborted) return;
       if (!isMicrosoftDeviceVerificationUri(started.verificationUri)) throw new Error("device_authorization_failed");
-      saveAppIds(this.authClientId.trim(), this.authTenant.trim());
+      if (!renewal) saveAppIds(this.authClientId.trim(), this.authTenant.trim());
       this.device = started; this.authState = "pending"; this.authFailureCode = ""; this.scheduleAuthCheck();
     } catch (error) { this.authState = "failed"; this.authFailureCode = error instanceof Error ? error.message : ""; this.authFailureAt = new Date().toISOString(); this.authError = this.signInError(this.authFailureCode); }
     finally { this.authBusy = false; this.render(); }
@@ -507,24 +519,20 @@ class ConfigurationPage {
     finally { this.authBusy = false; if (this.authTimer) clearTimeout(this.authTimer); this.authTimer = undefined; if (this.authState === "pending") this.scheduleAuthCheck(); this.render(); }
   }
   private renderSignIn(main: HTMLElement) {
-    if (this.credential?.result === "valid") {
-      const ids = savedAppIds();
-      const command = `openclaw microsoft-graph credentials reauthorize --client-id ${ids?.clientId ?? "<app-id>"} --tenant ${ids?.tenant ?? "<tenant-id>"}`;
-      if (!this.credential.missingScopes?.length) {
-        const help = el("details", "mg-admin-details mg-reauthorize-help");
-        append(help, el("summary", "", "Microsoft-Berechtigungen erneuern"));
-        append(help, el("p", "mg-hint", "Falls Microsoft einen Zugriff trotz gültigem Zugang verweigert, prüfe zuerst Policy und Kontotyp. Bei entzogener Einwilligung kannst du die Berechtigungen im Host-Terminal erneut erteilen."));
-        append(help, el("p", "mg-hint", "Führe diesen Befehl selbst im OpenClaw-Host-Terminal als clawdbot aus. Melde dich mit demselben Microsoft-Konto an und bestätige die angezeigten Berechtigungen. Teile Code und Zugangsdaten nicht im Chat."));
-        append(help, el("code", "mg-auth-command", command));
-        append(help, this.action("Berechtigungen erneut prüfen", () => { void this.refreshCredential().then(() => this.render()); }, "secondary"));
-        append(main, help); return;
-      }
-      const card = el("section", "mg-section mg-auth"); card.id = "microsoft-connect";
-      append(card, el("h2", "", "Microsoft-Zugang erneut autorisieren"));
-      append(card, el("p", "mg-warning", format("Diese Berechtigungen fehlen: {scopes}. Bis zur Erneuerung bleiben die betreffenden Aktionen gesperrt.", { scopes: this.credential.missingScopes.join(", ") })));
-      append(card, el("p", "mg-hint", "Führe diesen Befehl selbst im OpenClaw-Host-Terminal als clawdbot aus. Melde dich mit demselben Microsoft-Konto an und bestätige die angezeigten Berechtigungen. Teile Code und Zugangsdaten nicht im Chat."));
-      append(card, el("code", "mg-auth-command", command));
+    if (this.credential?.result === "valid" && this.authState !== "pending" && (this.authState !== "failed" || this.authFailureCode === "device_authorization_cancelled")) {
+      const missing = this.credential.missingScopes ?? [];
+      const card = missing.length ? el("section", "mg-section mg-auth") : el("details", "mg-admin-details mg-reauthorize-help");
+      card.id = "microsoft-connect";
+      append(card, missing.length ? el("h2", "", "Microsoft-Zugang erneut autorisieren") : el("summary", "", "Microsoft-Berechtigungen erneuern"));
+      if (missing.length) append(card, el("p", "mg-warning", format("Diese Berechtigungen fehlen: {scopes}. Bis zur Erneuerung bleiben die betreffenden Aktionen gesperrt.", { scopes: missing.join(", ") })));
+      append(card, el("p", "mg-hint", "Die vorhandene App und der vorhandene Mandant werden sicher wiederverwendet. Du musst keine Kennungen eingeben und keine neue App anlegen."));
+      append(card, el("p", "mg-hint", "Melde dich auf der Microsoft-Seite mit demselben Konto an und prüfe die angeforderten Berechtigungen. Der bestehende Zugang bleibt bis zum erfolgreichen Abschluss erhalten. Teile Code und Zugangsdaten nicht im Chat."));
+      append(card, el("p", "mg-hint", "Bei verweigertem Zugriff zuerst Regeln, Kontotyp und Einwilligung prüfen. Eine Anmeldung ersetzt keine erforderliche Administratorzustimmung."));
+      const start = this.action("Microsoft-Berechtigungen erneuern", () => { void this.startAuth(); }, "primary");
+      start.disabled = this.authBusy || !this.signInReady; append(card, start);
       append(card, this.action("Berechtigungen erneut prüfen", () => { void this.refreshCredential().then(() => this.render()); }, "secondary"));
+      if (!this.signInReady) append(card, el("p", "mg-warning", "Schließe zuerst die Einrichtung oben ab: Vault-Schlüssel, Agentenzugriff und angewendete Regeln."));
+      if (this.authError) append(card, el("p", "mg-error", this.authError));
       append(main, card); return;
     }
     const card = el("section", "mg-section mg-auth"); card.id = "microsoft-connect";
@@ -553,7 +561,7 @@ class ConfigurationPage {
         if (!navigator.clipboard?.writeText) { this.authError = "Kopieren nicht möglich. Teile Zeitpunkt und Fehlercode manuell."; this.render(); return; }
         void navigator.clipboard.writeText(info).catch(() => { this.authError = "Kopieren nicht möglich. Teile Zeitpunkt und Fehlercode manuell."; this.render(); });
       }); append(card, copy);
-      append(card, this.action("Erneut anmelden", () => { this.authState = "idle"; this.authError = ""; this.render(); }, "ghost"));
+      append(card, this.action("Erneut anmelden", () => { this.authState = "idle"; this.authError = ""; void this.refreshCredential().then(() => this.render()); }, "ghost"));
     } else {
       const stored = savedAppIds();
       if (stored && !this.editAppIds) {
@@ -564,12 +572,12 @@ class ConfigurationPage {
         append(card, this.action("Andere App verwenden oder Einrichtung ändern", () => { this.editAppIds = true; this.render(); }, "ghost"));
       } else {
         append(card, el("h2", "", "Konto verbinden"), el("p", "mg-lead", "Bitte deinen Admin um Anwendungs-ID und Verzeichnis-ID. Ein Client Secret, Kennwort oder Einmalcode gehört nicht hierher."));
-        const client = this.field(card, "Anwendungs-ID (App-ID)", this.authClientId, value => { this.authClientId = value; }); client.placeholder = "00000000-0000-0000-0000-000000000000";
-        const tenant = this.field(card, "Verzeichnis-ID (Tenant-ID) oder Domain", this.authTenant, value => { this.authTenant = value; }); tenant.placeholder = "example.onmicrosoft.com";
+        const client = this.field(card, "Anwendungs-ID (Client-ID)", this.authClientId, value => { this.authClientId = value; }); client.placeholder = "00000000-0000-0000-0000-000000000000";
+        const tenant = this.field(card, "Verzeichnis-ID (Mandant) oder Domain", this.authTenant, value => { this.authTenant = value; }); tenant.placeholder = "example.onmicrosoft.com";
         const start = this.action("Anmeldung starten", () => { this.authClientId = client.value.trim(); this.authTenant = tenant.value.trim(); void this.startAuth(); }, "primary"); start.disabled = this.authBusy || !this.signInReady; append(card, start);
         const admin = el("details", "mg-admin-details");
         append(admin, el("summary", "", "Hinweis für Admins · App einrichten"));
-        append(admin, el("p", "mg-hint", "Microsoft Entra → App-Registrierungen → deine App → Übersicht. Dort Anwendungs-ID und Verzeichnis-ID ablesen."));
+        append(admin, el("p", "mg-hint", "Microsoft Entra Admin Center → Entra ID → App-Registrierungen → vorhandene App → Übersicht. „Anwendungs-ID (Client-ID)“ ist die App-ID; „Verzeichnis-ID (Mandant)“ ist die Tenant-ID. Nicht die Objekt-ID verwenden. Bei mehreren Verzeichnissen zuerst zum richtigen Mandanten wechseln."));
         append(admin, el("p", "mg-hint", "In der App öffentliche Clientanmeldung und benötigte delegierte Berechtigungen prüfen; falls nötig Admin-Einwilligung erteilen. Diese Schritte werden hier nicht automatisch geprüft."));
         const entra = el("a", "mg-button secondary", "Einrichtung für Admin öffnen"); entra.href = "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"; entra.target = "_blank"; entra.rel = "noopener noreferrer"; append(admin, entra); append(card, admin);
       }
