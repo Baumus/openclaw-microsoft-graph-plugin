@@ -37,7 +37,7 @@ function registeredTools() {
         expect(gate.requireApproval).toBeUndefined();
         return { details: { ok: false, error: gate.blockReason } };
       }
-      gate?.requireApproval?.onResolution("allow-once");
+      await gate?.requireApproval?.onResolution("allow-once");
       return tool.execute(toolCallId, gate?.params ?? params, signal);
     } }];
   }));

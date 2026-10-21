@@ -56,7 +56,7 @@ describe("native approval snapshot store across module instances", () => {
     const callId = "cross-module-approval-call";
     const approval = await hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: callId, params }, context);
     expect(approval.requireApproval).toMatchObject({ severity: "warning" });
-    approval.requireApproval.onResolution("allow-once");
+    await approval.requireApproval.onResolution("allow-once");
 
     // A different module's tool consumes the hook's snapshot, then reaches the credential gate.
     // No Microsoft request is possible without the intentionally absent test vault key.

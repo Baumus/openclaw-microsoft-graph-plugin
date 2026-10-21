@@ -26,15 +26,18 @@ async function candidate(warningApprovalsRequired = true) {
   delete policy.services.onedrive.allowed_roots[0].agents_instructions;
   policy.services.onedrive.allowed_roots[0].agents.main.permissions.read = true;
   let storedId: string | undefined = "generation-A";
-  const getSessionEntry = vi.fn(({ agentId, sessionKey, readConsistency }: { agentId: string; sessionKey: string; readConsistency: string }) => {
+  let lookupFails = false;
+  const getSessionEntryAsync = vi.fn(async ({ agentId, sessionKey, readConsistency }: { agentId: string; sessionKey: string; readConsistency: string }) => {
     expect({ agentId, sessionKey, readConsistency }).toEqual({ agentId: "main", sessionKey: "agent:main:main", readConsistency: "latest" });
+    if (lookupFails) throw new Error("session store unavailable");
     return storedId ? { sessionId: storedId } : undefined;
   });
+  const deprecatedGetSessionEntry = vi.fn(() => { throw new Error("deprecated session getter called"); });
   const hooks: Record<string, (event: unknown, context: unknown) => Promise<any>> = {};
   const factories: Array<(context: any) => any> = [];
   entry.register({
     pluginConfig: { enabled: true, policy, warningApprovalsRequired },
-    runtime: { state: { resolveStateDir: () => stateDir }, agent: { session: { getSessionEntry } } },
+    runtime: { state: { resolveStateDir: () => stateDir }, agent: { session: { getSessionEntryAsync, getSessionEntry: deprecatedGetSessionEntry } } },
     on: (name: string, handler: (event: unknown, context: unknown) => Promise<any>) => { hooks[name] = handler; },
     registerTool: (factory: (context: any) => any) => factories.push(factory),
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -50,12 +53,12 @@ async function candidate(warningApprovalsRequired = true) {
     const runs = await readdir(root).catch(() => []);
     return (await Promise.all(runs.map((run) => readdir(join(root, run))))).flat().filter((name) => name !== ".workspace-staging-owner");
   };
-  return { hook: hooks.before_tool_call, tool, event, hookContext, getSessionEntry, setStoredId: (id: string | undefined) => { storedId = id; }, staged };
+  return { hook: hooks.before_tool_call, tool, event, hookContext, getSessionEntryAsync, deprecatedGetSessionEntry, setStoredId: (id: string | undefined) => { storedId = id; }, setLookupFails: (value: boolean) => { lookupFails = value; }, staged };
 }
 
 describe("host sessionKey-only approval context", () => {
   it("binds a one-call workspace upload to the persisted generation and reaches the credential gate", async () => {
-    const { hook, tool, event, hookContext, getSessionEntry, staged } = await candidate();
+    const { hook, tool, event, hookContext, getSessionEntryAsync, deprecatedGetSessionEntry, staged } = await candidate();
     const approval = await hook(event, hookContext);
     expect(approval.requireApproval.severity).toBe("warning");
     expect(await staged()).toHaveLength(1);
@@ -66,7 +69,8 @@ describe("host sessionKey-only approval context", () => {
     expect(hostParams).toHaveProperty("sourceMediaUri");
     expect((await tool.execute(event.toolCallId, hostParams)).details).toMatchObject({ ok: false, error: "credential_vault_unavailable" });
     expect(await staged()).toEqual([]);
-    expect(getSessionEntry).toHaveBeenCalledTimes(3);
+    expect(getSessionEntryAsync).toHaveBeenCalledTimes(3);
+    expect(deprecatedGetSessionEntry).not.toHaveBeenCalled();
   });
 
   it("binds the host-merged params when warning approval is policy-disabled", async () => {
@@ -93,6 +97,14 @@ describe("host sessionKey-only approval context", () => {
     setStoredId(undefined);
     expect(await hook(event, hookContext)).toEqual({ block: true, blockReason: "trusted_session_identity_required" });
     expect(await staged()).toEqual([]);
+  });
+
+  it("fails closed when the awaited session lookup rejects", async () => {
+    const { hook, event, hookContext, setLookupFails, deprecatedGetSessionEntry, staged } = await candidate();
+    setLookupFails(true);
+    expect(await hook(event, hookContext)).toEqual({ block: true, blockReason: "trusted_session_identity_required" });
+    expect(await staged()).toEqual([]);
+    expect(deprecatedGetSessionEntry).not.toHaveBeenCalled();
   });
 
   it("rejects a reset before approval resolution and cleans the owned staging copy", async () => {
