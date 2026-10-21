@@ -54,7 +54,7 @@ function registeredTools(agentId = "main", runtimeWorkspaceDir: string | null = 
     return [tool.name, { ...tool, async execute(toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal) {
       const gate = await hooks.before_tool_call({ toolName: tool.name, toolCallId, params }, context);
       if (gate?.block) return { details: { ok: false, error: gate.blockReason } };
-      gate?.requireApproval?.onResolution("allow-once");
+      await gate?.requireApproval?.onResolution("allow-once");
       return tool.execute(toolCallId, gate?.params ?? params, signal);
     } }];
   }));

@@ -139,7 +139,7 @@ describe("OpenClaw host before_tool_call composition", () => {
       { toolName: "outlook_mail_write", toolCallId: "trust-seed", params: original },
       { agentId: "main", sessionId: "host-composition" },
     );
-    first.requireApproval.onResolution("allow-always");
+    await first.requireApproval.onResolution("allow-always");
 
     const result = await composedResult(
       { toolName: "outlook_mail_write", toolCallId: "trusted-rewrite", params: original },
@@ -190,7 +190,7 @@ describe("OpenClaw host before_tool_call composition", () => {
     });
     const result = await runner.runBeforeToolCall({ toolName, toolCallId, params }, context);
     expect(result.requireApproval).toMatchObject({ pluginId: "synthetic-prior-hook", severity: "warning" });
-    result.requireApproval.onResolution("allow-always");
+    await result.requireApproval.onResolution("allow-always");
     expect(earlierResolution).toHaveBeenCalledWith("allow-always");
 
     expect((await candidate.tool(toolName, context).execute(toolCallId, result.params)).details)
@@ -238,7 +238,7 @@ describe("OpenClaw host before_tool_call composition", () => {
       params,
       requireApproval: { pluginId: "microsoft-graph", severity: "critical", allowedDecisions: ["allow-once", "deny"] },
     });
-    result.requireApproval.onResolution("allow-once");
+    await result.requireApproval.onResolution("allow-once");
 
     expect((await candidate.tool(toolName, context).execute(toolCallId, result.params)).details)
       .toMatchObject({ ok: false, error: "credential_vault_unavailable" });

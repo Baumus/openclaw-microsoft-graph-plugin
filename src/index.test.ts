@@ -736,9 +736,9 @@ describe("microsoft-graph plugin contract", () => {
 
     const hooks = register({ warningApprovalsRequired: true });
     const first = await hooks.before_tool_call(warningEvent, context);
-    first.requireApproval.onResolution("allow-once");
+    await first.requireApproval.onResolution("allow-once");
     expect((await hooks.before_tool_call(warningEvent, context)).requireApproval).toBeTruthy();
-    first.requireApproval.onResolution("allow-always");
+    await first.requireApproval.onResolution("allow-always");
     expect(await hooks.before_tool_call(warningEvent, context)).toEqual({ params: warningEvent.params });
     expect(await hooks.before_tool_call({ ...warningEvent, toolCallId: "other-agent-call" }, { ...context, agentId: "other" })).toEqual({ block: true, blockReason: "access_denied" });
     expect((await hooks.before_tool_call({ ...warningEvent, toolCallId: "move-call", params: { action: "move", messageId: "message-1", destination: "archive" } }, context)).requireApproval).toBeTruthy();
@@ -815,7 +815,7 @@ describe("microsoft-graph plugin contract", () => {
     const approval = await hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: "single-use-call", params }, context);
     expect(approval.requireApproval).toMatchObject({ severity: "warning" });
     expect((await tools.outlook_mail_write.execute("single-use-call", params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
-    approval.requireApproval.onResolution("allow-once");
+    await approval.requireApproval.onResolution("allow-once");
 
     expect((await tools.outlook_mail_write.execute("", params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
     expect((await tools.outlook_mail_write.execute("wrong-call", params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
@@ -837,7 +837,7 @@ describe("microsoft-graph plugin contract", () => {
     const params = { action: "send_draft", messageId: "draft-1" };
     const toolCallId = `approval-${decision}`;
     const approval = await hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId, params }, context);
-    approval.requireApproval.onResolution(decision);
+    await approval.requireApproval.onResolution(decision);
 
     expect((await tool.execute(toolCallId, params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
   });
@@ -864,7 +864,7 @@ describe("microsoft-graph plugin contract", () => {
     const toolCallId = `root-identity-${identityField}`;
     const approval = await hooks.before_tool_call({ toolName: "onedrive_metadata_update", toolCallId, params }, context);
     expect(approval.requireApproval).toMatchObject({ severity: "warning" });
-    approval.requireApproval.onResolution("allow-once");
+    await approval.requireApproval.onResolution("allow-once");
 
     root[identityField] = `${root[identityField]}-changed`;
     expect((await tools.onedrive_metadata_update.execute(toolCallId, params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
@@ -1075,7 +1075,7 @@ describe("microsoft-graph plugin contract", () => {
 
     const challenge = await hooks.before_tool_call({ toolName: "outlook_calendar_write", toolCallId: "timezone-challenge", params: intended }, approvalContext);
     expect(challenge.requireApproval).toMatchObject({ severity: "warning" });
-    challenge.requireApproval.onResolution("allow-always");
+    await challenge.requireApproval.onResolution("allow-always");
     const equivalentAlias = await hooks.before_tool_call({
       toolName: "outlook_calendar_write",
       toolCallId: "timezone-alias-call",

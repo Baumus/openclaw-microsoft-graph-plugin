@@ -16,7 +16,7 @@ This is not an official Microsoft or OpenClaw product. It carries no enterprise,
 
 ### 1. Check requirements and install
 
-You need a supported OpenClaw host (`>=2026.9.6`), Node.js (`>=24.16.0 <25` or `>=26.1.0`), permission to edit its configuration, and an approved Microsoft Entra public-client app registration for the account you will connect. Check your local versions:
+You need a supported OpenClaw host (`>=2026.10.5`), Node.js (`>=24.16.0 <25` or `>=26.1.0`), permission to edit its configuration, and an approved Microsoft Entra public-client app registration for the account you will connect. Check your local versions:
 
 ```bash
 node --version
@@ -33,7 +33,7 @@ Installation alone does not sign you in, grant an agent access, or make an incom
 
 **Temporary ClawHub validation notice:** ClawHub may flag `contracts.tools` as an unsupported manifest contract (`manifest-unknown-contracts`). For this plugin, that finding is a validator false positive: OpenClaw requires the field to discover its agent tools, so removing it would break them. The [upstream Inspector fix](https://github.com/openclaw/plugin-inspector/commit/d0cfd5ef980e6fc9c10a2252760249a79baa8e3c) has merged. We expect the warning to disappear once that fix is released and adopted by ClawHub, but the timing is not confirmed.
 
-**OpenClaw 2026.10.3 SDK migration notice:** ClawHub's hosted validation of v3.14.0 also reported nine `sdk-deprecated-api` warnings for the session reader `getSessionEntry`, recommending `getSessionEntryAsync`. The recommended method is **not available in the released OpenClaw 2026.10.3 runtime**. The synchronous reader remains supported there; these warnings alone do not mean this plugin is incompatible with that host version or require users to change their installation. Switching now would break the plugin's session-bound approval checks. We will migrate after a stable OpenClaw release provides the awaited reader and the change passes regression and package validation, then publish a separate plugin update. See the [upstream ClawHub issue](https://github.com/openclaw/clawhub/issues/3964) for version-aware warning wording. This notice applies to these specific warnings, not to other validation or security findings.
+**OpenClaw SDK migration:** Version 3.15.1 uses the awaited `getSessionEntryAsync` reader for session-bound approval checks, eliminating the `getSessionEntry` deprecation warning. This API requires OpenClaw 2026.10.5 or newer. Earlier plugin releases remain available for older hosts; this change does not alter Microsoft permissions or stored credentials.
 
 ### 2. Choose access and connect Microsoft
 
@@ -68,7 +68,7 @@ Version 3.5.3 uses one Microsoft delegated OAuth credential and one encrypted lo
 You need:
 
 - Node.js `>=24.16.0 <25` or `>=26.1.0`.
-- OpenClaw `>=2026.9.6` running as the OS account that will own the plugin state.
+- OpenClaw `>=2026.10.5` running as the OS account that will own the plugin state.
 - A Microsoft Entra app registration and one delegated user grant for the account the plugin will use. Application permissions, client secrets, certificates, and daemon/service-principal flows are not supported.
 - GNU `pass` and GPG only if you choose the optional emergency `restore-pass` backup. Do not invoke that export when credentials must remain exclusively in the local encrypted vault. Normal setup and tool calls do not use `pass`.
 - Permission to edit the OpenClaw configuration and to review the third-party plugin's declared capabilities.
@@ -333,7 +333,7 @@ Use the existing `microsoft_todo_write` tool with `action: "create_task"`, `titl
 
 The default selector requires independently allowed To Do `read` and `create` operations. Before native approval, the plugin validates the task payload and follows at most 20 safe list pages / 500 lists to identify the unique owned, non-shared list whose Microsoft `wellknownListName` is `defaultList`. Missing, ambiguous, unsafe, or incomplete discovery fails closed; list names and arbitrary sole lists are never used as fallback. Approval identifies and binds the concrete list ID, and execution uses that same target even if the account's default changes. The existing owner check remains; no post-write GET is added. Known `listId` calls do not discover lists or require separate discovery read access. The selector is not accepted for other actions. Warning approval and per-service overrides continue to apply.
 
-## Configuration UI (OpenClaw 2026.9.6+)
+## Configuration UI (OpenClaw 2026.10.5+)
 
 Administrators can enable **Settings → Labs → Custom plugin UI**, then open **Connect Microsoft 365 to OpenClaw** in the Control UI. The page offers English, German, Spanish, and Arabic; other host locales fall back to English. When a newer security-clean stable release is published on ClawHub, an administrator-only, read-only Gateway check shows an update badge beside the established-connection status. It contacts ClawHub with no Microsoft credentials or policy data, and the badge never installs or activates an update. The page edits OneDrive folder/agent rights, per-agent Calendar/Mail/To Do access, and warning-level approval choices for each service. On **Services**, Calendar shows the effective scope for the selected agent: a grant without `resources` means **default calendar only**. An admin-only Gateway lookup retrieves calendar IDs and names (never events); selecting a calendar changes only that agent's resource list, not its operation rights. Unavailable lists do not imply full access, and configured IDs absent from the list remain visible and retained unless explicitly unchecked. The **Review** step names added and removed calendar grants before save. New OneDrive paths are resolved to immutable drive/item IDs by an admin-only Gateway method. Critical delete, send, and respond actions always retain call-bound approval.
 

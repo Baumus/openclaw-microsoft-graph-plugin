@@ -86,18 +86,18 @@ function setResolvePluginStateDir(resolver: () => string): void {
 type OneDriveStagingWorkspaceContext = { agentId?: string; sessionId?: string; workspaceDir?: string; abortSignal?: AbortSignal };
 const oneDriveStagingWorkspaceContexts = new Map<string, { agentId: string; sessionId: string; workspaceDir: string }>();
 export type NativeApprovalSnapshot = { agentId?: string; sessionId?: string; toolName: string; params: string; oneDriveRoot?: OneDriveApprovalRoot };
-type SessionEntryLookup = (params: { agentId?: string; sessionKey: string; readConsistency: "latest" }) => { sessionId?: string } | undefined;
+type SessionEntryLookup = (params: { agentId?: string; sessionKey: string; readConsistency: "latest" }) => Promise<{ sessionId?: string } | undefined>;
 
-function currentSessionId(lookup: SessionEntryLookup | undefined, agentId: string | undefined, sessionKey: string | undefined): string | undefined {
+async function currentSessionId(lookup: SessionEntryLookup | undefined, agentId: string | undefined, sessionKey: string | undefined): Promise<string | undefined> {
   if (!lookup || !agentId || !sessionKey) return undefined;
   try {
-    const id = lookup({ agentId, sessionKey, readConsistency: "latest" })?.sessionId;
+    const id = (await lookup({ agentId, sessionKey, readConsistency: "latest" }))?.sessionId;
     return typeof id === "string" && id ? id : undefined;
   } catch { return undefined; }
 }
 
-function sessionIdentityCurrent(lookup: SessionEntryLookup | undefined, agentId: string | undefined, sessionKey: string | undefined, sessionId: string | undefined): boolean {
-  return !sessionKey || (!!sessionId && currentSessionId(lookup, agentId, sessionKey) === sessionId);
+async function sessionIdentityCurrent(lookup: SessionEntryLookup | undefined, agentId: string | undefined, sessionKey: string | undefined, sessionId: string | undefined): Promise<boolean> {
+  return !sessionKey || (!!sessionId && await currentSessionId(lookup, agentId, sessionKey) === sessionId);
 }
 
 /**
@@ -627,7 +627,7 @@ export function callerCapabilities(config: RuntimeConfig, agentId: string | unde
   return { ok: true, roots, services, prerequisites: ["Operator-managed Microsoft sign-in and credential vault must be ready; this read-only tool does not check credentials or connect to Graph.", "Discover exact IDs with read tools before writes.", "Native approval may be required for writes; caller policy remains authoritative."] };
 }
 
-export function concrete(name: string, parameters: any, agentId: string | undefined, sessionId: string | undefined, logger: Logger, execute: (params: any, signal?: AbortSignal) => Promise<unknown>, approvalConfig?: RuntimeConfig, sessionIsCurrent: () => boolean = () => true) {
+export function concrete(name: string, parameters: any, agentId: string | undefined, sessionId: string | undefined, logger: Logger, execute: (params: any, signal?: AbortSignal) => Promise<unknown>, approvalConfig?: RuntimeConfig, sessionIsCurrent: () => Promise<boolean> = async () => true) {
   return { name, label: name.replaceAll("_", " "), description: TOOL_GUIDANCE[name] ?? `Microsoft Graph ${name} operation.`, parameters,
     async execute(_id: string, params: unknown, signal?: AbortSignal) {
       const started = Date.now();
@@ -637,7 +637,7 @@ export function concrete(name: string, parameters: any, agentId: string | undefi
         const semantic = semanticParams(params);
         const oneDriveRoot = approvalConfig ? () => authorizeOneDriveMutationPreflight(approvalConfig, agentId, name, semantic) : undefined;
         const approvalSnapshotMatches = nativeApprovalSnapshots.consume(_id, agentId, sessionId, name, semantic, oneDriveRoot);
-        if (approvalSnapshotMatches === false || (classifyApproval(name, semantic) !== "none" && (approvalSnapshotMatches !== true || !sessionIsCurrent()))) throw new Error("approval_context_invalid_or_changed");
+        if (approvalSnapshotMatches === false || (classifyApproval(name, semantic) !== "none" && (approvalSnapshotMatches !== true || !await sessionIsCurrent()))) throw new Error("approval_context_invalid_or_changed");
         workspaceStagingStore.beginExecution(_id, name, sessionId);
         value = await execute(semantic, signal);
       } catch (error) {
@@ -1619,7 +1619,7 @@ const plugin = defineToolPlugin({
             config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS,
           );
         } finally { await source?.close(); }
-      }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId))) }),
+      }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId))) }),
       tool({ name: "onedrive_update", label: "OneDrive Update", optional: true, description: "Replace one file with ETag protection from a workspace-relative sourceWorkspacePath or existing media://inbound/... sourceMediaUri; supply exactly one. The plugin computes SHA-256 and size before native approval and rechecks them before transfer. Optional fingerprint fields are assertions, not prerequisites. A blocked preflight means no approval was requested. Uses a Graph upload session above 250 MB.", parameters: writeSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_update", writeSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
         void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
@@ -1637,31 +1637,31 @@ const plugin = defineToolPlugin({
             config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS,
           );
         } finally { await source?.close(); }
-      }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId))) }),
+      }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId))) }),
       tool({ name: "onedrive_metadata_update", label: "OneDrive Metadata Update", optional: true, description: "Rename, move within one allowlisted root, or update stable driveItem metadata; description is OneDrive Personal only.", parameters: metadataSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_metadata_update", metadataSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, destinationRelativePath, chatConfirmed: confirmed, chatConfirmationToken: confirmationToken, ...rawChanges }, signal) => {
         void confirmed; void confirmationToken;
         const path = normalizeRelativePath(relativePath);
         const changes = { ...rawChanges, ...(destinationRelativePath !== undefined ? { destinationRelativePath: normalizeRelativePath(destinationRelativePath) } : {}) };
         validateDriveMetadataInput(path, changes);
         return withDrive(config, toolContext.agentId, rootLabel, "write", signal, (root, token, bounded) => driveMetadataUpdate(root, path, token, changes, bounded));
-      }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
+      }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "onedrive_create_folder", label: "OneDrive Create Folder", optional: true, description: "Create a folder below one exact allowlisted root.", parameters: folderSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_create_folder", folderSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, parentRelativePath = "", name, conflictBehavior = "fail" }, signal) => {
         const parentPath = normalizeRelativePath(parentRelativePath);
         validateDriveFolderInput(name);
         return withDrive(config, toolContext.agentId, rootLabel, "write", signal, (root, token, bounded) => driveCreateFolder(root, parentPath, name, conflictBehavior, token, bounded));
-      }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
+      }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "onedrive_delete", label: "OneDrive Delete", optional: true, description: "Delete exactly one relativePath in an authorized root. Always requires OpenClaw-native critical allow-once approval bound to this call; a chat token cannot authorize it. If approval fails, including missing operator.approvals scope, nothing is deleted. Repair the approval route and request fresh approval for the exact target.", parameters: deleteSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_delete", deleteSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, agentsInstructionAck }, signal) => {
         const path = normalizeRelativePath(relativePath);
         if (!path) throw new Error("invalid_relative_path");
         await enforceOneDriveInstructionExecution(config, { agentId: toolContext.agentId, sessionId: toolContext.sessionId }, "onedrive_delete", { rootLabel, relativePath: path, agentsInstructionAck }, signal);
         return withDrive(config, toolContext.agentId, rootLabel, "delete", signal, (root, token, bounded) => driveDelete(root, path, token, bounded));
-      }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
+      }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "outlook_calendar_read", label: "Outlook Calendar Read", optional: true, description: "Bounded default or explicitly authorized calendar reads, selected stable event fields, event search, free/busy, attachment metadata, and direct file downloads.", parameters: calendarReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_read", calendarReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "outlook_calendar_write", label: "Outlook Calendar Write", optional: true, description: "Create, update, or non-atomically multiwrite stable Microsoft Graph v1.0 event settings, respond, attach private media up to 150 MB, or delete. Multiwrite is capped at 100 operations, ordered, and chunked into Graph batches of 20. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: calendarWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_write", calendarWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
+      tool({ name: "outlook_calendar_write", label: "Outlook Calendar Write", optional: true, description: "Create, update, or non-atomically multiwrite stable Microsoft Graph v1.0 event settings, respond, attach private media up to 150 MB, or delete. Multiwrite is capped at 100 operations, ordered, and chunked into Graph batches of 20. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: calendarWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_write", calendarWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "outlook_mail_read", label: "Outlook Mail Read", optional: true, description: "Bounded own-mailbox message reads, KQL/filter search, selected stable message fields, attachment metadata, and direct file downloads.", parameters: mailReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_read", mailReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "outlook_mail_write", label: "Outlook Mail Write", optional: true, description: "Own-mailbox draft fields, reply/reply-all/forward drafts, copy/move, private-media attachments up to 150 MB, send, and delete. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: mailWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_write", mailWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
+      tool({ name: "outlook_mail_write", label: "Outlook Mail Write", optional: true, description: "Own-mailbox draft fields, reply/reply-all/forward drafts, copy/move, private-media attachments up to 150 MB, send, and delete. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: mailWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_write", mailWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "microsoft_todo_read", label: "Microsoft To Do Read", optional: true, description: "Bounded own-account list/task reads and client-side search, including checklist, linked-resource, and attachment collections.", parameters: todoReadSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_read", todoReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "microsoft_todo_write", label: "Microsoft To Do Write", optional: true, description: 'Create tasks with an exact listId or listSelector:"default" (default selection requires read and create access and resolves before approval). Owned non-shared list/task settings, checklist, linked-resource, and private-media attachment mutations up to 25 MB. Warning-level actions use configurable native approval; critical actions require native allow-once approval.', parameters: todoWriteSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_write", todoWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntry, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
+      tool({ name: "microsoft_todo_write", label: "Microsoft To Do Write", optional: true, description: 'Create tasks with an exact listId or listSelector:"default" (default selection requires read and create access and resolves before approval). Owned non-shared list/task settings, checklist, linked-resource, and private-media attachment mutations up to 25 MB. Warning-level actions use configurable native approval; critical actions require native allow-once approval.', parameters: todoWriteSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_write", todoWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "onedrive_agents_instructions", label: "OneDrive AGENTS.md Instructions", optional: true, description: "Batch-discover the bounded root-to-directory AGENTS.md chain for a centrally trusted OneDrive root. Ordinary OneDrive tools invoke this preflight automatically and require a session-bound acknowledgement before proceeding.", parameters: agentsInstructionsSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_agents_instructions", agentsInstructionsSchema, toolContext.agentId, toolContext.sessionId, api.logger, ({ rootLabel, relativeDirectory = "", acknowledgement }, signal) => oneDriveAgentsInstructions(config, { agentId: toolContext.agentId, sessionId: toolContext.sessionId }, { rootLabel, relativeDirectory, acknowledgement }, signal)) }),
       tool({ name: "microsoft_graph_capabilities", label: "Microsoft Graph Capabilities", optional: true, description: TOOL_GUIDANCE.microsoft_graph_capabilities, parameters: Type.Object({}, { additionalProperties: false }), factory: ({ config, toolContext, api }) => concrete("microsoft_graph_capabilities", Type.Object({}, { additionalProperties: false }), toolContext.agentId, toolContext.sessionId, api.logger, async () => callerCapabilities(config, toolContext.agentId)) }),
     ];
@@ -3033,7 +3033,7 @@ export async function beforeMicrosoftGraphToolCall(
   // tools.invoke supplies sessionKey to this hook but currently omits sessionId.
   // Resolve the persisted generation for approval-bearing calls using host context only.
   if (severity !== "none" && ctx.sessionKey) {
-    const resolved = currentSessionId(lookupSession, ctx.agentId, ctx.sessionKey);
+    const resolved = await currentSessionId(lookupSession, ctx.agentId, ctx.sessionKey);
     if (!resolved || (ctx.sessionId && ctx.sessionId !== resolved)) return { block: true, blockReason: "trusted_session_identity_required" };
     ctx = { ...ctx, sessionId: resolved };
   }
@@ -3112,8 +3112,8 @@ export async function beforeMicrosoftGraphToolCall(
 
   if (severity !== "none" && !event.toolCallId) return { block: true, blockReason: "approval_context_tool_call_id_required" };
 
-  const bindExecutionSnapshot = () => {
-    if (!sessionIdentityCurrent(lookupSession, ctx.agentId, ctx.sessionKey, ctx.sessionId)) throw new Error("approval_context_invalid_or_changed");
+  const bindExecutionSnapshot = async () => {
+    if (!await sessionIdentityCurrent(lookupSession, ctx.agentId, ctx.sessionKey, ctx.sessionId)) throw new Error("approval_context_invalid_or_changed");
     if (event.toolCallId) approvalSnapshots.record(event.toolCallId, {
       agentId: ctx.agentId,
       sessionId: ctx.sessionId,
@@ -3134,7 +3134,7 @@ export async function beforeMicrosoftGraphToolCall(
       async onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
         if (ownedLease && !workspaceStagingStore.has(event.toolCallId!)) return;
         if (decision === "allow-once") {
-          try { bindExecutionSnapshot(); }
+          try { await bindExecutionSnapshot(); }
           catch {
             approvalSnapshots.discard(event.toolCallId);
             await cleanupBoundLease();
@@ -3167,7 +3167,7 @@ export async function beforeMicrosoftGraphToolCall(
   const warningRequired = runtimeConfig.policy?.rules.warningApprovalsByService?.[service] ?? runtimeConfig.warningApprovalsRequired ?? true;
   const warningApprovalBypassed = warningRequired === false || warningApprovalTrustStore.has(scope);
   if (warningApprovalBypassed) {
-    try { bindExecutionSnapshot(); bindOwnedLease(); }
+    try { await bindExecutionSnapshot(); bindOwnedLease(); }
     catch (error) { approvalSnapshots.discard(event.toolCallId); return { block: true, blockReason: errorCode(error) }; }
     return { params };
   }
@@ -3184,7 +3184,7 @@ export async function beforeMicrosoftGraphToolCall(
       async onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
         if (ownedLease && !workspaceStagingStore.has(event.toolCallId!)) return;
         if (decision === "allow-once" || decision === "allow-always") {
-          try { bindExecutionSnapshot(); }
+          try { await bindExecutionSnapshot(); }
           catch {
             approvalSnapshots.discard(event.toolCallId);
             await cleanupBoundLease();
@@ -3232,7 +3232,7 @@ plugin.register = (api) => {
   const warningApprovalTrustStore = new WarningApprovalTrustStore();
   api.on(
     "before_tool_call",
-    (event, ctx) => beforeMicrosoftGraphToolCall(runtimeConfig, event, ctx, {}, warningApprovalTrustStore, nativeApprovalSnapshots, () => api.logger.warn(STAGING_CLEANUP_DEFERRED), api.runtime?.agent?.session?.getSessionEntry),
+    (event, ctx) => beforeMicrosoftGraphToolCall(runtimeConfig, event, ctx, {}, warningApprovalTrustStore, nativeApprovalSnapshots, () => api.logger.warn(STAGING_CLEANUP_DEFERRED), api.runtime?.agent?.session?.getSessionEntryAsync),
     // Run after ordinary policy hooks so this plugin's exact original snapshot
     // becomes authoritative. The execution-bound snapshot still fails closed
     // if a same/lower-priority hook attempts a later rewrite.

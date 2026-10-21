@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented here.
 
+## 3.15.1 - Unreleased
+
+- Replace deprecated synchronous OpenClaw session-entry reads with awaited `getSessionEntryAsync` for session-bound Microsoft Graph approvals. Preserve fail-closed checks before approval, on approval resolution, and at tool execution. Require OpenClaw 2026.10.5 or newer for the awaited runtime API; no Microsoft permissions or policy changes.
+
 ## 3.15.0 - 2026-10-21
 
 - Support PNG, JPEG, and GIF images positioned inside Outlook HTML drafts by matching a `cid:` image reference with `inlineContentId` on `outlook_mail_write` `add_attachment`. Both direct and upload-session attachments carry Graph `isInline` and `contentId`; ordinary attachments remain unchanged. Validate CID, MIME, and image signature before provider access. No additional Microsoft permissions or compatibility-floor changes.
