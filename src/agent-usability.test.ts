@@ -113,6 +113,15 @@ describe("agent-facing Microsoft Graph contracts", () => {
 
   it("reports uncertainty, partial results, empty results, and send acceptance without delivery certainty", () => {
     expect(lifecycleResult("outlook_mail_write", { ok: false, error: "request_timeout" })).toMatchObject({ phase: "failed", mutationApplied: "unknown", retrySafety: "readback_before_retry" });
+    const missingConsent = lifecycleResult("outlook_contacts_write", { ok: false, error: "credential_scope_missing" }) as Record<string, unknown>;
+    expect(missingConsent).toMatchObject({ phase: "failed", mutationApplied: false, retrySafety: "safe_after_correction" });
+    expect(String(missingConsent.nextAction)).toContain("reauthorization");
+    const uncertainRefresh = lifecycleResult("outlook_contacts_write", { ok: false, error: "credential_reauthorization_required" }) as Record<string, unknown>;
+    expect(uncertainRefresh).toMatchObject({ phase: "failed", mutationApplied: false, retrySafety: "safe_after_correction" });
+    expect(String(uncertainRefresh.nextAction)).toContain("reviewed recovery");
+    const providerDenied = lifecycleResult("outlook_contacts_write", { ok: false, error: "provider_error_403" }) as Record<string, unknown>;
+    expect(providerDenied).toMatchObject({ mutationApplied: "unknown", retrySafety: "readback_before_retry" });
+    expect(String(providerDenied.nextAction)).toContain("use guided terminal reauthorization only if consent is missing");
     for (const error of ["workspace_file_unavailable", "workspace_file_changed", "workspace_context_unavailable", "exactly_one_source_required"]) {
       const result = lifecycleResult("onedrive_upload", { ok: false, error }) as Record<string, unknown>;
       expect(result).toMatchObject({ phase: "failed", mutationApplied: false, retrySafety: "safe_after_correction" });

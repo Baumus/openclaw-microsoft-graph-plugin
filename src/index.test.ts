@@ -58,7 +58,7 @@ describe("microsoft-graph plugin contract", () => {
     expect(() => entry.register(api as any)).not.toThrow();
     expect(registerTool).toHaveBeenCalled();
     expect(registerCli).toHaveBeenCalledTimes(1);
-    expect(registerGatewayMethod).toHaveBeenCalledTimes(11);
+    expect(registerGatewayMethod).toHaveBeenCalledTimes(12);
     expect(registerGatewayMethod.mock.calls.map(([method, _handler, options]) => [method, options.scope])).toEqual([
       ["microsoft-graph.configuration.applicationStatus", "operator.admin"],
       ["microsoft-graph.configuration.validate", "operator.admin"],
@@ -69,6 +69,7 @@ describe("microsoft-graph plugin contract", () => {
       ["microsoft-graph.credentials.restore-pass", "operator.admin"],
       ["microsoft-graph.credentials.recover-refresh", "operator.admin"],
       ["microsoft-graph.credentials.device-start", "operator.admin"],
+      ["microsoft-graph.credentials.reauthorize-start", "operator.admin"],
       ["microsoft-graph.credentials.device-status", "operator.admin"],
       ["microsoft-graph.credentials.device-cancel", "operator.admin"],
     ]);

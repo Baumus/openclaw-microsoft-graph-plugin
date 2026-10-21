@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DeviceCodeSignIn } from "./device-code.js";
-import { createVaultCredential, inspectVaultCredential, readVaultCredential } from "./credential-vault.js";
+import { createVaultCredential, inspectVaultCredential, readVaultCredential, refreshVaultCredential } from "./credential-vault.js";
+import { requiredPolicyScopes } from "./credential-cli.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 
 const dirs: string[] = [];
@@ -102,4 +103,54 @@ describe("gateway-side device-code sign-in", () => {
     await expect(signIn.start(clientId, tenant)).rejects.toThrow("credential_vault_conflict");
     expect(fetchFn).not.toHaveBeenCalled();
   });;
+
+  it("reauthorizes an existing vault only after all current policy scopes are granted", async () => {
+    const { state, key, config } = await setup();
+    const original = { clientId, tenant, refreshToken: "original-secret", scopes: [...requiredPolicyScopes(config.policy), "offline_access"] };
+    await createVaultCredential(state, original, key);
+    config.policy.services.contacts = { agents: { main: { operations: ["read", "create"], resources: ["me"] } } };
+    let requested = ""; let release!: (value: Response) => void;
+    const token = new Promise<Response>(resolve => { release = resolve; });
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = new URLSearchParams(init?.body as URLSearchParams);
+      if (body.has("scope")) { requested = body.get("scope")!; return response(deviceResponse); }
+      return token;
+    }) as unknown as typeof fetch;
+    const signIn = new DeviceCodeSignIn(config, () => state, fetchFn, async () => undefined);
+    const before = await inspectVaultCredential(state, key);
+    const started = await signIn.reauthorize(clientId, tenant);
+    expect(started.scopes).toContain("Contacts.ReadWrite");
+    expect((await readVaultCredential(state, key)).credential).toEqual(original);
+    release(response({ refresh_token: "renewed-secret", scope: requested }));
+    expect(await terminal(signIn, started.sessionId)).toEqual({ state: "created", scopes: requested.split(" ") });
+    const after = await readVaultCredential(state, key);
+    expect(after.credential.refreshToken).toBe("renewed-secret");
+    expect(after.credential.scopes).toContain("Contacts.ReadWrite");
+    expect(after.envelope.generation).toBe(before.generation! + 1);
+  });
+
+  it("preserves the original vault on missing consent, wrong app, or concurrent rotation", async () => {
+    const { state, key, config } = await setup();
+    const original = { clientId, tenant, refreshToken: "original-secret", scopes: [...requiredPolicyScopes(config.policy), "offline_access"] };
+    await createVaultCredential(state, original, key);
+    config.policy.services.contacts = { agents: { main: { operations: ["read", "create"], resources: ["me"] } } };
+    let requested = ""; let tokenScope = "";
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = new URLSearchParams(init?.body as URLSearchParams);
+      if (body.has("scope")) { requested = body.get("scope")!; return response(deviceResponse); }
+      return response({ refresh_token: "candidate-secret", scope: tokenScope });
+    }) as unknown as typeof fetch;
+    const signIn = new DeviceCodeSignIn(config, () => state, fetchFn, async () => undefined);
+    await expect(signIn.reauthorize("33333333-3333-4333-8333-333333333333", tenant)).rejects.toThrow("credential_vault_conflict");
+    expect(fetchFn).not.toHaveBeenCalled();
+    tokenScope = original.scopes.join(" ");
+    const denied = await signIn.reauthorize(clientId, tenant);
+    expect(await terminal(signIn, denied.sessionId)).toEqual({ state: "failed", error: "credential_scope_missing" });
+    expect((await readVaultCredential(state, key)).credential).toEqual(original);
+    tokenScope = requested;
+    const pending = await signIn.reauthorize(clientId, tenant);
+    await refreshVaultCredential({ stateDir: state, key, exchange: async () => ({ accessToken: "synthetic-access", replacementRefreshToken: "rotated-secret" }) });
+    expect(await terminal(signIn, pending.sessionId)).toEqual({ state: "failed", error: "credential_vault_conflict" });
+    expect((await readVaultCredential(state, key)).credential.refreshToken).toBe("rotated-secret");
+  });
 });

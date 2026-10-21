@@ -4,6 +4,14 @@ export const hostLocales = ["en", "ar", "de", "es", "fa", "fr", "hi", "id", "it"
 export type HostLocale = typeof hostLocales[number];
 const catalogs: Record<string, Record<string, string>> = {
   "en": {
+    "Microsoft-Berechtigungen erneuern": "Renew Microsoft permissions",
+    "Falls Microsoft einen Zugriff trotz gültigem Zugang verweigert, prüfe zuerst Policy und Kontotyp. Bei entzogener Einwilligung kannst du die Berechtigungen im Host-Terminal erneut erteilen.": "If Microsoft denies access despite a valid credential, first check policy and account type. If consent was revoked, you can renew permissions in the host terminal.",
+    "Microsoft-Zugang erneut autorisieren": "Reauthorize Microsoft access",
+    "Diese Berechtigungen fehlen: {scopes}. Bis zur Erneuerung bleiben die betreffenden Aktionen gesperrt.": "These permissions are missing: {scopes}. The affected actions stay blocked until reauthorization.",
+    "Führe diesen Befehl selbst im OpenClaw-Host-Terminal als clawdbot aus. Melde dich mit demselben Microsoft-Konto an und bestätige die angezeigten Berechtigungen. Teile Code und Zugangsdaten nicht im Chat.": "Run this command yourself in the OpenClaw host terminal as clawdbot. Sign in with the same Microsoft account and approve the displayed permissions. Do not share the code or credentials in chat.",
+    "Berechtigungen erneut prüfen": "Check permissions again",
+    "Neue Microsoft-Berechtigungen ({scopes}) benötigen nach dem Speichern eine Reautorisierung. Bis dahin bleiben diese Aktionen gesperrt.": "New Microsoft permissions ({scopes}) require reauthorization after saving. These actions remain blocked until then.",
+    "Neue Microsoft-Berechtigungen fehlen. Folge unten der Reautorisierung; der bestehende Zugang bleibt bis zum erfolgreichen Abschluss erhalten.": "New Microsoft permissions are missing. Follow the reauthorization steps below; the existing credential remains until completion succeeds.",
     "Speichern und anwenden": "Save and apply",
     "Deine Änderungen werden gespeichert …": "Saving your changes …",
     "Zugriffe werden geprüft. Bitte warte; weitere Änderungen sind vorübergehend gesperrt.": "Checking permissions. Please wait; other changes are temporarily locked.",
@@ -239,6 +247,14 @@ const catalogs: Record<string, Record<string, string>> = {
     "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Status check interrupted. Check the connection; this page will retry."
   },
   "de": {
+    "Microsoft-Berechtigungen erneuern": "Microsoft-Berechtigungen erneuern",
+    "Falls Microsoft einen Zugriff trotz gültigem Zugang verweigert, prüfe zuerst Policy und Kontotyp. Bei entzogener Einwilligung kannst du die Berechtigungen im Host-Terminal erneut erteilen.": "Falls Microsoft einen Zugriff trotz gültigem Zugang verweigert, prüfe zuerst Policy und Kontotyp. Bei entzogener Einwilligung kannst du die Berechtigungen im Host-Terminal erneut erteilen.",
+    "Microsoft-Zugang erneut autorisieren": "Microsoft-Zugang erneut autorisieren",
+    "Diese Berechtigungen fehlen: {scopes}. Bis zur Erneuerung bleiben die betreffenden Aktionen gesperrt.": "Diese Berechtigungen fehlen: {scopes}. Bis zur Erneuerung bleiben die betreffenden Aktionen gesperrt.",
+    "Führe diesen Befehl selbst im OpenClaw-Host-Terminal als clawdbot aus. Melde dich mit demselben Microsoft-Konto an und bestätige die angezeigten Berechtigungen. Teile Code und Zugangsdaten nicht im Chat.": "Führe diesen Befehl selbst im OpenClaw-Host-Terminal als clawdbot aus. Melde dich mit demselben Microsoft-Konto an und bestätige die angezeigten Berechtigungen. Teile Code und Zugangsdaten nicht im Chat.",
+    "Berechtigungen erneut prüfen": "Berechtigungen erneut prüfen",
+    "Neue Microsoft-Berechtigungen ({scopes}) benötigen nach dem Speichern eine Reautorisierung. Bis dahin bleiben diese Aktionen gesperrt.": "Neue Microsoft-Berechtigungen ({scopes}) benötigen nach dem Speichern eine Reautorisierung. Bis dahin bleiben diese Aktionen gesperrt.",
+    "Neue Microsoft-Berechtigungen fehlen. Folge unten der Reautorisierung; der bestehende Zugang bleibt bis zum erfolgreichen Abschluss erhalten.": "Neue Microsoft-Berechtigungen fehlen. Folge unten der Reautorisierung; der bestehende Zugang bleibt bis zum erfolgreichen Abschluss erhalten.",
     "Gesperrt · kein Kalender freigegeben.": "Gesperrt · kein Kalender freigegeben.",
     "Eingeschränkt · nur Standardkalender": "Eingeschränkt · nur Standardkalender",
     "{selected} von {total} Kalendern freigegeben": "{selected} von {total} Kalendern freigegeben",
@@ -474,6 +490,14 @@ const catalogs: Record<string, Record<string, string>> = {
     "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut."
   },
   "es": {
+    "Microsoft-Berechtigungen erneuern": "Renovar los permisos de Microsoft",
+    "Falls Microsoft einen Zugriff trotz gültigem Zugang verweigert, prüfe zuerst Policy und Kontotyp. Bei entzogener Einwilligung kannst du die Berechtigungen im Host-Terminal erneut erteilen.": "Si Microsoft deniega el acceso pese a una credencial válida, comprueba primero la política y el tipo de cuenta. Si se revocó el consentimiento, puedes renovar los permisos en el terminal del host.",
+    "Microsoft-Zugang erneut autorisieren": "Volver a autorizar el acceso a Microsoft",
+    "Diese Berechtigungen fehlen: {scopes}. Bis zur Erneuerung bleiben die betreffenden Aktionen gesperrt.": "Faltan estos permisos: {scopes}. Las acciones afectadas permanecen bloqueadas hasta la nueva autorización.",
+    "Führe diesen Befehl selbst im OpenClaw-Host-Terminal als clawdbot aus. Melde dich mit demselben Microsoft-Konto an und bestätige die angezeigten Berechtigungen. Teile Code und Zugangsdaten nicht im Chat.": "Ejecuta este comando en el terminal del host OpenClaw como clawdbot. Inicia sesión con la misma cuenta de Microsoft y aprueba los permisos mostrados. No compartas el código ni las credenciales en el chat.",
+    "Berechtigungen erneut prüfen": "Comprobar permisos de nuevo",
+    "Neue Microsoft-Berechtigungen ({scopes}) benötigen nach dem Speichern eine Reautorisierung. Bis dahin bleiben diese Aktionen gesperrt.": "Los nuevos permisos de Microsoft ({scopes}) requieren una nueva autorización después de guardar. Estas acciones siguen bloqueadas hasta entonces.",
+    "Neue Microsoft-Berechtigungen fehlen. Folge unten der Reautorisierung; der bestehende Zugang bleibt bis zum erfolgreichen Abschluss erhalten.": "Faltan nuevos permisos de Microsoft. Sigue los pasos de autorización; la credencial existente se conserva hasta completarlos correctamente.",
     "Gesperrt · kein Kalender freigegeben.": "Bloqueado · ningún calendario autorizado.",
     "Eingeschränkt · nur Standardkalender": "Limitado · solo el calendario predeterminado",
     "{selected} von {total} Kalendern freigegeben": "{selected} de {total} calendarios autorizados",
@@ -661,6 +685,14 @@ const catalogs: Record<string, Record<string, string>> = {
     "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Se interrumpió la comprobación del estado. Comprueba la conexión; esta página volverá a intentarlo."
   },
   "ar": {
+    "Microsoft-Berechtigungen erneuern": "تجديد أذونات Microsoft",
+    "Falls Microsoft einen Zugriff trotz gültigem Zugang verweigert, prüfe zuerst Policy und Kontotyp. Bei entzogener Einwilligung kannst du die Berechtigungen im Host-Terminal erneut erteilen.": "إذا رفضت Microsoft الوصول رغم صلاحية بيانات الاعتماد، فتحقق أولاً من السياسة ونوع الحساب. إذا سُحبت الموافقة، يمكنك تجديد الأذونات في طرفية المضيف.",
+    "Microsoft-Zugang erneut autorisieren": "إعادة تفويض الوصول إلى Microsoft",
+    "Diese Berechtigungen fehlen: {scopes}. Bis zur Erneuerung bleiben die betreffenden Aktionen gesperrt.": "الأذونات التالية مفقودة: {scopes}. تبقى الإجراءات المعنية محظورة حتى إعادة التفويض.",
+    "Führe diesen Befehl selbst im OpenClaw-Host-Terminal als clawdbot aus. Melde dich mit demselben Microsoft-Konto an und bestätige die angezeigten Berechtigungen. Teile Code und Zugangsdaten nicht im Chat.": "شغّل هذا الأمر بنفسك في طرفية مضيف OpenClaw باسم clawdbot. سجّل الدخول بحساب Microsoft نفسه ووافق على الأذونات المعروضة. لا تشارك الرمز أو بيانات الاعتماد في الدردشة.",
+    "Berechtigungen erneut prüfen": "التحقق من الأذونات مجددًا",
+    "Neue Microsoft-Berechtigungen ({scopes}) benötigen nach dem Speichern eine Reautorisierung. Bis dahin bleiben diese Aktionen gesperrt.": "تتطلب أذونات Microsoft الجديدة ({scopes}) إعادة تفويض بعد الحفظ. تبقى هذه الإجراءات محظورة حتى ذلك الحين.",
+    "Neue Microsoft-Berechtigungen fehlen. Folge unten der Reautorisierung; der bestehende Zugang bleibt bis zum erfolgreichen Abschluss erhalten.": "أذونات Microsoft الجديدة مفقودة. اتبع خطوات إعادة التفويض أدناه؛ ستبقى بيانات الاعتماد الحالية حتى النجاح.",
     "Gesperrt · kein Kalender freigegeben.": "محظور · لا توجد تقاويم مصرح بها.",
     "Eingeschränkt · nur Standardkalender": "مقيّد · التقويم الافتراضي فقط",
     "{selected} von {total} Kalendern freigegeben": "تم السماح بـ {selected} من أصل {total} تقاويم",

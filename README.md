@@ -57,7 +57,7 @@ Wait until the Control UI confirms that the Gateway has applied your rules. Run 
 
 This simpler shared-credential model has an explicit tradeoff: compromise of the credential, vault key, or a plugin bypass can expose the union of Microsoft delegated scopes granted to that credential. The policy and write-approval gates constrain normal plugin behavior; they are not provider-side credential isolation.
 
-Contacts access is optional and denied for existing policies until an administrator grants it. Read requires delegated `Contacts.Read`; create, update, and delete require `Contacts.ReadWrite`. Existing vault credentials do not gain newly requested scopes automatically, and the current sign-in wizard will not overwrite a nonempty vault. Existing installations therefore need a separately reviewed reauthorization procedure before Contacts grants can be used; this update does not replace an active credential.
+Contacts access is optional and denied for existing policies until an administrator grants it. Read requires delegated `Contacts.Read`; create, update, and delete require `Contacts.ReadWrite`. Existing vault credentials do not gain newly requested scopes automatically. After saving and applying a new grant, the Control UI shows missing scopes and guides the operator through `credentials reauthorize` in the host terminal. Affected operations fail closed until reauthorization succeeds; the old vault remains in place until the new grant is verified and atomically published.
 
 See [architecture](docs/ARCHITECTURE.md), [OAuth access matrix](docs/OAUTH_ACCESS_MATRIX.md), [vault design](docs/CREDENTIAL_VAULT_DESIGN.md), and [support](docs/SUPPORT.md).
 
@@ -233,7 +233,18 @@ openclaw microsoft-graph credentials status
 openclaw microsoft-graph credentials sign-in --client-id <approved-app-id> --tenant <tenant-id>
 ```
 
-Tenant consent and conditional-access rules remain authoritative. Sign-in will not overwrite an existing or quarantined vault; use a separately reviewed recovery or reauthorization procedure in that case. `status` requires `operator.read`; sign-in, cancellation, recovery, and optional `restore-pass` require `operator.admin`. Gateway RPC parameters and responses have closed validated shapes and do not include OAuth tokens, the vault key, `pass` contents, or raw errors.
+Tenant consent and conditional-access rules remain authoritative. Initial sign-in will not overwrite an existing or quarantined vault. For an existing valid vault needing additional policy scopes, save and apply the policy, then run the guided terminal command as the OpenClaw host user:
+
+```bash
+openclaw microsoft-graph credentials reauthorize --client-id <same-approved-app-id> --tenant <same-tenant-id>
+openclaw microsoft-graph credentials status
+```
+
+Use the **same Microsoft account** on Microsoft's device page. The command requests all scopes required by the active policy, checks Microsoft's returned scopes, and replaces the existing credential only after successful consent. It refuses a different app/tenant, quarantined vault, stale vault binding, or changed policy; an unsuccessful sign-in leaves the original credential in place. The existing vault does not record an independently verified account identity, so the operator must confirm the account shown by Microsoft. The terminal keeps the one-time code and verification URL out of chat. `status` requires `operator.read`; sign-in, reauthorization, cancellation, recovery, and optional `restore-pass` require `operator.admin`. Gateway RPC parameters and responses have closed validated shapes and do not include OAuth tokens, the vault key, `pass` contents, or raw errors.
+
+`missingScopes` compares the active policy with scopes stored when Microsoft issued the credential; it does not call Microsoft to detect a later consent revocation. If Microsoft subsequently denies an operation despite `missingScopes: []`, check the policy, account, and tenant first. The Control UI also keeps a collapsible renewal command available for that case.
+
+Agent-facing tool errors distinguish missing stored consent, blocked credential refresh, and Microsoft HTTP 401/403. They point to credential status and the guided operator flow; a provider denial alone is not treated as proof that reauthorization is required.
 
 ### Validate the setup
 
@@ -247,7 +258,7 @@ openclaw secrets audit --check
 openclaw microsoft-graph credentials status
 ```
 
-Expected credential status is `result: "valid"` with secret-free metadata. Then, from an agent explicitly granted in policy, make one read-only request against an allowlisted resource and confirm that an ungranted agent or resource is denied. Do not start validation with a write or destructive action. `plugins list` or a cold manifest inspection alone does not prove that the running Gateway registered the plugin.
+Expected credential status is `result: "valid"` with `missingScopes: []` and secret-free metadata. Then, from an agent explicitly granted in policy, make one read-only request against an allowlisted resource and confirm that an ungranted agent or resource is denied. Do not start validation with a write or destructive action. `plugins list` or a cold manifest inspection alone does not prove that the running Gateway registered the plugin.
 
 ### Understand approvals
 
@@ -278,11 +289,12 @@ OneDrive mutation authorization occurs before a warning approval request or appr
 `openclaw microsoft-graph credentials status` returns one of:
 
 - `missing`: no vault exists; use the browser sign-in above.
+- `valid` with nonempty `missingScopes`: the saved policy requires consent absent from the stored credential; use the terminal reauthorization command above. Do not delete the vault.
 - `valid`: the vault decrypts and has no authenticated refresh marker.
 - `quarantined`: a dispatched refresh has an uncertain outcome. Normal exchanges remain blocked.
 - `unavailable`: the key, record, permissions, ownership, filesystem, or authenticated envelope could not be validated. Stop and investigate; do not overwrite the vault.
 
-For `quarantined`, reauthorization is the safest recovery whenever Microsoft may have rotated the refresh token. Only if an operator has independently established that the current vault credential remains usable should they copy the current **sanitized binding** from `status` and run:
+For `quarantined`, the ordinary `reauthorize` command refuses to replace the vault. Arrange a separately reviewed recovery or replacement whenever Microsoft may have rotated the refresh token. Only if an operator has independently established that the current vault credential remains usable should they copy the current **sanitized binding** from `status` and run:
 
 ```text
 openclaw microsoft-graph credentials recover-refresh --expected-binding <binding> --dry-run
@@ -341,7 +353,7 @@ Administrators can enable **Settings → Labs → Custom plugin UI**, then open 
 
 The page validates the policy and submits a revision-checked, policy-only `config.patch`. A supported single-file object-key `$include` is written through by OpenClaw; an unsupported include layout or concurrent change fails closed. The page immediately locks duplicate writes and re-reads the effective policy independently of the save response. A timeout or disconnect does not imply that saving failed: unknown outcomes are reconciled without resaving. Drafts and operation state remain only in authenticated host memory across page remounts (not browser storage). An administrator-only read-only status method compares the running Microsoft Graph generation’s canonical policy hash with the saved target; unrelated Gateway changes do not make Graph rules appear inactive. Pending application is checked automatically for up to 12 checks, with bounded read timeouts and a manual recheck available. After a persisted save, the page can request a targeted, drain-aware plugin reload; **Apply saved rules** retries application without rewriting policy or interrupting admitted work. A disconnect during application may require another application attempt. Concurrent policy changes fail closed and require loading the current state. Confirmed Microsoft account connection remains visible during pending activation. Do not treat “saved” as proof that the Gateway is using the new rules.
 
-When new delegated scopes would be required, the page blocks saving while the plugin is enabled until Microsoft consent is verified through the separate operator workflow. The browser sign-in is a guided Microsoft device-code flow; only the one-time code is displayed. Tokens and the vault key stay on the Gateway. Recovery remains in the interactive CLI. Generic plugin settings and CLI paths remain available when Custom plugin UI is disabled.
+When new delegated scopes are required, the page warns before saving. After the policy is applied, it displays the missing scopes and a terminal reauthorization command; affected tools remain denied until the new grant is verified. The browser sign-in remains create-only; reauthorization runs in the interactive host terminal. Tokens and the vault key stay on the Gateway. Generic plugin settings and CLI paths remain available when Custom plugin UI is disabled.
 
 ## Development
 

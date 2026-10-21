@@ -34,6 +34,7 @@ export const CREDENTIAL_GATEWAY_METHODS = {
   restore: "microsoft-graph.credentials.restore-pass",
   recover: "microsoft-graph.credentials.recover-refresh",
   deviceStart: "microsoft-graph.credentials.device-start",
+  deviceReauthorizeStart: "microsoft-graph.credentials.reauthorize-start",
   deviceStatus: "microsoft-graph.credentials.device-status",
   deviceCancel: "microsoft-graph.credentials.device-cancel",
 } as const;
@@ -103,11 +104,20 @@ export function requiredPolicyScopes(policy: GraphPolicy): string[] {
     todo: { read: "Tasks.Read", create: "Tasks.ReadWrite", update: "Tasks.ReadWrite", delete: "Tasks.ReadWrite" },
   };
   for (const service of ["calendar", "mail", "contacts", "todo"] as const) for (const grant of Object.values(policy.services[service]?.agents ?? {})) for (const operation of grant.operations) required.add(mappings[service][operation]);
+  for (const workload of ["Files", "Calendars", "Mail", "Contacts", "Tasks"]) {
+    if (required.has(`${workload}.ReadWrite`)) required.delete(`${workload}.Read`);
+  }
   return [...required].sort();
 }
 
 export async function credentialVaultStatus(config: CliConfig, stateDir: string) {
-  return { policyVersion: policyFor(config).version, credential: await inspectVaultCredential(stateDir, typeof config.credentialVaultKey === "string" ? config.credentialVaultKey : undefined) };
+  const policy = policyFor(config);
+  const credential = await inspectVaultCredential(stateDir, typeof config.credentialVaultKey === "string" ? config.credentialVaultKey : undefined);
+  if (credential.result !== "valid" && credential.result !== "quarantined") return { policyVersion: policy.version, credential };
+  const stored = await readVaultCredential(stateDir, keyFor(config));
+  if (vaultRecordBinding(stored).binding !== credential.binding) throw new Error("credential_vault_conflict");
+  const missingScopes = requiredPolicyScopes(policy).filter((scope) => { try { selectScope(stored.credential, [scope]); return false; } catch { return true; } });
+  return { policyVersion: policy.version, credential: { ...credential, missingScopes } };
 }
 
 async function writePassCredential(secretRef: string, credential: VaultCredential): Promise<void> {
@@ -207,6 +217,11 @@ export function registerCredentialGatewayMethods(api: GatewayApi, config: CliCon
     if (typeof params.clientId !== "string" || typeof params.tenant !== "string") throw new Error("invalid_rpc_parameters");
     return device.start(params.clientId, params.tenant);
   }, deviceStartResult), { scope: "operator.admin" });
+  api.registerGatewayMethod(CREDENTIAL_GATEWAY_METHODS.deviceReauthorizeStart, gatewayHandler(async (input) => {
+    const params = exactParams(input, ["clientId", "tenant"]);
+    if (typeof params.clientId !== "string" || typeof params.tenant !== "string") throw new Error("invalid_rpc_parameters");
+    return device.reauthorize(params.clientId, params.tenant);
+  }, deviceStartResult), { scope: "operator.admin" });
   api.registerGatewayMethod(CREDENTIAL_GATEWAY_METHODS.deviceStatus, gatewayHandler(async (input) => {
     const params = exactParams(input, ["sessionId"]);
     if (typeof params.sessionId !== "string") throw new Error("invalid_rpc_parameters");
@@ -234,10 +249,13 @@ function validateMetadata(value: Record<string, unknown>): void {
 function credentialStatusResult(value: unknown): unknown {
   const status = exactResult(value, ["policyVersion", "credential"]);
   if (status.policyVersion !== 2) throw new Error("internal_error");
-  const credential = exactResult(status.credential, ["result"], ["generation", "keyId", "digest", "binding"]);
+  const credential = exactResult(status.credential, ["result"], ["generation", "keyId", "digest", "binding", "missingScopes"]);
   if (credential.result === "missing" || credential.result === "unavailable") {
     if (Object.keys(credential).length !== 1) throw new Error("internal_error");
-  } else if (credential.result === "valid" || credential.result === "quarantined") validateMetadata(credential);
+  } else if (credential.result === "valid" || credential.result === "quarantined") {
+    validateMetadata(credential);
+    if (!Array.isArray(credential.missingScopes) || credential.missingScopes.some((scope) => typeof scope !== "string" || !/^[A-Za-z][A-Za-z0-9._]*$/.test(scope))) throw new Error("internal_error");
+  }
   else throw new Error("internal_error");
   return value;
 }
@@ -345,6 +363,18 @@ export function registerCredentialCli(api: CliApi, dependencies: CliDependencies
         await new Promise<void>((resolve) => setTimeout(resolve, 5000));
         const status = await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.deviceStatus, { sessionId: started.sessionId }, deviceStatusResult, invocation, spawnProcess) as { state: string; error?: string; scopes?: string[] };
         if (status.state === "created") { printSanitized({ result: "created", scopes: status.scopes }); return; }
+        if (status.state === "failed") throw new Error(status.error ?? "device_authorization_failed");
+      }
+      throw new Error("device_authorization_expired");
+    });
+    credentials.command("reauthorize").description("Renew the existing Microsoft grant for all current policy scopes without deleting the vault").requiredOption("--client-id <app-id>").requiredOption("--tenant <tenant-id>").action(async (options: { clientId: string; tenant: string }) => {
+      if (!process.stdin.isTTY || !process.stderr.isTTY) throw new Error("interactive_confirmation_required");
+      const started = await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.deviceReauthorizeStart, { clientId: options.clientId, tenant: options.tenant }, deviceStartResult, invocation, spawnProcess) as { sessionId: string; userCode: string; verificationUri: string; expiresAt: string; scopes: string[] };
+      process.stderr.write(`Requested scopes: ${started.scopes.join(" ")}\nUse the SAME Microsoft account as the existing connection. Open ${started.verificationUri} and enter code ${started.userCode}.\n`);
+      while (Date.now() < Date.parse(started.expiresAt) + 5000) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 5000));
+        const status = await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.deviceStatus, { sessionId: started.sessionId }, deviceStatusResult, invocation, spawnProcess) as { state: string; error?: string; scopes?: string[] };
+        if (status.state === "created") { printSanitized({ result: "reauthorized", scopes: status.scopes }); return; }
         if (status.state === "failed") throw new Error(status.error ?? "device_authorization_failed");
       }
       throw new Error("device_authorization_expired");

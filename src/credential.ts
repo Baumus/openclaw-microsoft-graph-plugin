@@ -137,9 +137,12 @@ export function selectScope(credential: Credential, allowed: string[]): string {
     "contacts.read": ["contacts.readwrite"],
     "tasks.read": ["tasks.readwrite"],
   };
-  const selected = allowed.find((scope) => present.has(scope.toLowerCase()) || (impliedBy[scope.toLowerCase()] ?? []).some((superset) => present.has(superset)));
-  if (!selected) throw new Error("credential_scope_missing");
-  return selected;
+  for (const scope of allowed) {
+    if (present.has(scope.toLowerCase())) return scope;
+    const superset = (impliedBy[scope.toLowerCase()] ?? []).find((candidate) => present.has(candidate));
+    if (superset) return credential.scopes.find((candidate) => candidate.toLowerCase() === superset)!;
+  }
+  throw new Error("credential_scope_missing");
 }
 
 async function boundedJson(response: Response, maximum = 64 * 1024): Promise<Record<string, unknown>> {
@@ -236,16 +239,16 @@ async function performTokenExchange(credential: Credential, requestedScopes: str
 
 export async function exchangeRefreshTokenDetailed(credential: Credential, requestedScopes: string[], signal?: AbortSignal, fetchFn: typeof fetch = fetch, options: TokenExchangeOptions = {}): Promise<TokenExchangeResult> {
   if (!requestedScopes.length) throw new Error("credential_scope_missing");
-  for (const scope of requestedScopes) selectScope(credential, [scope]);
+  const exchangeScopes = [...new Set(requestedScopes.map((scope) => selectScope(credential, [scope])))];
   signal?.throwIfAborted();
   const requestTimeoutMs = options.requestTimeoutMs ?? 10_000;
   if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 30_000) throw new Error("invalid_request_timeout");
-  const cacheKey = accessTokenCacheKey(credential, requestedScopes, options.transactionalCacheIdentity);
+  const cacheKey = accessTokenCacheKey(credential, exchangeScopes, options.transactionalCacheIdentity);
   const cached = cachedAccessToken(cacheKey);
   if (cached) return { accessToken: cached.token, expiresAt: cached.expiresAt };
   if (options.transactionalCacheIdentity) {
     try {
-      return await performTokenExchange(credential, requestedScopes, signal, fetchFn, requestTimeoutMs, options.quarantineOnTransportFailure === true);
+      return await performTokenExchange(credential, exchangeScopes, signal, fetchFn, requestTimeoutMs, options.quarantineOnTransportFailure === true);
     } catch (error) {
       if (error instanceof Error && ["authentication_failed", "credential_reauthorization_required", "credential_refresh_outcome_uncertain"].includes(error.message)) throw error;
       if (signal?.aborted) throw signal.reason;
@@ -257,7 +260,7 @@ export async function exchangeRefreshTokenDetailed(credential: Credential, reque
   const controller = new AbortController();
   const refresh = { controller, waiters: 0, settled: false } as AccessTokenRefresh;
   refresh.promise = (async () => {
-    const result = await performTokenExchange(credential, requestedScopes, controller.signal, fetchFn, requestTimeoutMs, false);
+    const result = await performTokenExchange(credential, exchangeScopes, controller.signal, fetchFn, requestTimeoutMs, false);
     if (result.expiresAt !== undefined) cacheAccessToken(cacheKey, result.accessToken, result.expiresAt);
     return result;
   })().finally(() => {

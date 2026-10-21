@@ -5,9 +5,11 @@ export function isConnectionEstablished(status: {
   savedGrantPresent: boolean;
   applicationStatus: "applied" | "pending" | "unknown";
   credentialResult?: "missing" | "valid" | "quarantined" | "unavailable";
+  missingScopes?: readonly string[];
   statusError: boolean;
 }): boolean {
   return status.secretRefConfigured
     && status.savedGrantPresent
-    && status.credentialResult === "valid";
+    && status.credentialResult === "valid"
+    && (status.missingScopes?.length ?? 0) === 0;
 }

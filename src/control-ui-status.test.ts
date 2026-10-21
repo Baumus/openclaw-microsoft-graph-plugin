@@ -12,6 +12,7 @@ const complete = {
 describe("Control UI connection status", () => {
   it("keeps confirmed account setup through pending policy activation without claiming a read", () => {
     expect(isConnectionEstablished(complete)).toBe(true);
+    expect(isConnectionEstablished({ ...complete, missingScopes: ["Contacts.ReadWrite"] })).toBe(false);
     expect(isConnectionEstablished({ ...complete, secretRefConfigured: false })).toBe(false);
     expect(isConnectionEstablished({ ...complete, savedGrantPresent: false })).toBe(false);
     expect(isConnectionEstablished({ ...complete, applicationStatus: "pending" })).toBe(true);
