@@ -1,5 +1,5 @@
 import { defineControlUiPlugin, type ControlUiHost } from "openclaw/plugin-sdk/control-ui";
-import "./control-ui.css";
+import styles from "./control-ui.css" with { type: "text" };
 import { localize, format, setLocale, isRtl } from "./control-ui-i18n.js";
 import { isMicrosoftDeviceVerificationUri } from "./device-verification.js";
 import { canonicalPolicy } from "./config-policy-identity.js";
@@ -879,12 +879,34 @@ class ConfigurationPage {
 
 }
 
+// Bundle the exact scoped stylesheet into the native entry: activation must not
+// wait for a second plugin asset request. Share it across overlapping lifetimes.
+let activeStyles: { node: HTMLStyleElement; users: number } | undefined;
+function retainStyles(): () => void {
+  if (!activeStyles) {
+    const node = document.createElement("style");
+    node.dataset.microsoftGraph = "styles";
+    node.textContent = styles;
+    document.head.append(node);
+    activeStyles = { node, users: 0 };
+  }
+  const retained = activeStyles;
+  retained.users++;
+  return () => { if (--retained.users === 0) { retained.node.remove(); activeStyles = undefined; } };
+}
+
 export default defineControlUiPlugin({ id, activate(host) {
   setLocale(host.locale);
   const pageId = "configure";
-  const disposers = [
-    host.ui.registerPage({ id: pageId, label: "Connect Microsoft 365 to OpenClaw", mount(container, context) { const view = new ConfigurationPage(container, context.host, context.signal); return { dispose: () => view.dispose() }; } }),
-    host.ui.registerNavigation({ id: "configure", label: "Connect Microsoft 365 to OpenClaw", page: { id: pageId }, icon: "settings", order: 80 }),
-  ];
-  return () => { for (const dispose of disposers.reverse()) dispose(); };
+  const disposers = [retainStyles()];
+  const dispose = () => {
+    let failure: unknown;
+    for (const stop of disposers.splice(0).reverse()) { try { stop(); } catch (error) { failure ??= error; } }
+    if (failure) throw failure;
+  };
+  try {
+    disposers.push(host.ui.registerPage({ id: pageId, label: "Connect Microsoft 365 to OpenClaw", mount(container, context) { const view = new ConfigurationPage(container, context.host, context.signal); return { dispose: () => view.dispose() }; } }));
+    disposers.push(host.ui.registerNavigation({ id: "configure", label: "Connect Microsoft 365 to OpenClaw", page: { id: pageId }, icon: "settings", order: 80 }));
+    return dispose;
+  } catch (error) { dispose(); throw error; }
 } });
