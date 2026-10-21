@@ -5,6 +5,7 @@ All notable changes to this project are documented here.
 ## 3.15.1 - Unreleased
 
 - Replace deprecated synchronous OpenClaw session-entry reads with awaited `getSessionEntryAsync` for session-bound Microsoft Graph approvals. Preserve fail-closed checks before approval, on approval resolution, and at tool execution. Require OpenClaw 2026.10.5 or newer for the awaited runtime API; no Microsoft permissions or policy changes.
+- Guide agents to use `reply_draft` when answering an identified email, use `reply_all_draft` only when all recipients are intended, and reserve `create_draft` for independent messages. Ask for clarification when the original email is missing or ambiguous instead of creating a standalone draft. No Graph behavior, permissions, or compatibility-floor changes.
 
 ## 3.15.0 - 2026-10-21
 
