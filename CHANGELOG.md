@@ -1,12 +1,12 @@
 # Changelog
 
-## Unreleased
+All notable changes to this project are documented here.
+
+## 3.16.1 - 2026-10-21
 
 - Guide existing-vault permission renewal entirely through the administrator Control UI, reusing authoritative app/tenant identifiers and retaining consent/binding/quarantine safeguards.
 - Preserve open disclosures, in-progress text, focus and caret during background UI renders; clarify German Entra identifier labels and sanitized conflict recovery.
-
-
-All notable changes to this project are documented here.
+- Ignore stale sign-in responses after cancellation, a new session, authority loss or unmount; omit browser-stored tenant attribution from renewal failure diagnostics. No Microsoft permission, policy, vault format or compatibility-floor change.
 
 ## 3.16.0 - 2026-10-21
 
