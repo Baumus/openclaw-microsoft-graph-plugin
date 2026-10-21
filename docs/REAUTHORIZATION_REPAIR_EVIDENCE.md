@@ -17,7 +17,7 @@ The UI calls `microsoft-graph.credentials.reauthorize-start` with `{}`; the Gate
 
 Renewal is guided entirely through the UI: explicit start, trusted Microsoft link, displayed code, consent on Microsoft's page, polling, cancellation and completion/failure. No CLI entry or manual identifier entry is needed for renewal. German setup help distinguishes Anwendungs-ID (Client-ID), Verzeichnis-ID (Mandant), and Objekt-ID, and points to the existing app and correct directory.
 
-## Terminal producer receipts (2026-10-21)
+## Initial candidate terminal receipts (2026-10-21)
 
 - `openclaw --version`: OpenClaw 2026.10.5 (1b58cb9).
 - `npm test`: **38 files / 575 tests passed**, final run 15:26:40 Europe/Berlin, 15.13 seconds, exit 0. Includes 10 happy-dom UI-flow tests, 9 device-code tests, 15 credential-CLI/RPC tests, 10 vault tests, and identifier/localization suites.
@@ -29,7 +29,7 @@ Renewal is guided entirely through the UI: explicit start, trusted Microsoft lin
 - `git diff --check`: exit 0.
 - Security-governance `secret-scan-lite.sh` on the bounded tracked-source diff: no obvious secrets, exit 0. Newly added files contain only pure identifier validation/tests and this sanitized evidence.
 
-Generated Control UI revision: `f67ca16981d8043fc9913239f269e02a2c35ed46bc87ef86f11a36435295fc06`. Build outputs follow repository convention and are ignored; the updated manifest is tracked.
+Initial candidate Control UI revision: `f67ca16981d8043fc9913239f269e02a2c35ed46bc87ef86f11a36435295fc06` (superseded by the review correction below). Build outputs follow repository convention and are ignored; the updated manifest is tracked.
 
 ## Fresh primary documentation
 
@@ -45,3 +45,19 @@ Checked 2026-10-21: [Microsoft app registration, German](https://learn.microsoft
 - New guidance has German and English entries; other locales use the existing English fallback where translations are not reviewed.
 - No real vault read/write, token access, live config or permission change, installation, reload, restart, publication, push, PR, or merge occurred. Rollback is to discard this candidate branch; no live state needs restoration.
 - Next approval scope, only after independent review: separately authorize any version/release preparation and any deployment/activation; real account consent remains a distinct operator action. Neither is authorized by these producer checks.
+
+## Independent-review correction: R-001 / R-002
+
+Reviewed candidate: `8090a7709d41496d75c9a3f2fdf9cf40022ada77`. Both findings supplied by the parent's independent source reviewer are confirmed in-scope defects; producer fixes await targeted independent reverification, not self-approval.
+
+- **R-001 (S2):** status/start/cancel requests now snapshot an auth operation epoch, and session-bound requests also snapshot the session ID. Cancellation immediately invalidates prior polling. Both success and rejection handlers, post-completion credential refresh, and final busy/render updates reject stale ownership. Authority loss invalidates outstanding requests and pauses timers; regained authority can resume the current session. Disposed/aborted views cannot accept a result. Polling does not run while start/cancel is busy.
+- **R-002 (S3):** renewal records its vault-derived mode. Copied failure diagnostics omit Organisation entirely for that mode, rather than attributing the failure to browser-stored tenant IDs. No vault identifiers were exposed or added to responses.
+- Changed files in this correction: `src/control-ui.ts`, `src/control-ui-flow.test.ts`, generated `openclaw.plugin.json`, and this evidence document. No backend, permission, vault format, binding, account or consent safeguard changed.
+- Deterministic UI regressions use distinct A/B session IDs and codes. Deferred A status returning failed, rejecting, or returning created cannot replace B, change credential status, stop B polling or redirect B cancellation. Separate start/status/cancel cases cover success and rejection after authority loss/new session and after unmount. Renewal failure/copy with stale browser tenant A proves no tenant/app/code attribution is copied.
+- Focused command `npm test -- src/control-ui-flow.test.ts src/control-ui-save.test.ts`: **33/33 passed**, exit 0 (20 flow tests, 13 save tests).
+- Final `npm test`: **585/585 tests, 38 files passed**, exit 0; 15:42:05 Europe/Berlin on 2026-10-21, 21.52 seconds. Replaces the initial 575-test receipt for the corrected candidate.
+- `npm run typecheck`: exit 0. `npm run plugin:build` reran typecheck/build, regenerated immutable UI metadata, exit 0. `plugin:build:check`: current, exit 0. `plugin:validate`: valid true/errors [], exit 0. ClawHub package validator: PASS, zero warnings/findings, exit 0.
+- Package allowlist initially caught superseded ignored UI build outputs from the prior candidate. Only those two obsolete generated files were removed before the final package recheck; no source or live state was deleted. Final `npm run package:check`: exact allowlist passed, exit 0. Correction-diff secret scan: no obvious secrets, exit 0; `git diff --check`: exit 0.
+- Corrected Control UI revision: `75cb753e0b7f52034a16c8e6c84415ec84bee82d2c0522a5bf4816cc28764edc`. Earlier UI revision/build receipt is superseded; unchanged backend/security evidence remains applicable.
+- Residual limitation: authority loss/unmount does not cancel Microsoft consent server-side; the UI intentionally does not synthesize privileged cancellation. On return, an explicit start can recover the Gateway's existing pending flow. Real provider/browser activation remains untested.
+- **READY FOR TARGETED REVERIFICATION:** parent to relay only R-001/R-002, the `8090a77..HEAD` fix diff and the above evidence to the same independent reviewer. Do not reopen unchanged implementation; independent reviewer owns the finding dispositions.

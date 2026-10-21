@@ -164,6 +164,8 @@ class ConfigurationPage {
   private authState: "idle" | "pending" | "created" | "failed" = "idle";
   private authError = "";
   private authBusy = false;
+  private authEpoch = 0;
+  private authRenewal = false;
   private readonly disclosureState = new Map<string, boolean>();
   private readonly unsubscribe: () => void;
   constructor(private container: HTMLElement, private host: ControlUiHost, private signal: AbortSignal) {
@@ -176,7 +178,13 @@ class ConfigurationPage {
     window.addEventListener("beforeunload", this.warnBeforeUnload);
     const stored = savedAppIds();
     if (stored) { this.authClientId = stored.clientId; this.authTenant = stored.tenant; }
-    this.unsubscribe = host.subscribe(() => { setLocale(host.locale); if (this.authorized) void this.checkForUpdate(); if (!this.snapshot && !this.busy && this.authorized) void this.load();
+    this.unsubscribe = host.subscribe(() => {
+      if (!this.authorized) {
+        this.authEpoch++; this.authBusy = false;
+        if (this.authTimer) clearTimeout(this.authTimer);
+        this.authTimer = undefined;
+      } else this.scheduleAuthCheck();
+      setLocale(host.locale); if (this.authorized) void this.checkForUpdate(); if (!this.snapshot && !this.busy && this.authorized) void this.load();
       else { this.render(); if (this.authorized && this.snapshot && !this.busy && !this.statusInFlight) void this.checkApplication(); } });
     void this.load();
     void this.checkForUpdate();
@@ -455,11 +463,11 @@ class ConfigurationPage {
     if (!reply.ok) throw new Error(reply.error);
     return reply.value;
   }
-  private async refreshCredential() {
+  private async refreshCredential(isCurrent: () => boolean = () => true) {
     try {
       const status = await this.credentialCall<CredentialStatus>("microsoft-graph.credentials.status", {});
-      if (!this.disposed && !this.signal.aborted) this.credential = status.credential;
-    } catch { if (!this.disposed && !this.signal.aborted) this.credential = { result: "unavailable" }; }
+      if (!this.disposed && !this.signal.aborted && this.authorized && isCurrent()) this.credential = status.credential;
+    } catch { if (!this.disposed && !this.signal.aborted && this.authorized && isCurrent()) this.credential = { result: "unavailable" }; }
   }
   private signInError(code: string): string {
     const messages: Record<string, string> = {
@@ -480,43 +488,67 @@ class ConfigurationPage {
     };
     return messages[code] ?? "Die Anmeldung konnte nicht abgeschlossen werden. Prüfe App-ID, Tenant und Microsoft-Einwilligung; versuche es erneut.";
   }
+  private authCurrent(epoch: number, sessionId?: string): boolean {
+    return !this.disposed && !this.signal.aborted && this.authorized && epoch === this.authEpoch
+      && (sessionId === undefined || this.device?.sessionId === sessionId);
+  }
   private scheduleAuthCheck() {
-    if (this.disposed || this.signal.aborted || this.authState !== "pending" || !this.device || this.authTimer) return;
+    if (!this.authCurrent(this.authEpoch) || this.authBusy || this.authState !== "pending" || !this.device || this.authTimer) return;
     this.authTimer = setTimeout(() => { this.authTimer = undefined; void this.checkAuth(); }, 4000);
   }
   private async checkAuth() {
-    if (!this.device || this.authState !== "pending" || this.disposed || this.signal.aborted) return;
+    if (!this.device || this.authState !== "pending" || this.authBusy || !this.authCurrent(this.authEpoch)) return;
+    const epoch = this.authEpoch, device = this.device;
+    const current = () => this.authCurrent(epoch, device.sessionId);
     try {
-      const result = await this.credentialCall<DeviceStatus>("microsoft-graph.credentials.device-status", { sessionId: this.device.sessionId });
-      if (this.disposed || this.signal.aborted || this.authState !== "pending") return;
+      const result = await this.credentialCall<DeviceStatus>("microsoft-graph.credentials.device-status", { sessionId: device.sessionId });
+      if (!current() || this.authState !== "pending") return;
       this.authError = "";
-      if (result.state === "created") { this.authState = "created"; this.authError = ""; await this.refreshCredential(); }
+      if (result.state === "created") { this.authState = "created"; this.authError = ""; await this.refreshCredential(current); }
       else if (result.state === "failed") { this.authState = "failed"; this.authFailureCode = result.error ?? ""; this.authFailureAt = new Date().toISOString(); this.authError = this.signInError(this.authFailureCode); }
-      else if (Date.now() >= Date.parse(this.device.expiresAt)) { this.authState = "failed"; this.authFailureCode = "device_authorization_expired"; this.authFailureAt = new Date().toISOString(); this.authError = this.signInError(this.authFailureCode); }
+      else if (Date.now() >= Date.parse(device.expiresAt)) { this.authState = "failed"; this.authFailureCode = "device_authorization_expired"; this.authFailureAt = new Date().toISOString(); this.authError = this.signInError(this.authFailureCode); }
       else this.scheduleAuthCheck();
-    } catch { this.authError = "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut."; if (Date.now() >= Date.parse(this.device.expiresAt)) { this.authState = "failed"; this.authFailureCode = "device_authorization_expired"; this.authFailureAt = new Date().toISOString(); this.authError = this.signInError(this.authFailureCode); } else this.scheduleAuthCheck(); }
-    this.render();
+    } catch {
+      if (!current() || this.authState !== "pending") return;
+      this.authError = "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.";
+      if (Date.now() >= Date.parse(device.expiresAt)) { this.authState = "failed"; this.authFailureCode = "device_authorization_expired"; this.authFailureAt = new Date().toISOString(); this.authError = this.signInError(this.authFailureCode); } else this.scheduleAuthCheck();
+    }
+    if (current()) this.render();
   }
   private async startAuth() {
-    if (this.authBusy || this.authState === "pending" || !["missing", "valid"].includes(this.credential?.result ?? "") || !this.signInReady) return;
+    if (!this.authorized || this.authBusy || this.authState === "pending" || !["missing", "valid"].includes(this.credential?.result ?? "") || !this.signInReady) return;
     const renewal = this.credential?.result === "valid";
     if (!renewal && (!validClientId(this.authClientId.trim()) || !validTenant(this.authTenant.trim()))) { this.authError = "Bitte eine gültige Microsoft App-ID und Tenant-ID oder -Domain eingeben."; this.render(); return; }
+    const epoch = ++this.authEpoch;
+    const current = () => this.authCurrent(epoch);
+    this.authRenewal = renewal;
     this.authBusy = true; this.authError = ""; this.render();
     try {
       const started = await this.credentialCall<DeviceStart>(renewal ? "microsoft-graph.credentials.reauthorize-start" : "microsoft-graph.credentials.device-start", renewal ? {} : { clientId: this.authClientId.trim(), tenant: this.authTenant.trim() });
-      if (this.disposed || this.signal.aborted) return;
+      if (!current()) return;
       if (!isMicrosoftDeviceVerificationUri(started.verificationUri)) throw new Error("device_authorization_failed");
       if (!renewal) saveAppIds(this.authClientId.trim(), this.authTenant.trim());
       this.device = started; this.authState = "pending"; this.authFailureCode = ""; this.scheduleAuthCheck();
-    } catch (error) { this.authState = "failed"; this.authFailureCode = error instanceof Error ? error.message : ""; this.authFailureAt = new Date().toISOString(); this.authError = this.signInError(this.authFailureCode); }
-    finally { this.authBusy = false; this.render(); }
+    } catch (error) {
+      if (!current()) return;
+      this.authState = "failed"; this.authFailureCode = error instanceof Error ? error.message : ""; this.authFailureAt = new Date().toISOString(); this.authError = this.signInError(this.authFailureCode);
+    } finally { if (current()) { this.authBusy = false; this.scheduleAuthCheck(); this.render(); } }
   }
   private async cancelAuth() {
-    if (!this.device || this.authState !== "pending") return;
+    if (!this.authorized || this.authBusy || !this.device || this.authState !== "pending") return;
+    // Cancel supersedes any status request already in flight.
+    const epoch = ++this.authEpoch, device = this.device;
+    const current = () => this.authCurrent(epoch, device.sessionId);
+    if (this.authTimer) clearTimeout(this.authTimer);
+    this.authTimer = undefined;
     this.authBusy = true; this.render();
-    try { const result = await this.credentialCall<DeviceStatus>("microsoft-graph.credentials.device-cancel", { sessionId: this.device.sessionId }); if (result.state === "created") { this.authState = "created"; this.authError = ""; await this.refreshCredential(); } else { this.authState = "failed"; this.authFailureCode = result.error ?? "device_authorization_cancelled"; this.authFailureAt = new Date().toISOString(); this.authError = this.signInError(this.authFailureCode); } }
-    catch { this.authError = this.signInError(""); }
-    finally { this.authBusy = false; if (this.authTimer) clearTimeout(this.authTimer); this.authTimer = undefined; if (this.authState === "pending") this.scheduleAuthCheck(); this.render(); }
+    try {
+      const result = await this.credentialCall<DeviceStatus>("microsoft-graph.credentials.device-cancel", { sessionId: device.sessionId });
+      if (!current()) return;
+      if (result.state === "created") { this.authState = "created"; this.authError = ""; await this.refreshCredential(current); }
+      else { this.authState = "failed"; this.authFailureCode = result.error ?? "device_authorization_cancelled"; this.authFailureAt = new Date().toISOString(); this.authError = this.signInError(this.authFailureCode); }
+    } catch { if (current()) this.authError = this.signInError(""); }
+    finally { if (current()) { this.authBusy = false; this.scheduleAuthCheck(); this.render(); } }
   }
   private renderSignIn(main: HTMLElement) {
     if (this.credential?.result === "valid" && this.authState !== "pending" && (this.authState !== "failed" || this.authFailureCode === "device_authorization_cancelled")) {
@@ -557,7 +589,7 @@ class ConfigurationPage {
       const logLink = el("a", "", "Anmeldeprotokolle öffnen"); logLink.href = "https://entra.microsoft.com/#view/Microsoft_AAD_IAM/SignInLogsBlade"; logLink.target = "_blank"; logLink.rel = "noopener noreferrer";
       append(details, el("p", "mg-hint", "Einwilligung, Kontotyp und Richtlinie prüfen."), logLink); append(card, details);
       const copy = this.action("Fehlerangaben für Admin kopieren", () => {
-        const info = [`Microsoft-Anmeldung: nicht abgeschlossen`, `Zeitpunkt (UTC): ${this.authFailureAt || new Date().toISOString()}`, `Fehlercode: ${this.authFailureCode || "nicht verfügbar"}`, `Organisation: ${this.authTenant || "nicht angegeben"}`].join("\n");
+        const info = [`Microsoft-Anmeldung: nicht abgeschlossen`, `Zeitpunkt (UTC): ${this.authFailureAt || new Date().toISOString()}`, `Fehlercode: ${this.authFailureCode || "nicht verfügbar"}`, ...(this.authRenewal ? [] : [`Organisation: ${this.authTenant || "nicht angegeben"}`])].join("\n");
         if (!navigator.clipboard?.writeText) { this.authError = "Kopieren nicht möglich. Teile Zeitpunkt und Fehlercode manuell."; this.render(); return; }
         void navigator.clipboard.writeText(info).catch(() => { this.authError = "Kopieren nicht möglich. Teile Zeitpunkt und Fehlercode manuell."; this.render(); });
       }); append(card, copy);

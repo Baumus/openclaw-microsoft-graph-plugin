@@ -37,8 +37,137 @@ function clickByText(container: HTMLElement, text: string) {
   const element = [...container.querySelectorAll("button")].find(item => item.textContent === text);
   expect(element, `Button ${text}`).toBeTruthy(); element!.click();
 }
+function deferredReply() {
+  let resolve!: (value: unknown) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<unknown>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+function renewalView() {
+  const view = mount({ clientId, tenant });
+  view.responses["microsoft-graph.credentials.status"] = { ok: true, value: { policyVersion: 2, credential: { result: "valid", missingScopes: ["Mail.Read"] } } };
+  view.responses["microsoft-graph.credentials.reauthorize-start"] = view.responses["microsoft-graph.credentials.device-start"];
+  view.responses["microsoft-graph.credentials.device-cancel"] = { ok: true, value: { state: "failed", error: "device_authorization_cancelled" } };
+  return view;
+}
+const secondSession = {
+  ok: true, value: { sessionId: "22222222-2222-2222-2222-222222222222", userCode: "JKLM-NOPQ", verificationUri: "https://microsoft.com/devicelogin", expiresAt: new Date(Date.now() + 600_000).toISOString(), scopes: ["Mail.Read"] },
+};
 describe("guided Microsoft sign-in", () => {
   beforeEach(() => { localStorage.clear(); });
+  it.each(["failed", "rejected", "created"])("R-001 ignores delayed A status (%s) after cancellation and B start", async outcome => {
+    vi.useFakeTimers();
+    const view = renewalView();
+    try {
+      await view.settle();
+      clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
+      const old = deferredReply();
+      view.responses["microsoft-graph.credentials.device-status"] = old.promise;
+      await vi.advanceTimersByTimeAsync(4000); await view.settle();
+      expect(view.calls.at(-1)).toMatchObject({ method: "microsoft-graph.credentials.device-status", params: { sessionId: "11111111-1111-1111-1111-111111111111" } });
+      clickByText(view.container, "Anmeldung abbrechen"); await view.settle();
+      view.responses["microsoft-graph.credentials.reauthorize-start"] = secondSession;
+      clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
+      const credentialReads = view.calls.filter(call => call.method === "microsoft-graph.credentials.status").length;
+      if (outcome === "rejected") old.reject(new Error("synthetic delayed disconnect"));
+      else old.resolve({ ok: true, value: outcome === "created" ? { state: "created", scopes: ["Mail.Read"] } : { state: "failed", error: "device_authorization_declined" } });
+      await view.settle();
+      expect(view.container.textContent).toContain("JKLM-NOPQ");
+      expect(view.container.textContent).not.toContain("ABCD-EFGH");
+      expect(view.container.textContent).not.toContain("Statusprüfung unterbrochen");
+      expect(view.container.textContent).not.toContain("Anmeldung nicht abgeschlossen");
+      expect(view.calls.filter(call => call.method === "microsoft-graph.credentials.status")).toHaveLength(credentialReads);
+      view.responses["microsoft-graph.credentials.device-status"] = { ok: true, value: { state: "pending" } };
+      await vi.advanceTimersByTimeAsync(4000); await view.settle();
+      expect(view.calls.at(-1)).toMatchObject({ method: "microsoft-graph.credentials.device-status", params: { sessionId: secondSession.value.sessionId } });
+      expect(view.container.textContent).toContain("JKLM-NOPQ");
+      clickByText(view.container, "Anmeldung abbrechen"); await view.settle();
+      expect(view.calls.at(-1)).toMatchObject({ method: "microsoft-graph.credentials.device-cancel", params: { sessionId: secondSession.value.sessionId } });
+    } finally { view.dispose(); vi.useRealTimers(); }
+  });
+  it.each(["start", "status", "cancel"])("R-001 ignores stale %s success/rejection across authority loss and a newer session", async phase => {
+    vi.useFakeTimers();
+    try {
+      for (const rejected of [false, true]) {
+        const view = renewalView(); await view.settle();
+        const old = deferredReply();
+        if (phase === "start") view.responses["microsoft-graph.credentials.reauthorize-start"] = old.promise;
+        clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
+        if (phase === "status") {
+          view.responses["microsoft-graph.credentials.device-status"] = old.promise;
+          await vi.advanceTimersByTimeAsync(4000); await view.settle();
+        }
+        if (phase === "cancel") {
+          view.responses["microsoft-graph.credentials.device-cancel"] = old.promise;
+          clickByText(view.container, "Anmeldung abbrechen"); await view.settle();
+        }
+        view.host.connection.canAdmin = false; view.notify(); await view.settle();
+        expect(view.container.textContent).not.toContain("ABCD-EFGH");
+        view.host.connection.canAdmin = true; view.notify(); await view.settle();
+        if (phase !== "start") {
+          view.responses["microsoft-graph.credentials.device-cancel"] = { ok: true, value: { state: "failed", error: "device_authorization_cancelled" } };
+          clickByText(view.container, "Anmeldung abbrechen"); await view.settle();
+        }
+        view.responses["microsoft-graph.credentials.reauthorize-start"] = secondSession;
+        clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
+        if (rejected) old.reject(new Error("synthetic stale response"));
+        else old.resolve(phase === "start" ? view.responses["microsoft-graph.credentials.device-start"] : { ok: true, value: { state: "failed", error: "device_authorization_declined" } });
+        await view.settle();
+        expect(view.container.textContent).toContain("JKLM-NOPQ");
+        expect(view.container.textContent).not.toContain("Anmeldung nicht abgeschlossen");
+        expect(view.container.textContent).not.toContain("Statusprüfung unterbrochen");
+        view.responses["microsoft-graph.credentials.device-status"] = { ok: true, value: { state: "pending" } };
+        await vi.advanceTimersByTimeAsync(4000); await view.settle();
+        expect(view.calls.at(-1)).toMatchObject({ method: "microsoft-graph.credentials.device-status", params: { sessionId: secondSession.value.sessionId } });
+        clickByText(view.container, "Anmeldung abbrechen"); await view.settle();
+        view.dispose();
+      }
+    } finally { vi.useRealTimers(); }
+  });
+  it.each(["start", "status", "cancel"])("R-001 ignores deferred %s results and errors after unmount", async phase => {
+    vi.useFakeTimers();
+    try {
+      for (const rejected of [false, true]) {
+        const view = renewalView(); await view.settle();
+        const old = deferredReply();
+        if (phase === "start") view.responses["microsoft-graph.credentials.reauthorize-start"] = old.promise;
+        clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
+        if (phase === "status") {
+          view.responses["microsoft-graph.credentials.device-status"] = old.promise;
+          await vi.advanceTimersByTimeAsync(4000); await view.settle();
+        }
+        if (phase === "cancel") {
+          view.responses["microsoft-graph.credentials.device-cancel"] = old.promise;
+          clickByText(view.container, "Anmeldung abbrechen"); await view.settle();
+        }
+        view.dispose();
+        const calls = view.calls.length;
+        if (rejected) old.reject(new Error("synthetic unmounted response"));
+        else old.resolve(phase === "start" ? secondSession : { ok: true, value: { state: "created", scopes: ["Mail.Read"] } });
+        await view.settle(); await vi.advanceTimersByTimeAsync(8000);
+        expect(view.container.childElementCount).toBe(0);
+        expect(view.calls).toHaveLength(calls);
+      }
+    } finally { vi.useRealTimers(); }
+  });
+  it("R-002 omits stale browser tenant attribution from vault-renewal diagnostics", async () => {
+    vi.useFakeTimers();
+    const view = renewalView();
+    try {
+      await view.settle();
+      clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
+      expect(view.calls.find(call => call.method === "microsoft-graph.credentials.reauthorize-start")?.params).toEqual({});
+      await vi.advanceTimersByTimeAsync(4000); await view.settle();
+      const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+      clickByText(view.container, "Fehlerangaben für Admin kopieren"); await view.settle();
+      const diagnostic = writeText.mock.calls.at(-1)![0];
+      expect(diagnostic).toContain("Fehlercode: device_authorization_declined");
+      expect(diagnostic).not.toContain("Organisation:");
+      expect(diagnostic).not.toContain(tenant);
+      expect(diagnostic).not.toContain(clientId);
+      expect(diagnostic).not.toContain("ABCD-EFGH");
+    } finally { view.dispose(); vi.useRealTimers(); }
+  });
   it("guides renewal entirely in the UI with authoritative IDs even without browser storage", async () => {
     const view = mount();
     view.responses["microsoft-graph.credentials.status"] = { ok: true, value: { policyVersion: 2, credential: { result: "valid", missingScopes: ["Contacts.ReadWrite"] } } };
