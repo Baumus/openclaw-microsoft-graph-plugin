@@ -238,7 +238,7 @@ describe.each([
     expect(approval.params).toEqual({ ...params, sourceSha256: digest(bytes), sourceByteSize: bytes.byteLength });
     expect(approval.requireApproval.description).toContain(digest(bytes));
     expect(readCredential).not.toHaveBeenCalled();
-    approval.requireApproval.onResolution("allow-once");
+    await approval.requireApproval.onResolution("allow-once");
     const graph = graphSuccess(bytes, update);
     expect((await tools[toolName].execute("auto", approval.params)).details).toMatchObject({ ok: true, source_sha256: digest(bytes), source_byte_size: bytes.byteLength });
     expect(graph).toHaveBeenCalled();
@@ -286,7 +286,7 @@ describe.each([
 
     const approval = await hooks.before_tool_call({ toolName, toolCallId: "replaced", params }, context);
     expect(approval.requireApproval.description).toContain(digest(approvedBytes));
-    approval.requireApproval.onResolution("allow-once");
+    await approval.requireApproval.onResolution("allow-once");
     await rename(sourcePath, `${sourcePath}.approved`);
     await writeFile(sourcePath, replacementBytes);
 

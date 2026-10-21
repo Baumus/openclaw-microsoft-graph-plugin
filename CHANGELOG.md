@@ -2,10 +2,12 @@
 
 All notable changes to this project are documented here.
 
-## 3.16.0 - Unreleased
+## 3.16.0 - 2026-10-21
 
 - Add policy-gated access to the signed-in user's default Outlook Contacts collection: bounded list/search/get and create/update/delete of selected contact fields. Existing policies remain valid and deny Contacts by default. Contact deletion uses call-bound critical approval; creation and updates use warning approval by default.
 - Derive `Contacts.Read` and `Contacts.ReadWrite` from explicit Contacts grants. Show missing scopes in sanitized credential status and guide operators through terminal reauthorization. Validate the new grant before an atomic, binding-checked vault replacement; unsuccessful consent retains the prior credential.
+- Replace deprecated synchronous OpenClaw session-entry reads with awaited `getSessionEntryAsync` for session-bound Microsoft Graph approvals. Preserve fail-closed checks before approval, on approval resolution, and at tool execution. Require OpenClaw 2026.10.5 or newer for the awaited runtime API; no Microsoft permissions or policy changes.
+- Guide agents to use `reply_draft` when answering an identified email, use `reply_all_draft` only when all recipients are intended, and reserve `create_draft` for independent messages. Ask for clarification when the original email is missing or ambiguous instead of creating a standalone draft. No Graph behavior, permissions, or compatibility-floor changes.
 
 ## 3.15.0 - 2026-10-21
 

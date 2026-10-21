@@ -17,6 +17,20 @@ function runtime(policy = graphPolicyFixture()) {
 }
 
 describe("agent-facing Microsoft Graph contracts", () => {
+  it("guides reply drafts to the original message instead of a standalone draft", () => {
+    const mailTool = getToolPluginMetadata(entry)!.tools.find((tool) => tool.name === "outlook_mail_write")!;
+    const actionGuidance = ((mailTool.parameters as any).properties.action as { description: string }).description;
+    for (const guidance of [mailTool.description, actionGuidance]) {
+      expect(guidance).toMatch(/reply_draft/);
+      expect(guidance).toMatch(/reply_all_draft/);
+      expect(guidance).toMatch(/create_draft/);
+      expect(guidance).toMatch(/all recipients/);
+      expect(guidance).toMatch(/new, independent message/);
+      expect(guidance).toMatch(/ambiguous/);
+      expect(guidance).toMatch(/ask the user/);
+    }
+  });
+
   it("advertises concrete guidance for every runtime tool and action-specific schema hints", () => {
     const metadata = getToolPluginMetadata(entry)!;
     const { tools, context } = runtime();
@@ -51,7 +65,7 @@ describe("agent-facing Microsoft Graph contracts", () => {
       const gate = await hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: "budgeted-send", params }, context);
       expect(gate.params).toEqual({ action: "send_draft", messageId: "draft-1" });
       expect(gate.requireApproval).toMatchObject({ severity: "critical", timeoutMs: 120_000, allowedDecisions: ["allow-once", "deny"] });
-      gate.requireApproval.onResolution("allow-once");
+      await gate.requireApproval.onResolution("allow-once");
       const response = (await tools.outlook_mail_write.execute("budgeted-send", params)).details;
       expect(response).toMatchObject({ ok: true, sent: true, deliveryStatus: "unknown", mutationApplied: true, retrySafety: "readback_before_retry" });
       expect(String(fetchSpy.mock.calls[0][0])).toContain("/messages/draft-1/send");
@@ -76,7 +90,7 @@ describe("agent-facing Microsoft Graph contracts", () => {
         const callId = `send-${decision}`;
         const params = { action: "send_draft", messageId: "draft-1", timeoutMs: 180_000 };
         const gate = await hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: callId, params }, context);
-        gate.requireApproval.onResolution(decision);
+        await gate.requireApproval.onResolution(decision);
         expect((await tools.outlook_mail_write.execute(callId, params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed", mutationApplied: false });
       }
       expect(fetchSpy).not.toHaveBeenCalled();
