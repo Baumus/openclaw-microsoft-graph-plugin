@@ -17,6 +17,20 @@ function runtime(policy = graphPolicyFixture()) {
 }
 
 describe("agent-facing Microsoft Graph contracts", () => {
+  it("guides reply drafts to the original message instead of a standalone draft", () => {
+    const mailTool = getToolPluginMetadata(entry)!.tools.find((tool) => tool.name === "outlook_mail_write")!;
+    const actionGuidance = ((mailTool.parameters as any).properties.action as { description: string }).description;
+    for (const guidance of [mailTool.description, actionGuidance]) {
+      expect(guidance).toMatch(/reply_draft/);
+      expect(guidance).toMatch(/reply_all_draft/);
+      expect(guidance).toMatch(/create_draft/);
+      expect(guidance).toMatch(/all recipients/);
+      expect(guidance).toMatch(/new, independent message/);
+      expect(guidance).toMatch(/ambiguous/);
+      expect(guidance).toMatch(/ask the user/);
+    }
+  });
+
   it("advertises concrete guidance for every runtime tool and action-specific schema hints", () => {
     const metadata = getToolPluginMetadata(entry)!;
     const { tools, context } = runtime();
