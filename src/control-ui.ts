@@ -7,7 +7,7 @@ import { isConnectionEstablished } from "./control-ui-status.js";
 
 type Grant = { operations: string[]; resources?: string[] };
 type Root = { label: string; path: string; drive_id: string; item_id: string; include_descendants: true; agents_instructions?: "trusted"; permissions: Record<"read" | "write" | "delete", boolean>; agents: Record<string, { permissions: Partial<Record<"read" | "write" | "delete", boolean>> }> };
-type Policy = { version: 2; rules: { default: "deny"; warningApprovalsByService?: Partial<Record<"onedrive" | "calendar" | "mail" | "todo", boolean>> }; services: { onedrive: { allowed_roots: Root[] }; calendar: { agents: Record<string, Grant> }; mail: { agents: Record<string, Grant> }; todo: { agents: Record<string, Grant> } } };
+type Policy = { version: 2; rules: { default: "deny"; warningApprovalsByService?: Partial<Record<"onedrive" | "calendar" | "mail" | "contacts" | "todo", boolean>> }; services: { onedrive: { allowed_roots: Root[] }; calendar: { agents: Record<string, Grant> }; mail: { agents: Record<string, Grant> }; contacts?: { agents: Record<string, Grant> }; todo: { agents: Record<string, Grant> } } };
 type CredentialStatus = { policyVersion: 2; credential: { result: "missing" | "valid" | "quarantined" | "unavailable" } };
 type DeviceStart = { sessionId: string; userCode: string; verificationUri: string; expiresAt: string; scopes: string[] };
 type UpdateStatus = { updateAvailable: boolean; latestVersion?: string };
@@ -49,8 +49,8 @@ function savedAppIds(): { clientId: string; tenant: string } | undefined {
 function saveAppIds(clientId: string, tenant: string): void {
   try { localStorage.setItem(appIdsStorageKey, JSON.stringify({ clientId, tenant })); } catch { /* Non-secret convenience state is optional. */ }
 }
-const operations = { calendar: ["read", "create", "update", "respond", "attach", "delete"], mail: ["read", "draft", "update", "move", "mark", "send", "delete"], todo: ["read", "create", "update", "delete"] } as const;
-const serviceNames = { onedrive: "OneDrive", calendar: "Kalender", mail: "E-Mail", todo: "To Do" } as const;
+const operations = { calendar: ["read", "create", "update", "respond", "attach", "delete"], mail: ["read", "draft", "update", "move", "mark", "send", "delete"], contacts: ["read", "create", "update", "delete"], todo: ["read", "create", "update", "delete"] } as const;
+const serviceNames = { onedrive: "OneDrive", calendar: "Kalender", mail: "E-Mail", contacts: "Kontakte", todo: "To Do" } as const;
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 const blankPolicy = (): Policy => ({ version: 2, rules: { default: "deny" }, services: { onedrive: { allowed_roots: [] }, calendar: { agents: {} }, mail: { agents: {} }, todo: { agents: {} } } });
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", value?: string): HTMLElementTagNameMap[K] { const node = document.createElement(tag); if (className) node.className = className; if (value !== undefined) node.textContent = localize(value); return node; }
@@ -88,7 +88,7 @@ function collectDiff(before: unknown, after: unknown, path = "", replacements: s
 function policySummary(policy: Policy): string[] {
   return [
     format("{count} OneDrive-Ordner", { count: policy.services.onedrive.allowed_roots.length }),
-    ...(["calendar", "mail", "todo"] as const).map(s => format("{count} Agenten für {service}", { count: Object.keys(policy.services[s].agents).length, service: localize(serviceNames[s]) })),
+    ...(["calendar", "mail", "contacts", "todo"] as const).map(s => format("{count} Agenten für {service}", { count: Object.keys(policy.services[s]?.agents ?? {}).length, service: localize(serviceNames[s]) })),
   ];
 }
 class ConfigurationPage {
@@ -198,7 +198,7 @@ class ConfigurationPage {
     const entry = this.snapshot?.config?.plugins?.entries?.[id]?.config;
     const policy = this.initial;
     const grants = !!policy && (policy.services.onedrive.allowed_roots.some(root => Object.values(root.agents).some(agent => Object.values(agent.permissions).some(Boolean)))
-      || (["calendar", "mail", "todo"] as const).some(service => Object.keys(policy.services[service].agents).length > 0));
+      || (["calendar", "mail", "contacts", "todo"] as const).some(service => Object.keys(policy.services[service]?.agents ?? {}).length > 0));
     return !!entry?.credentialVaultKey && grants && !this.dirty && !this.statusError && this.applicationStatus === "applied";
   }
   private get applicationStatus(): "applied" | "pending" | "unknown" {
@@ -396,7 +396,7 @@ class ConfigurationPage {
     const configured = this.snapshot?.config?.plugins?.entries?.[id]?.config?.credentialVaultKey !== undefined;
     const savedPolicy = this.initial ?? blankPolicy();
     const grants = savedPolicy.services.onedrive.allowed_roots.some(root => Object.values(root.agents).some(agent => Object.values(agent.permissions).some(Boolean)))
-      || (["calendar", "mail", "todo"] as const).some(service => Object.keys(savedPolicy.services[service].agents).length > 0);
+      || (["calendar", "mail", "contacts", "todo"] as const).some(service => Object.keys(savedPolicy.services[service]?.agents ?? {}).length > 0);
     const connected = this.credential?.result === "valid";
     if (isConnectionEstablished({ secretRefConfigured: configured, savedGrantPresent: grants, applicationStatus: this.applicationStatus, credentialResult: this.credential?.result, statusError: !!this.statusError })) {
       const status = el("p", "mg-success mg-connected", "Verbindung hergestellt");
@@ -674,12 +674,15 @@ class ConfigurationPage {
     append(body, el("h2", "", "Microsoft-Dienste"), el("p", "", "Wähle, welche Dienste der Agent nutzen darf. Ein neuer Zugang umfasst alle Funktionen des Dienstes. Bestehende eingeschränkte Zugänge bleiben unverändert."));
     const agentId = this.renderAgentPicker(body);
     if (!agentId) { append(body, el("p", "mg-message", "Keine Agenten gefunden.")); return; }
-    for (const service of ["calendar", "mail", "todo"] as const) {
+    for (const service of ["calendar", "mail", "contacts", "todo"] as const) {
       const card = el("fieldset", "mg-section"); append(card, el("legend", "", serviceNames[service]));
-      const grants = this.policy.services[service].agents; const existing = grants[agentId];
+      const grants = this.policy.services[service]?.agents ?? {}; const existing = grants[agentId];
       this.checkbox(card, format("{service} nutzen", { service: localize(serviceNames[service]) }), !!existing, checked => {
         const key = `${service}:${agentId}`;
-        if (checked) grants[agentId] = existing ?? this.removedServiceGrants[key] ?? { operations: [...operations[service]] };
+        if (checked) {
+          if (service === "contacts") this.policy.services.contacts ??= { agents: {} };
+          this.policy.services[service]!.agents[agentId] = existing ?? this.removedServiceGrants[key] ?? { operations: [...operations[service]] };
+        }
         else { if (existing) this.removedServiceGrants[key] = clone(existing); delete grants[agentId]; }
         this.render();
       });
@@ -727,7 +730,7 @@ class ConfigurationPage {
   }
   private renderApprovals(body: HTMLElement) {
     append(body, el("h2", "", "Wann ist eine Freigabe nötig?"), el("p", "", "Eine Freigabe ist eine Rückfrage vor der konkreten Aktion. Die Agentenrechte aus den ersten beiden Schritten gelten immer zusätzlich."));
-    for (const service of ["onedrive", "calendar", "mail", "todo"] as const) {
+    for (const service of ["onedrive", "calendar", "mail", "contacts", "todo"] as const) {
       const card = el("fieldset", "mg-section"); append(card, el("legend", "", serviceNames[service]));
       append(card, el("p", "", "Unkritisch · Lesen und Suchen: keine Rückfrage."));
       const configured = this.policy.rules.warningApprovalsByService ?? {};
@@ -755,7 +758,7 @@ class ConfigurationPage {
     const newScopes = this.scopes.filter(scope => !this.initialScopes.includes(scope));
     if (this.pluginEnabled && newScopes.length) append(body, el("p", "mg-warning", format("Für neue Zugriffe kann eine Microsoft-Einwilligung nötig sein ({scopes}). Solange das Plugin aktiv ist, kann diese Seite erweiterte Rechte nicht speichern.", { scopes: newScopes.join(", ") })));
     const approvals = this.policy.rules.warningApprovalsByService ?? {};
-    for (const service of ["onedrive", "calendar", "mail", "todo"] as const) if (approvals[service] === false) append(body, el("p", "mg-warning", format("{service}: Warn-Aktionen dürfen ohne Rückfrage ausgeführt werden. Kritische Aktionen benötigen weiterhin eine Freigabe.", { service: localize(serviceNames[service]) })));
+    for (const service of ["onedrive", "calendar", "mail", "contacts", "todo"] as const) if (approvals[service] === false) append(body, el("p", "mg-warning", format("{service}: Warn-Aktionen dürfen ohne Rückfrage ausgeführt werden. Kritische Aktionen benötigen weiterhin eine Freigabe.", { service: localize(serviceNames[service]) })));
     if (!this.dirty) { append(body, el("p", "", "Keine Änderungen zum Speichern.")); return; }
     if (JSON.stringify(this.initial) !== JSON.stringify(this.policy)) this.checkbox(body, "Ich habe die Zugriffsänderungen geprüft, auch entzogene Rechte", this.confirmedRemoval, v => { this.confirmedRemoval = v; });
 
@@ -764,7 +767,7 @@ class ConfigurationPage {
     const epoch = ++this.validationEpoch;
     this.error = "";
     const roster = new Set(this.host.agents.rows.map(a => a.id));
-    for (const service of ["calendar", "mail", "todo"] as const) for (const agent of Object.keys(candidate.services[service].agents)) if (!roster.has(agent)) { this.error = format("Unknown configured agent: {agent}", { agent }); this.render(); return false; }
+    for (const service of ["calendar", "mail", "contacts", "todo"] as const) for (const agent of Object.keys(candidate.services[service]?.agents ?? {})) if (!roster.has(agent)) { this.error = format("Unknown configured agent: {agent}", { agent }); this.render(); return false; }
     for (const root of candidate.services.onedrive.allowed_roots) for (const agent of Object.keys(root.agents)) if (!roster.has(agent)) { this.error = format("Unknown configured agent: {agent}", { agent }); this.render(); return false; }
     try { const result = await this.read<{ valid: boolean; requiredScopes: string[]; policyHash?: string }>("microsoft-graph.configuration.validate", { policy: candidate }); if (epoch !== this.validationEpoch || this.disposed) return false; this.scopes = result.requiredScopes; if (this.operation && candidate === this.operation.target) this.operation.targetHash = result.policyHash; this.render(); return result.valid; }
     catch { if (epoch !== this.validationEpoch || this.disposed) return false; this.error = "Policy validation failed. Check root labels, paths, IDs, and grant resources."; this.render(); return false; }

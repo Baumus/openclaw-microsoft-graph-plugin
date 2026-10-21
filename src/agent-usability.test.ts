@@ -20,7 +20,7 @@ describe("agent-facing Microsoft Graph contracts", () => {
   it("advertises concrete guidance for every runtime tool and action-specific schema hints", () => {
     const metadata = getToolPluginMetadata(entry)!;
     const { tools, context } = runtime();
-    expect(metadata.tools).toHaveLength(17);
+    expect(metadata.tools).toHaveLength(19);
     for (const definition of metadata.tools) {
       const concrete = tools[definition.name];
       expect(concrete.description, definition.name).toBeTruthy();
@@ -30,14 +30,14 @@ describe("agent-facing Microsoft Graph contracts", () => {
       expect(concrete.name).toBe(definition.name);
       expect(context.agentId).toBe("main");
     }
-    for (const name of ["outlook_calendar_read", "outlook_calendar_write", "outlook_mail_read", "outlook_mail_write", "microsoft_todo_read", "microsoft_todo_write"]) {
+    for (const name of ["outlook_calendar_read", "outlook_calendar_write", "outlook_mail_read", "outlook_mail_write", "outlook_contacts_read", "outlook_contacts_write", "microsoft_todo_read", "microsoft_todo_write"]) {
       const action = (metadata.tools.find((tool) => tool.name === name)!.parameters as any).properties.action;
       expect(action.description, name).toMatch(/(?:list|create|update|delete|send|search)/);
       expect(action.description, name).toMatch(/Id|ID/);
     }
     for (const definition of metadata.tools) {
       const schema = definition.parameters as any;
-      const isWrite = ["onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete", "outlook_calendar_write", "outlook_mail_write", "microsoft_todo_write"].includes(definition.name);
+      const isWrite = ["onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete", "outlook_calendar_write", "outlook_mail_write", "outlook_contacts_write", "microsoft_todo_write"].includes(definition.name);
       expect(Boolean(schema.properties?.timeoutMs), definition.name).toBe(isWrite);
       if (isWrite) expect(schema.properties.timeoutMs.maximum).toBe(600_000);
     }
@@ -81,6 +81,29 @@ describe("agent-facing Microsoft Graph contracts", () => {
       }
       expect(fetchSpy).not.toHaveBeenCalled();
       expect(credential.tokenForAuthorizedOperation).not.toHaveBeenCalled();
+    } finally { fetchSpy.mockRestore(); }
+  });
+
+  it("keeps contacts denied by legacy policies and requires critical approval for deletion", async () => {
+    credential.tokenForAuthorizedOperation.mockClear();
+    const base = graphPolicyFixture();
+    const denied = runtime(base);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    try {
+      const params = { action: "delete", contactId: "contact-1", timeoutMs: 180_000 };
+      expect(await denied.hooks.before_tool_call({ toolName: "outlook_contacts_write", toolCallId: "denied-contact", params }, denied.context)).toEqual({ block: true, blockReason: "access_denied" });
+      expect((await denied.tools.outlook_contacts_read.execute("denied-read", { action: "list_contacts" })).details).toMatchObject({ ok: false, error: "access_denied" });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(credential.tokenForAuthorizedOperation).not.toHaveBeenCalled();
+
+      base.services.contacts = { agents: { main: { operations: ["read", "create", "update", "delete"], resources: ["me"] } } };
+      const allowed = runtime(base);
+      const gate = await allowed.hooks.before_tool_call({ toolName: "outlook_contacts_write", toolCallId: "approved-contact", params }, allowed.context);
+      expect(gate.requireApproval).toMatchObject({ severity: "critical", allowedDecisions: ["allow-once", "deny"] });
+      expect(gate.requireApproval.description).toContain("contact-1");
+      gate.requireApproval.onResolution("deny");
+      expect((await allowed.tools.outlook_contacts_write.execute("approved-contact", params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed", mutationApplied: false });
+      expect(fetchSpy).not.toHaveBeenCalled();
     } finally { fetchSpy.mockRestore(); }
   });
 

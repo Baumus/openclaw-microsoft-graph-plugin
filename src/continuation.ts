@@ -8,7 +8,7 @@ export const MAX_CONTINUATION_STORE_BYTES = 32 * 1024 * 1024;
 
 export type ContinuationBinding = {
   agentId: string;
-  service: "calendar" | "mail" | "onedrive" | "todo";
+  service: "calendar" | "mail" | "contacts" | "onedrive" | "todo";
   action: string;
   resource: string;
   criteria: string;

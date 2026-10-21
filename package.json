@@ -1,7 +1,7 @@
 {
   "name": "@baumus/openclaw-microsoft-graph",
-  "version": "3.15.0",
-  "description": "Bring Outlook mail and calendar, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.",
+  "version": "3.16.0",
+  "description": "Bring Outlook mail, calendar, contacts, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.",
   "type": "module",
   "main": "./dist/index.js",
   "exports": {
@@ -45,6 +45,7 @@
     "outlook",
     "outlook-mail",
     "outlook-calendar",
+    "outlook-contacts",
     "onedrive",
     "microsoft-to-do",
     "email",

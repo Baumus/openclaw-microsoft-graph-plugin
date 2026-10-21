@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## 3.16.0 - Unreleased
+
+- Add policy-gated access to the signed-in user's default Outlook Contacts collection: bounded list/search/get and create/update/delete of selected contact fields. Existing policies remain valid and deny Contacts by default. Contact deletion uses call-bound critical approval; creation and updates use warning approval by default.
+- Derive `Contacts.Read` and `Contacts.ReadWrite` from explicit Contacts grants. Existing credentials do not acquire new consent automatically; the current sign-in flow will not overwrite a nonempty vault, so existing installations require a separately reviewed reauthorization before enabling these grants.
+
 ## 3.15.0 - 2026-10-21
 
 - Support PNG, JPEG, and GIF images positioned inside Outlook HTML drafts by matching a `cid:` image reference with `inlineContentId` on `outlook_mail_write` `add_attachment`. Both direct and upload-session attachments carry Graph `isInline` and `contentId`; ordinary attachments remain unchanged. Validate CID, MIME, and image signature before provider access. No additional Microsoft permissions or compatibility-floor changes.

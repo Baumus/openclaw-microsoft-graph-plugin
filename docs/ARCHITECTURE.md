@@ -29,6 +29,8 @@ The OpenClaw Gateway and plugin runtime are trusted to provide the real agent ID
 
 ### Policy
 
+Contacts grants are optional in version-2 policies and deny access when absent. The Contacts tools are fixed to the signed-in user’s default `/me/contacts` collection; contact folders, shared contacts, and organization directory access are not exposed.
+
 The policy is an operator-controlled object at `plugins.entries["microsoft-graph"].config.policy`. OpenClaw may compose that host config with `$include`; the plugin receives only the resolved object, validates it for every tool call, and requires `rules.default: deny`. OneDrive roots bind a display label to immutable `drive_id` and `item_id` values; service grants bind agent IDs to closed operation sets and optional resource IDs.
 
 ### Credentials

@@ -32,6 +32,9 @@ This is not provider-side read/write isolation. A shared-credential compromise o
 | `outlook_mail_write`: `mark_read` | `Mail.ReadWrite` | Mail `mark` | warning |
 | `outlook_mail_write`: `send_draft` | `Mail.Send` | Mail `send` | critical |
 | `outlook_mail_write`: `delete` | `Mail.ReadWrite` | Mail `delete` | critical |
+| `outlook_contacts_read`: list, search, get | `Contacts.Read` | Contacts `read` | none |
+| `outlook_contacts_write`: `create`, `update` | `Contacts.ReadWrite` | Contacts `create`, `update` | warning |
+| `outlook_contacts_write`: `delete` | `Contacts.ReadWrite` | Contacts `delete` | critical |
 | `microsoft_todo_read`: all actions | `Tasks.Read` | To Do `read` | none |
 | `microsoft_todo_write`: create/add actions | `Tasks.ReadWrite` | To Do `create` | warning |
 | `microsoft_todo_write`: update actions | `Tasks.ReadWrite` | To Do `update` | warning |
@@ -46,6 +49,9 @@ Unknown or missing read actions fail closed before provider access. Unknown or m
 | OneDrive | Exact policy-pinned `drive_id` + `item_id`. `include_descendants` must be literal `true`; omit the root rather than setting `false` when descendants must not be allowed. |
 | Calendar | Default calendar resource `me` or an exact policy-allowlisted calendar ID |
 | Mail | Signed-in user's `/me` mailbox only |
+| Contacts | Signed-in user's default `/me/contacts` collection only; no folders, shared contacts, or organization directory |
 | To Do | Signed-in user's `/me/todo` resources; writes reject shared/non-owned lists |
 
 Microsoft tenant administrators remain responsible for consent policy, conditional access, token revocation, account lifecycle, and reviewing the effective delegated permissions.
+
+Existing vault credentials do not gain newly configured Contacts scopes automatically. The current device-code sign-in path refuses to overwrite a nonempty vault. An operator must use a separately reviewed credential reauthorization procedure before enabling Contacts grants on an existing installation; this plugin change does not replace or delete an active credential.

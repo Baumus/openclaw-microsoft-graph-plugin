@@ -60,6 +60,9 @@ const timestamp = "2026-09-25T00:00:00.000Z";
 describe("single credential operator surfaces", () => {
   it("derives the all-scope migration requirement from the policy", () => {
     expect(requiredPolicyScopes(graphPolicyFixture())).toEqual(["Calendars.Read", "Calendars.ReadWrite", "Files.Read", "Files.ReadWrite", "Mail.Read", "Mail.ReadWrite", "Mail.Send", "Tasks.Read", "Tasks.ReadWrite"]);
+    const policy = graphPolicyFixture();
+    policy.services.contacts = { agents: { main: { operations: ["read", "create", "update", "delete"], resources: ["me"] } } };
+    expect(requiredPolicyScopes(policy)).toEqual(expect.arrayContaining(["Contacts.Read", "Contacts.ReadWrite"]));
   });
 
   it("restores the one current credential to one explicit destination with an uncertainty receipt", async () => {

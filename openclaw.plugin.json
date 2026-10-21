@@ -2,7 +2,7 @@
   "id": "microsoft-graph",
   "name": "Connect Microsoft 365 to OpenClaw",
   "description": "Bring Outlook mail and calendar, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.",
-  "version": "3.15.0",
+  "version": "3.16.0",
   "categories": [
     "productivity"
   ],
@@ -85,6 +85,9 @@
                     "type": "boolean"
                   },
                   "mail": {
+                    "type": "boolean"
+                  },
+                  "contacts": {
                     "type": "boolean"
                   },
                   "todo": {
@@ -298,6 +301,50 @@
                 },
                 "additionalProperties": false
               },
+              "contacts": {
+                "type": "object",
+                "required": [
+                  "agents"
+                ],
+                "properties": {
+                  "agents": {
+                    "type": "object",
+                    "patternProperties": {
+                      "^.*$": {
+                        "type": "object",
+                        "required": [
+                          "operations"
+                        ],
+                        "properties": {
+                          "operations": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "read",
+                                "create",
+                                "update",
+                                "delete"
+                              ]
+                            },
+                            "minItems": 1
+                          },
+                          "resources": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "minItems": 1
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
               "todo": {
                 "type": "object",
                 "required": [
@@ -427,9 +474,9 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/9b1976279af550acd2a674b203766474a436d26fea406caa69cd840b1e884b73/index.js",
+    "entry": "dist/control-ui/781bb32cc798d6e607e0eb788f43a131a86cd9fc5b10bc620dcf57a30539b6cc/index.js",
     "styles": [
-      "dist/control-ui/9b1976279af550acd2a674b203766474a436d26fea406caa69cd840b1e884b73/index.css"
+      "dist/control-ui/781bb32cc798d6e607e0eb788f43a131a86cd9fc5b10bc620dcf57a30539b6cc/index.css"
     ]
   },
   "contracts": {
@@ -447,6 +494,8 @@
       "outlook_calendar_write",
       "outlook_mail_read",
       "outlook_mail_write",
+      "outlook_contacts_read",
+      "outlook_contacts_write",
       "microsoft_todo_read",
       "microsoft_todo_write",
       "onedrive_agents_instructions",
@@ -518,6 +567,12 @@
       "optional": true,
       "replaySafe": false,
       "sideEffecting": true
+    },
+    "outlook_contacts_read": {
+      "optional": true
+    },
+    "outlook_contacts_write": {
+      "optional": true
     },
     "microsoft_todo_read": {
       "optional": true,

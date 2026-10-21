@@ -37,6 +37,19 @@ function clickByText(container: HTMLElement, text: string) {
 }
 describe("guided Microsoft sign-in", () => {
   beforeEach(() => { localStorage.clear(); });
+  it("shows Contacts as an optional default-deny service without changing legacy policy until selected", async () => {
+    const view = mount(); await view.settle();
+    clickByText(view.container, "2  Dienste");
+    const card = [...view.container.querySelectorAll("fieldset")].find(fieldset => fieldset.querySelector("legend")?.textContent === "Kontakte");
+    expect(card).toBeTruthy();
+    const toggle = card!.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    expect(toggle.checked).toBe(false);
+    expect((policy.services as Record<string, unknown>).contacts).toBeUndefined();
+    toggle.checked = true; toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    clickByText(view.container, "4  Prüfen"); await view.settle();
+    expect(view.calls.find(call => call.method === "microsoft-graph.configuration.validate" && (call.params as any)?.policy?.services?.contacts)?.params).toMatchObject({ policy: { services: { contacts: { agents: { main: { operations: ["read", "create", "update", "delete"] } } } } } });
+    view.dispose();
+  });
   it("uses saved identifiers without claiming they were verified, then shows the device-code steps", async () => {
     const view = mount({ clientId, tenant }); await view.settle();
     expect(view.container.textContent).toContain("Anmeldung und Freigabe prüfen wir beim Verbinden");

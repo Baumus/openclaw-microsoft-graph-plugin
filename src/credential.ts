@@ -134,6 +134,7 @@ export function selectScope(credential: Credential, allowed: string[]): string {
     "files.read": ["files.readwrite"],
     "calendars.read": ["calendars.readwrite"],
     "mail.read": ["mail.readwrite"],
+    "contacts.read": ["contacts.readwrite"],
     "tasks.read": ["tasks.readwrite"],
   };
   const selected = allowed.find((scope) => present.has(scope.toLowerCase()) || (impliedBy[scope.toLowerCase()] ?? []).some((superset) => present.has(superset)));

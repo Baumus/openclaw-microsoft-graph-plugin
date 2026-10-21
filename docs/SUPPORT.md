@@ -12,6 +12,8 @@ Version 3.5.0 declares OpenClaw host and plugin API compatibility from `2026.9.6
 - Delegated user permissions only; no application permissions or service-principal daemon flow.
 - One signed-in account per policy/credential pair.
 - Fixed `/me` workload routes; no shared-mailbox impersonation.
+- Contacts tools cover only the signed-in user's default `/me/contacts` collection, not contact folders, shared contacts, or the organization directory. Client-side contact search scans at most 500 records and can report incomplete results.
+- Existing credential-vault records are not automatically re-consented for new Contacts scopes; the current device-code wizard refuses to overwrite a nonempty vault. An existing installation needs a separately reviewed reauthorization procedure before Contacts grants can work.
 - No arbitrary Graph URL or raw payload tool.
 - No sharing/permissions management, subscriptions, delta feeds, retention, legal hold, permanent deletion, OneDrive conversion, or unrelated Graph workloads.
 - OneDrive content writes require OpenClaw private inbound media. Inline bytes and host-local paths are rejected.

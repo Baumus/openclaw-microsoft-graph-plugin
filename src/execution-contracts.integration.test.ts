@@ -18,13 +18,13 @@ vi.mock("./credential.js", async () => {
 import entry from "./index.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 
-function registeredTools() {
+function registeredTools(policy = graphPolicyFixture()) {
   const factories: Array<(context: any) => any> = [];
   const hooks: Record<string, (...args: any[]) => Promise<any> | any> = {};
   entry.register({
     pluginConfig: {
       enabled: true,
-      policy: graphPolicyFixture(),
+      policy,
     },
     registerTool: (factory: any) => factories.push(factory),
     on: (name: string, handler: any) => { hooks[name] = handler; },
@@ -43,6 +43,50 @@ function registeredTools() {
 }
 
 describe("execution contracts", () => {
+  it("reads, searches, and mutates only own default contacts with bounded fields and exact IDs", async () => {
+    const policy = graphPolicyFixture();
+    policy.services.contacts = { agents: { main: { operations: ["read", "create", "update", "delete"], resources: ["me"] } } };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+      if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      if (init?.method === "POST" || init?.method === "PATCH") return Response.json({ id: "A=B", displayName: "Ada Lovelace", providerOnly: "hidden" });
+      if (url.pathname.endsWith("/contacts/A%3DB")) return Response.json({ id: "A=B", displayName: "Ada Lovelace", providerOnly: "hidden" });
+      return Response.json({ value: [{ id: "A=B", displayName: "Ada Lovelace", emailAddresses: [{ address: "ada@example.invalid" }], providerOnly: "hidden" }] });
+    });
+    try {
+      const tools = registeredTools(policy);
+      const listed = (await tools.outlook_contacts_read.execute("contacts-list", { action: "list_contacts", limit: 10 })).details;
+      const found = (await tools.outlook_contacts_read.execute("contacts-search", { action: "search_contacts", search: "ada", limit: 10 })).details;
+      const one = (await tools.outlook_contacts_read.execute("contacts-get", { action: "get_contact", contactId: "A=B" })).details;
+      const created = (await tools.outlook_contacts_write.execute("contacts-create", { action: "create", displayName: "Ada Lovelace" })).details;
+      const updated = (await tools.outlook_contacts_write.execute("contacts-update", { action: "update", contactId: "A=B", companyName: "Analytical Engines" })).details;
+      const deleted = (await tools.outlook_contacts_write.execute("contacts-delete", { action: "delete", contactId: "A=B" })).details;
+      expect(listed).toMatchObject({ ok: true, items: [{ id: "A=B", displayName: "Ada Lovelace" }] });
+      expect(found).toMatchObject({ ok: true, completeness: "complete", items: [{ id: "A=B" }] });
+      expect(one).toMatchObject({ ok: true, item: { id: "A=B" } });
+      expect(created).toMatchObject({ ok: true, item: { id: "A=B" }, mutationApplied: true });
+      expect(updated).toMatchObject({ ok: true, item: { id: "A=B" } });
+      expect(deleted).toMatchObject({ ok: true, deleted: true });
+      for (const result of [listed.items[0], found.items[0], one.item, created.item, updated.item]) expect(result).not.toHaveProperty("providerOnly");
+      expect(fetchSpy.mock.calls.map(([input]) => new URL(String(input)).pathname)).toEqual(expect.arrayContaining(["/v1.0/me/contacts", "/v1.0/me/contacts/A%3DB"]));
+      expect(fetchSpy.mock.calls.map(([, init]) => init?.method)).toEqual(expect.arrayContaining(["POST", "PATCH", "DELETE"]));
+    } finally { fetchSpy.mockRestore(); }
+  });
+  it("does not claim a contact is absent when bounded client-side search is incomplete", async () => {
+    const policy = graphPolicyFixture();
+    policy.services.contacts = { agents: { main: { operations: ["read"], resources: ["me"] } } };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      const page = Number(url.searchParams.get("$skiptoken") ?? "0");
+      return Response.json({ value: Array.from({ length: 50 }, (_, index) => ({ id: `contact-${page * 50 + index}`, displayName: "Unrelated" })), "@odata.nextLink": `https://graph.microsoft.com/v1.0/me/contacts?$skiptoken=${page + 1}` });
+    });
+    try {
+      const response = (await registeredTools(policy).outlook_contacts_read.execute("search-cap", { action: "search_contacts", search: "missing" })).details;
+      expect(response).toMatchObject({ ok: true, items: [], scanned: 500, truncated: true, completeness: "partial", noResults: false });
+      expect(response).not.toHaveProperty("continuation");
+      expect(fetchSpy).toHaveBeenCalledTimes(10);
+    } finally { fetchSpy.mockRestore(); }
+  });
   it("encodes opaque To Do resource IDs exactly once across mutation paths", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       if (init?.method === "PATCH") return Response.json({ id: "BBTask=" }, { status: 200 });

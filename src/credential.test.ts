@@ -40,6 +40,13 @@ describe("Gateway credential handling", () => {
     expect(new URLSearchParams(requested).get("scope")).toBe("Files.Read");
   });
 
+  it("accepts Contacts.ReadWrite consent for contact reads without inventing write consent", () => {
+    const writable = parseCredential(JSON.stringify({ clientId: "client", refreshToken: "refresh", scopes: ["Contacts.ReadWrite"] }));
+    expect(selectScope(writable, ["Contacts.Read"])).toBe("Contacts.Read");
+    const readable = parseCredential(JSON.stringify({ clientId: "client", refreshToken: "refresh", scopes: ["Contacts.Read"] }));
+    expect(() => selectScope(readable, ["Contacts.ReadWrite"])).toThrow("credential_scope_missing");
+  });
+
   it("rejects oversized OAuth responses", async () => {
     const credential = parseCredential(JSON.stringify({ clientId: "client", refreshToken: "refresh", scopes: ["Files.Read"] }));
     const fetchFn = async () => new Response("x", { status: 200, headers: { "content-length": "65537" } });

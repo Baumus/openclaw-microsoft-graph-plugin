@@ -96,12 +96,13 @@ export function requiredPolicyScopes(policy: GraphPolicy): string[] {
     if (root.permissions.read && grants.includes("read")) required.add("Files.Read");
     if ((root.permissions.write && grants.includes("write")) || (root.permissions.delete && grants.includes("delete"))) required.add("Files.ReadWrite");
   }
-  const mappings: Record<"calendar" | "mail" | "todo", Record<string, string>> = {
+  const mappings: Record<"calendar" | "mail" | "contacts" | "todo", Record<string, string>> = {
     calendar: { read: "Calendars.Read", create: "Calendars.ReadWrite", update: "Calendars.ReadWrite", respond: "Calendars.ReadWrite", attach: "Calendars.ReadWrite", delete: "Calendars.ReadWrite" },
     mail: { read: "Mail.Read", draft: "Mail.ReadWrite", update: "Mail.ReadWrite", move: "Mail.ReadWrite", mark: "Mail.ReadWrite", send: "Mail.Send", delete: "Mail.ReadWrite" },
+    contacts: { read: "Contacts.Read", create: "Contacts.ReadWrite", update: "Contacts.ReadWrite", delete: "Contacts.ReadWrite" },
     todo: { read: "Tasks.Read", create: "Tasks.ReadWrite", update: "Tasks.ReadWrite", delete: "Tasks.ReadWrite" },
   };
-  for (const service of ["calendar", "mail", "todo"] as const) for (const grant of Object.values(policy.services[service].agents)) for (const operation of grant.operations) required.add(mappings[service][operation]);
+  for (const service of ["calendar", "mail", "contacts", "todo"] as const) for (const grant of Object.values(policy.services[service]?.agents ?? {})) for (const operation of grant.operations) required.add(mappings[service][operation]);
   return [...required].sort();
 }
 
