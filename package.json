@@ -1,6 +1,6 @@
 {
   "name": "@baumus/openclaw-microsoft-graph",
-  "version": "3.16.1",
+  "version": "3.16.2",
   "description": "Bring Outlook mail, calendar, contacts, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.",
   "type": "module",
   "main": "./dist/index.js",
@@ -104,7 +104,7 @@
     },
     "install": {
       "clawhubSpec": "clawhub:@baumus/openclaw-microsoft-graph",
-      "npmSpec": "@baumus/openclaw-microsoft-graph@3.16.1",
+      "npmSpec": "@baumus/openclaw-microsoft-graph@3.16.2",
       "defaultChoice": "clawhub",
       "minHostVersion": ">=2026.10.5"
     },

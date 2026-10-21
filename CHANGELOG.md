@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## 3.16.2 - 2026-10-21
+
+- Bundle the unchanged scoped Microsoft Graph stylesheet into the native Control UI entry and install it synchronously before page registration, removing a separate stylesheet download from plugin startup. Release styles and registrations on failed activation or disposal, including overlapping activations.
+- This plugin-only startup mitigation does not establish the cause of previously observed browser initialization timeouts. No Core, permissions, credentials, policy, tools, or compatibility-floor changes.
+
 ## 3.16.1 - 2026-10-21
 
 - Guide existing-vault permission renewal entirely through the administrator Control UI, reusing authoritative app/tenant identifiers and retaining consent/binding/quarantine safeguards.
