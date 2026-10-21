@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented here.
 
+## 3.15.0 - 2026-10-21
+
+- Support PNG, JPEG, and GIF images positioned inside Outlook HTML drafts by matching a `cid:` image reference with `inlineContentId` on `outlook_mail_write` `add_attachment`. Both direct and upload-session attachments carry Graph `isInline` and `contentId`; ordinary attachments remain unchanged. Validate CID, MIME, and image signature before provider access. No additional Microsoft permissions or compatibility-floor changes.
+
 ## 3.14.1 - 2026-10-15
 
 - Explain on the ClawHub package page why the v3.14.0 `getSessionEntry` deprecation warnings are not actionable on OpenClaw 2026.10.3, and link the upstream request for target-version-aware diagnostics. Documentation only; runtime behavior, permissions, and compatibility floors are unchanged.

@@ -482,6 +482,18 @@ describe("microsoft-graph plugin contract", () => {
     expect(() => validateAttachmentContent({ contentBytes: "YR==" }, 1024)).toThrow("invalid_provider_response");
   });
 
+  it("marks a verified inline image with a CID without changing ordinary attachments", () => {
+    const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.from("synthetic-image")]);
+    const params = { attachmentName: "chart.png", attachmentContentType: "image/png", inlineContentId: "chart-1" };
+    expect(fileAttachmentPayload(params, png)).toMatchObject({ isInline: true, contentId: "chart-1", contentType: "image/png", contentBytes: png.toString("base64") });
+    expect(attachmentWritePlan(params, "#microsoft.graph.fileAttachment", 150 * 1024 * 1024, Buffer.concat([png, Buffer.alloc(3 * 1024 * 1024)])).mode).toBe("session");
+    expect(fileAttachmentPayload({ attachmentName: "chart.png", attachmentContentType: "image/png" }, png)).not.toHaveProperty("isInline");
+    expect(() => fileAttachmentPayload({ ...params, inlineContentId: "bad<id" }, png)).toThrow("invalid_inline_image");
+    expect(() => fileAttachmentPayload({ ...params, attachmentContentType: "text/plain" }, png)).toThrow("invalid_inline_image");
+    expect(() => fileAttachmentPayload(params, Buffer.from("not a png"))).toThrow("invalid_inline_image");
+    expect(() => attachmentWritePlan(params, "#microsoft.graph.taskFileAttachment", 1024, png)).toThrow("invalid_inline_image");
+  });
+
   it("rejects direct OneDrive mutations without an approval snapshot before policy, credentials, or network", async () => {
     const factories: Array<(context: any) => any> = [];
     const fetchSpy = vi.spyOn(globalThis, "fetch");

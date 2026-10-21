@@ -307,6 +307,22 @@ Apply requires `RESTORE MICROSOFT GRAPH CREDENTIAL`. A `complete` receipt means 
 - Unknown actions, malformed resources, missing grants, missing credentials, unsafe files, and unsupported filesystem conditions fail closed.
 - Process-local access-token, continuation, instruction, and warning allow-always trust is lost on restart. Retry from a fresh read/status check rather than assuming an interrupted mutation failed.
 
+## Place images within an Outlook mail body
+
+Use an HTML draft and a matching CID attachment. Put `<img src="cid:chart-1" alt="Chart">` at the precise position in `bodyHtml` where the image should appear, then add the private image to that draft with `inlineContentId: "chart-1"`:
+
+```json
+{ "action": "create_draft", "subject": "Results", "bodyHtml": "<p>Here are the results:</p><img src=\"cid:chart-1\" alt=\"Chart\"><p>What do you think?</p>" }
+```
+
+Use the returned draft `messageId` in a second `outlook_mail_write` call:
+
+```json
+{ "action": "add_attachment", "messageId": "<returned-draft-id>", "attachmentName": "chart.png", "attachmentContentType": "image/png", "attachmentMediaUri": "media://inbound/<actual-private-media-id>", "inlineContentId": "chart-1" }
+```
+
+The media URI must be a real OpenClaw private-media artifact, not a path or invented URI. PNG, JPEG, and GIF are supported for inline placement; the plugin checks their file signatures. Each image needs a distinct CID, and the same CID must appear in its HTML `<img src>` reference. For an existing draft, use `update_draft` to position or reposition the reference, then `add_attachment` for a new image. Ordinary attachments omit `inlineContentId` and retain their previous behavior. Review the completed draft before `send_draft`; draft changes and attachment upload are separate writes, so either can succeed if the other fails. Rendering details can differ between email clients.
+
 ## Creating a task in the default To Do list
 
 Use the existing `microsoft_todo_write` tool with `action: "create_task"`, `title`, and exactly one of `listId` or `listSelector: "default"`:

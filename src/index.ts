@@ -592,7 +592,7 @@ const ACTION_SCHEMA_GUIDANCE: Readonly<Record<string, string>> = {
   outlook_calendar_read: "list_calendars: no ID; list_events/search_events: optional exact calendarId from list_calendars and bounded dates; get_event/list_attachments: eventId plus calendarId when non-default; download_attachment: also attachmentId; get_schedule: startDateTime, endDateTime, schedules. Continue list pages; narrow client-filtered searches.",
   outlook_calendar_write: "create: subject/startDateTime/endDateTime; update: eventId plus changed fields; multiwrite: operations with unique operationId and create/update payloads; respond: eventId and response; attach: eventId and private media; delete: eventId. calendarId must be an exact authorized ID. Native approval is separate from deprecated chat fields.",
   outlook_mail_read: "list_folders: no ID or parentFolderId; list/search_messages: folder/folderId or mailbox-wide; get_message/list_attachments: messageId; download_attachment: messageId and attachmentId. Folder and message IDs come from preceding read actions; follow continuation.",
-  outlook_mail_write: "create_draft: subject and body; update_draft/update_properties: messageId and changed fields; reply/forward draft: messageId and content; copy/move: messageId and exactly one destination or destinationFolderId; mark_read: messageId and isRead; add_attachment: messageId and private media; send_draft/delete: messageId. Native approval remains sole authority.",
+  outlook_mail_write: "create_draft: subject and body; update_draft/update_properties: messageId and changed fields; reply/forward draft: messageId and content; copy/move: messageId and exactly one destination or destinationFolderId; mark_read: messageId and isRead; add_attachment: messageId and private media. For an inline image, place <img src=\"cid:IMAGE_ID\"> at the desired position in bodyHtml, then add_attachment with the same inlineContentId=IMAGE_ID and an image MIME type; send_draft/delete: messageId. Native approval remains sole authority.",
   microsoft_todo_read: "list_lists: no ID; search_lists: search; list/search_tasks: listId from list_lists; get_task/child lists: listId and taskId; get_attachment: also attachmentId. Follow continuation where offered; narrow capped search.",
   microsoft_todo_write: "create_list: title; update/delete_list: listId; create_task: title and exactly one of listId or listSelector default; the actual owned non-shared default list is resolved before approval (requires read and create); update/delete_task: listId and taskId; checklist/linked-resource/attachment actions: listId, taskId and the relevant child ID for update/delete. Native approval is separate from deprecated chat fields.",
 };
@@ -1053,6 +1053,7 @@ const mailWriteSchema = Type.Object({
   internetMessageId: Type.Optional(Type.String({ minLength: 3, maxLength: 998, pattern: "^<[^<>\\r\\n]+>$" })),
   internetMessageHeaders: Type.Optional(Type.Array(Type.Object({ name: Type.String({ minLength: 3, maxLength: 128, pattern: "^[xX]-[A-Za-z0-9-]+$" }), value: Type.String({ maxLength: 998 }) }, { additionalProperties: false }), { maxItems: 50 })),
   ...attachmentInputFields(OUTLOOK_ATTACHMENT_MAX_BYTES),
+  inlineContentId: Type.Optional(Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$", description: "For add_attachment only: embed an image in HTML mail at the matching <img src=\"cid:ID\"> position. The image must be PNG, JPEG, or GIF." })),
 }, { additionalProperties: false });
 const todoReadSchema = Type.Object({
   action: Type.Union([Type.Literal("list_lists"), Type.Literal("search_lists"), Type.Literal("list_tasks"), Type.Literal("search_tasks"), Type.Literal("get_task"), Type.Literal("list_checklist"), Type.Literal("list_linked_resources"), Type.Literal("list_attachments"), Type.Literal("get_attachment")]),
@@ -1142,7 +1143,7 @@ export const WRITE_ACTION_FIELDS = {
     reply_all_draft: ["action", "messageId", "bodyHtml", "bodyText"],
     forward_draft: ["action", "messageId", "bodyHtml", "bodyText", "to", "cc", "bcc"],
     copy: ["action", "messageId", "destination", "destinationFolderId"],
-    add_attachment: ["action", "messageId", "attachmentName", "attachmentContentType", "attachmentMediaUri"],
+    add_attachment: ["action", "messageId", "attachmentName", "attachmentContentType", "attachmentMediaUri", "inlineContentId"],
     move: ["action", "messageId", "destination", "destinationFolderId"],
     mark_read: ["action", "messageId", "isRead"],
     send_draft: ["action", "messageId"],
@@ -1996,6 +1997,7 @@ type AttachmentWritePlan = {
   contentType: string;
   content: Buffer;
   size: number;
+  inlineContentId?: string;
   directPayload?: Record<string, unknown>;
 };
 
@@ -2015,13 +2017,22 @@ export function attachmentWritePlan(p: any, type: "#microsoft.graph.fileAttachme
   const size = content.byteLength;
   if (size > maxBytes) throw new Error("file_too_large");
   const contentType = attachmentMimeType(p.attachmentContentType);
-  const common = { name: p.attachmentName, contentType, content, size };
+  const inlineContentId = p.inlineContentId;
+  if (inlineContentId !== undefined && (type !== "#microsoft.graph.fileAttachment" || typeof inlineContentId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(inlineContentId) || !["image/png", "image/jpeg", "image/gif"].includes(contentType.toLowerCase()))) throw new Error("invalid_inline_image");
+  if (inlineContentId !== undefined && !matchesInlineImageSignature(content, contentType.toLowerCase())) throw new Error("invalid_inline_image");
+  const common = { name: p.attachmentName, contentType, content, size, ...(inlineContentId === undefined ? {} : { inlineContentId }) };
   if (size >= DIRECT_ATTACHMENT_MAX_BYTES) return { mode: "session", ...common };
   return {
     mode: "direct",
     ...common,
-    directPayload: { "@odata.type": type, name: p.attachmentName, contentType, contentBytes: content.toString("base64") },
+    directPayload: { "@odata.type": type, name: p.attachmentName, contentType, contentBytes: content.toString("base64"), ...(inlineContentId === undefined ? {} : { isInline: true, contentId: inlineContentId }) },
   };
+}
+
+function matchesInlineImageSignature(content: Buffer, contentType: string): boolean {
+  if (contentType === "image/png") return content.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  if (contentType === "image/jpeg") return content.length >= 4 && content[0] === 0xff && content[1] === 0xd8 && content[2] === 0xff;
+  return content.length >= 6 && ["GIF87a", "GIF89a"].includes(content.toString("ascii", 0, 6));
 }
 
 export function fileAttachmentPayload(p: any, content: Buffer, type: "#microsoft.graph.fileAttachment" | "#microsoft.graph.taskFileAttachment" = "#microsoft.graph.fileAttachment", maxBytes = DIRECT_ATTACHMENT_MAX_BYTES - 1) {
@@ -2725,6 +2736,7 @@ async function mailRead(config: RuntimeConfig, agentId: string | undefined, p: a
 
 function planMailWrite(p: any) {
   assertWriteActionFields(p, WRITE_ACTION_FIELDS.mail);
+  if (p.action === "add_attachment" && p.inlineContentId !== undefined && (typeof p.inlineContentId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(p.inlineContentId) || !["image/png", "image/jpeg", "image/gif"].includes(String(p.attachmentContentType).toLowerCase()))) throw new Error("invalid_inline_image");
   const operation = p.action === "send_draft" ? "send" : p.action === "move" ? "move" : p.action === "mark_read" ? "mark" : p.action === "delete" ? "delete" : p.action === "create_draft" || p.action.endsWith("_draft") ? "draft" : "update";
   const scope = p.action === "send_draft" ? "mail_send" : "mail_write";
   const replyForwardPlan = new Set(["reply_draft", "reply_all_draft", "forward_draft"]).has(p.action) ? mailReplyForwardPlan(p) : undefined;
@@ -2764,12 +2776,12 @@ async function mailWrite(config: RuntimeConfig, agentId: string | undefined, wor
       const attachmentPath = mailMessageActionPath(p.messageId, "attachments");
       if (attachmentPlan!.mode === "direct") {
         const item = await graphRequest(token, attachmentPath, { method: "POST", body: attachmentPlan!.directPayload, maxBytes: base64JsonResponseLimit(DIRECT_ATTACHMENT_MAX_BYTES - 1), signal: bounded });
-        return { ok: true, action: p.action, upload_mode: "direct", attachment: boundedAttachmentSummary(item, attachmentPlan!) };
+        return { ok: true, action: p.action, upload_mode: "direct", attachment: { ...boundedAttachmentSummary(item, attachmentPlan!), ...(attachmentPlan!.inlineContentId === undefined ? {} : { isInline: true, contentId: attachmentPlan!.inlineContentId }) } };
       }
       const uploaded = await uploadAttachmentSession(token, `${attachmentPath}/createUploadSession`, {
-        AttachmentItem: { attachmentType: "file", name: attachmentPlan!.name, size: attachmentPlan!.size, contentType: attachmentPlan!.contentType },
+        AttachmentItem: { attachmentType: "file", name: attachmentPlan!.name, size: attachmentPlan!.size, contentType: attachmentPlan!.contentType, ...(attachmentPlan!.inlineContentId === undefined ? {} : { isInline: true, contentId: attachmentPlan!.inlineContentId }) },
       }, attachmentPlan!.content.toString("base64"), "outlook", signal, fetch, config.requestTimeoutMs ?? 5000);
-      return { ok: true, action: p.action, ...uploaded, attachment: { name: attachmentPlan!.name, contentType: attachmentPlan!.contentType, size: attachmentPlan!.size } };
+      return { ok: true, action: p.action, ...uploaded, attachment: { name: attachmentPlan!.name, contentType: attachmentPlan!.contentType, size: attachmentPlan!.size, ...(attachmentPlan!.inlineContentId === undefined ? {} : { isInline: true, contentId: attachmentPlan!.inlineContentId }) } };
     }
     if (p.action === "mark_read") return { ok: true, action: p.action, item: await graphRequest(token, `/me/messages/${id}`, { method: "PATCH", body: { isRead: p.isRead }, signal: bounded }) };
     if (p.action === "send_draft") { await graphRequest(token, mailMessageActionPath(p.messageId, "send"), { method: "POST", body: {}, response: "none", signal: bounded }); return { ok: true, action: p.action, sent: true }; }

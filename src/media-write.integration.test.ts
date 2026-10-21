@@ -22,6 +22,7 @@ import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 
 let workspaceDir = "";
 const fixtureBytes = Buffer.from([0, 255, 1, 254]);
+const inlinePngBytes = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.from("synthetic-inline")]);
 const mp4Bytes = Buffer.from([0, 0, 0, 24, 102, 116, 121, 112, 109, 112, 52, 50]);
 const largeMp4Bytes = Buffer.alloc(1024 * 1024 + 17, 0x5a);
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -65,6 +66,7 @@ beforeEach(async () => {
   workspaceDir = await mkdtemp(join(tmpdir(), "msgraph-v2-media-write-"));
   await mkdir(join(workspaceDir, "media", "inbound"), { recursive: true });
   await writeFile(join(workspaceDir, "media", "inbound", "fixture.bin"), fixtureBytes);
+  await writeFile(join(workspaceDir, "media", "inbound", "inline.png"), inlinePngBytes);
   await writeFile(join(workspaceDir, "media", "inbound", "clip.mp4"), mp4Bytes);
   await writeFile(join(workspaceDir, "media", "inbound", "large.mp4"), largeMp4Bytes);
 });
@@ -75,6 +77,43 @@ afterEach(async () => {
 });
 
 describe("protected media write inputs", () => {
+  it("sends an inline image as a CID attachment without returning its bytes", async () => {
+    let wireBody: any;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      wireBody = JSON.parse(String(init?.body));
+      return Response.json({ id: "image-1", name: "inline.png", contentType: "image/png" }, { status: 201 });
+    });
+    const response = await registeredTools().outlook_mail_write.execute("inline", { action: "add_attachment", messageId: "draft-1", attachmentName: "inline.png", attachmentContentType: "image/png", attachmentMediaUri: "media://inbound/inline.png", inlineContentId: "chart-1" });
+    expect(wireBody).toMatchObject({ "@odata.type": "#microsoft.graph.fileAttachment", isInline: true, contentId: "chart-1", contentBytes: inlinePngBytes.toString("base64") });
+    expect(response.details).toMatchObject({ ok: true, attachment: { id: "image-1", isInline: true, contentId: "chart-1" } });
+    expect(JSON.stringify(response.details)).not.toContain(wireBody.contentBytes);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects mislabeled inline image bytes before credential or Graph access", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = await registeredTools().outlook_mail_write.execute("invalid-inline", { action: "add_attachment", messageId: "draft-1", attachmentName: "fixture.png", attachmentContentType: "image/png", attachmentMediaUri: "media://inbound/fixture.bin", inlineContentId: "chart-1" });
+    expect(response.details).toMatchObject({ ok: false, error: "invalid_inline_image" });
+    expect(readCredential).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("carries the CID through the large-image upload session", async () => {
+    const largeImage = Buffer.concat([inlinePngBytes, Buffer.alloc(3 * 1024 * 1024)]);
+    await writeFile(join(workspaceDir, "media", "inbound", "large-inline.png"), largeImage);
+    let sessionBody: any;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      if (init?.method === "POST") {
+        sessionBody = JSON.parse(String(init.body));
+        return Response.json({ uploadUrl: "https://outlook.office.com/api/v2.0/AttachmentSessions('synthetic')", nextExpectedRanges: ["0-"] }, { status: 201 });
+      }
+      return new Response(null, { status: 201 });
+    });
+    const response = await registeredTools().outlook_mail_write.execute("large-inline", { action: "add_attachment", messageId: "draft-1", attachmentName: "large-inline.png", attachmentContentType: "image/png", attachmentMediaUri: "media://inbound/large-inline.png", inlineContentId: "chart-1" });
+    expect(sessionBody.AttachmentItem).toMatchObject({ isInline: true, contentId: "chart-1", contentType: "image/png", size: largeImage.byteLength });
+    expect(response.details).toMatchObject({ ok: true, upload_mode: "session", attachment: { isInline: true, contentId: "chart-1" } });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
   it.each(["onedrive_upload", "onedrive_update"])("authorizes %s before opening protected media", async (toolName) => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const response = await registeredTools("unauthorized-agent")[toolName].execute("unauthorized", {
