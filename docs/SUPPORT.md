@@ -13,7 +13,7 @@ Version 3.5.0 declares OpenClaw host and plugin API compatibility from `2026.9.6
 - One signed-in account per policy/credential pair.
 - Fixed `/me` workload routes; no shared-mailbox impersonation.
 - Contacts tools cover only the signed-in user's default `/me/contacts` collection, not contact folders, shared contacts, or the organization directory. Client-side contact search scans at most 500 records and can report incomplete results.
-- Existing credential-vault records are not automatically re-consented for new Contacts scopes; the current device-code wizard refuses to overwrite a nonempty vault. An existing installation needs a separately reviewed reauthorization procedure before Contacts grants can work.
+- Existing credential-vault records are not automatically re-consented for new Contacts scopes. After saving and applying policy, use **Renew Microsoft permissions** in the Control UI. It reuses the existing app/tenant; no terminal commands or new app registration are required. Initial sign-in still refuses to overwrite a nonempty vault.
 - No arbitrary Graph URL or raw payload tool.
 - No sharing/permissions management, subscriptions, delta feeds, retention, legal hold, permanent deletion, OneDrive conversion, or unrelated Graph workloads.
 - OneDrive content writes require OpenClaw private inbound media. Inline bytes and host-local paths are rejected.
@@ -42,3 +42,19 @@ Large transfers remain subject to host storage, network, Microsoft throttling, p
 ## Not promised
 
 The project does not claim official Microsoft or OpenClaw support, enterprise readiness, regulatory compliance, security certification, uninterrupted operation, or fitness for a particular tenant policy. Operators must perform their own review, testing, backup, incident-response, and access-governance work.
+
+
+## Guided renewal troubleshooting
+
+- In German Entra: **Entra ID → App-Registrierungen → existing app → Übersicht**. **Anwendungs-ID (Client-ID)** identifies the app; **Verzeichnis-ID (Mandant)** identifies the tenant. **Objekt-ID** is neither. Switch to the correct directory first. Renewal does not need these values to be copied.
+- Initial setup needs an approved public client and delegated permissions. Required administrator consent and conditional-access rules are not bypassed by sign-in.
+- `credential_vault_conflict_identity`: explicit app/tenant differs from the vault. Use the UI renewal action; do not register another app.
+- `credential_vault_conflict_exists`: initial connection found a vault. Refresh status and choose renewal instead.
+- `credential_vault_conflict_changed`: vault generation/binding changed while consent was pending (for example a normal refresh rotated a token). The current credential is retained. Refresh status, then start a fresh reviewed renewal. Do not automatically replay the old result.
+- `credential_vault_conflict_policy_changed`: applied scopes changed during consent. Review the active rules before restarting.
+- `credential_vault_conflict_quarantined`: authenticated in-flight/uncertain refresh state blocks renewal. An administrator must review recovery; this UI does not clear the marker or delete credentials.
+- Generic `credential_vault_conflict` remains a safe fallback for an unexpected pre-publication race. No raw provider response, token, credential, or vault content is included in these errors.
+
+Terminology/protocol checked against primary Microsoft documentation on 2026-10-21:
+[Register an app (German)](https://learn.microsoft.com/de-de/entra/identity-platform/quickstart-register-app),
+[Device authorization grant (German)](https://learn.microsoft.com/de-de/entra/identity-platform/v2-oauth2-device-code).

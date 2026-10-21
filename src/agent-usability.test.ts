@@ -135,7 +135,7 @@ describe("agent-facing Microsoft Graph contracts", () => {
     expect(String(uncertainRefresh.nextAction)).toContain("reviewed recovery");
     const providerDenied = lifecycleResult("outlook_contacts_write", { ok: false, error: "provider_error_403" }) as Record<string, unknown>;
     expect(providerDenied).toMatchObject({ mutationApplied: "unknown", retrySafety: "readback_before_retry" });
-    expect(String(providerDenied.nextAction)).toContain("use guided terminal reauthorization only if consent is missing");
+    expect(String(providerDenied.nextAction)).toContain("use guided Control UI reauthorization only if consent is missing");
     for (const error of ["workspace_file_unavailable", "workspace_file_changed", "workspace_context_unavailable", "exactly_one_source_required"]) {
       const result = lifecycleResult("onedrive_upload", { ok: false, error }) as Record<string, unknown>;
       expect(result).toMatchObject({ phase: "failed", mutationApplied: false, retrySafety: "safe_after_correction" });

@@ -296,9 +296,10 @@ export async function replaceVaultCredentialAfterReauthorization(stateDir: strin
   const lock = await acquireVaultLock(stateDir, "reauthorize");
   try {
     const current = await readVaultCredential(stateDir, keyValue);
-    if (vaultRecordBinding(current).binding !== expectedBinding || await readMarker(stateDir, keyValue)) throw new Error("credential_vault_conflict");
+    if (vaultRecordBinding(current).binding !== expectedBinding) throw new Error("credential_vault_conflict_changed");
+    if (await readMarker(stateDir, keyValue)) throw new Error("credential_vault_conflict_quarantined");
     if (current.credential.clientId.toLowerCase() !== credential.clientId.toLowerCase()
-      || current.credential.tenant.toLowerCase() !== credential.tenant.toLowerCase()) throw new Error("credential_vault_conflict");
+      || current.credential.tenant.toLowerCase() !== credential.tenant.toLowerCase()) throw new Error("credential_vault_conflict_identity");
     if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked");
     await publishInitialMarker(stateDir, current, keyValue, lock);
     try {

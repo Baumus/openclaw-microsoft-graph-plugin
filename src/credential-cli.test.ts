@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CREDENTIAL_GATEWAY_METHODS, credentialVaultStatus, recoverCredential, registerCredentialCli, registerCredentialGatewayMethods, requiredPolicyScopes, resolveHostCliInvocation, restorePass } from "./credential-cli.js";
 import { createVaultCredential, inspectVaultCredential, refreshVaultCredential, vaultQuarantinePath } from "./credential-vault.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
+import { DeviceCodeSignIn } from "./device-code.js";
 
 const temporary: string[] = [];
 const credential = { clientId: "synthetic-client", refreshToken: "synthetic-refresh", tenant: "synthetic-tenant", scopes: ["Files.ReadWrite", "Calendars.ReadWrite", "Mail.ReadWrite", "Mail.Send", "Tasks.ReadWrite", "offline_access"] };
@@ -58,6 +59,27 @@ const metadata = { generation: 1, keyId: "k".repeat(22), digest: "d".repeat(43),
 const timestamp = "2026-09-25T00:00:00.000Z";
 
 describe("single credential operator surfaces", () => {
+  it("keeps UI reuse admin-scoped, rejects partial/extra parameters and sanitizes conflict reasons", async () => {
+    const handlers = new Map<string, { handler: (context: any) => void | Promise<void>; scope: string }>();
+    registerCredentialGatewayMethods({ registerGatewayMethod: (name, handler, options) => { handlers.set(name, { handler, scope: options.scope }); } }, { policy: graphPolicyFixture() }, () => "/synthetic/unused");
+    const entry = handlers.get(CREDENTIAL_GATEWAY_METHODS.deviceReauthorizeStart)!;
+    expect(entry.scope).toBe("operator.admin");
+    const invoke = async (params: unknown) => { const respond = vi.fn(); await entry.handler({ params, respond }); return respond.mock.calls[0]; };
+    const start = { sessionId: "11111111-1111-4111-8111-111111111111", userCode: "ABCD-EFGH", verificationUri: "https://microsoft.com/devicelogin", expiresAt: "2026-10-21T12:00:00.000Z", scopes: ["Mail.Read", "offline_access"] };
+    const renewal = vi.spyOn(DeviceCodeSignIn.prototype, "reauthorize").mockResolvedValue(start);
+    expect(await invoke({})).toEqual([true, { ok: true, value: start }]);
+    expect(renewal).toHaveBeenCalledWith();
+    for (const params of [null, [], { clientId: "partial" }, { tenant: "partial" }, { clientId: "x", tenant: "y", force: true }, { reuse: true }]) {
+      expect(await invoke(params)).toEqual([true, { ok: false, error: "invalid_rpc_parameters" }]);
+    }
+    expect(renewal).toHaveBeenCalledTimes(1);
+    for (const error of ["credential_vault_conflict_identity", "credential_vault_conflict_changed", "credential_vault_conflict_quarantined", "credential_vault_conflict_policy_changed", "credential_vault_conflict_exists", "credential_vault_locked", "credential_vault_unavailable"]) {
+      renewal.mockRejectedValueOnce(new Error(error));
+      expect(await invoke({})).toEqual([true, { ok: false, error }]);
+    }
+    renewal.mockRejectedValueOnce(new Error("raw synthetic private provider body"));
+    expect(await invoke({})).toEqual([true, { ok: false, error: "internal_error" }]);
+  });
   it("derives the all-scope migration requirement from the policy", () => {
     expect(requiredPolicyScopes(graphPolicyFixture())).toEqual(["Calendars.ReadWrite", "Files.ReadWrite", "Mail.ReadWrite", "Mail.Send", "Tasks.ReadWrite"]);
     const policy = graphPolicyFixture();

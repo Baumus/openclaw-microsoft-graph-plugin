@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DeviceCodeSignIn } from "./device-code.js";
-import { createVaultCredential, inspectVaultCredential, readVaultCredential, refreshVaultCredential } from "./credential-vault.js";
+import { createVaultCredential, inspectVaultCredential, readVaultCredential, refreshVaultCredential, vaultCredentialPath, vaultQuarantinePath } from "./credential-vault.js";
 import { requiredPolicyScopes } from "./credential-cli.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 
@@ -99,6 +99,8 @@ describe("gateway-side device-code sign-in", () => {
     const fetchFn = vi.fn().mockResolvedValue(response(deviceResponse)) as unknown as typeof fetch;
     const signIn = new DeviceCodeSignIn(config, () => state, fetchFn, async () => undefined);
     await expect(signIn.start("not-a-guid", tenant)).rejects.toThrow("invalid_rpc_parameters");
+    await expect(signIn.start("-".repeat(36), tenant)).rejects.toThrow("invalid_rpc_parameters");
+    await expect(signIn.start(clientId, "-bad.example.com")).rejects.toThrow("invalid_rpc_parameters");
     await createVaultCredential(state, { clientId, tenant, refreshToken: "existing-secret", scopes: ["Files.Read", "offline_access"] }, key);
     await expect(signIn.start(clientId, tenant)).rejects.toThrow("credential_vault_conflict");
     expect(fetchFn).not.toHaveBeenCalled();
@@ -118,7 +120,7 @@ describe("gateway-side device-code sign-in", () => {
     }) as unknown as typeof fetch;
     const signIn = new DeviceCodeSignIn(config, () => state, fetchFn, async () => undefined);
     const before = await inspectVaultCredential(state, key);
-    const started = await signIn.reauthorize(clientId, tenant);
+    const started = await signIn.reauthorize();
     expect(started.scopes).toContain("Contacts.ReadWrite");
     expect((await readVaultCredential(state, key)).credential).toEqual(original);
     release(response({ refresh_token: "renewed-secret", scope: requested }));
@@ -143,6 +145,8 @@ describe("gateway-side device-code sign-in", () => {
     const signIn = new DeviceCodeSignIn(config, () => state, fetchFn, async () => undefined);
     await expect(signIn.reauthorize("33333333-3333-4333-8333-333333333333", tenant)).rejects.toThrow("credential_vault_conflict");
     expect(fetchFn).not.toHaveBeenCalled();
+    await expect(signIn.reauthorize(clientId, "33333333-3333-4333-8333-333333333333")).rejects.toThrow("credential_vault_conflict_identity");
+    expect(fetchFn).not.toHaveBeenCalled();
     tokenScope = original.scopes.join(" ");
     const denied = await signIn.reauthorize(clientId, tenant);
     expect(await terminal(signIn, denied.sessionId)).toEqual({ state: "failed", error: "credential_scope_missing" });
@@ -150,7 +154,44 @@ describe("gateway-side device-code sign-in", () => {
     tokenScope = requested;
     const pending = await signIn.reauthorize(clientId, tenant);
     await refreshVaultCredential({ stateDir: state, key, exchange: async () => ({ accessToken: "synthetic-access", replacementRefreshToken: "rotated-secret" }) });
-    expect(await terminal(signIn, pending.sessionId)).toEqual({ state: "failed", error: "credential_vault_conflict" });
+    expect(await terminal(signIn, pending.sessionId)).toEqual({ state: "failed", error: "credential_vault_conflict_changed" });
     expect((await readVaultCredential(state, key)).credential.refreshToken).toBe("rotated-secret");
   });
+  it("retains exact vault bytes on denied, malformed, cancelled or changed-policy renewal", async () => {
+    for (const outcome of ["denied", "malformed", "cancelled", "policy"] as const) {
+      const { state, key, config } = await setup();
+      await createVaultCredential(state, { clientId, tenant, refreshToken: "prior-synthetic", scopes: ["Files.Read", "offline_access"] }, key);
+      const before = await readFile(vaultCredentialPath(state));
+      let release!: () => void;
+      const wait = () => new Promise<void>(resolve => { release = resolve; });
+      const fetchFn = vi.fn().mockResolvedValueOnce(response(deviceResponse)).mockResolvedValueOnce(
+        outcome === "denied" ? response({ error: "authorization_declined" }, 400) :
+        outcome === "malformed" ? response({ refresh_token: 7 }) :
+        response({ refresh_token: "candidate-synthetic", scope: [...requiredPolicyScopes(config.policy), "offline_access"].join(" ") })
+      ) as unknown as typeof fetch;
+      const signIn = new DeviceCodeSignIn(config, () => state, fetchFn, wait);
+      const started = await signIn.reauthorize();
+      if (outcome === "cancelled") signIn.cancel(started.sessionId);
+      if (outcome === "policy") config.policy.services.mail.agents = {};
+      release();
+      const status = await terminal(signIn, started.sessionId);
+      expect(status).toEqual({ state: "failed", error: outcome === "denied" ? "device_authorization_declined" : outcome === "malformed" ? "device_authorization_failed" : outcome === "cancelled" ? "device_authorization_cancelled" : "credential_vault_conflict_policy_changed" });
+      expect(await readFile(vaultCredentialPath(state))).toEqual(before);
+      if (outcome === "cancelled") expect(fetchFn).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("does not bypass an authenticated quarantine or expose its contents", async () => {
+    const { state, key, config } = await setup();
+    await createVaultCredential(state, { clientId, tenant, refreshToken: "prior-synthetic", scopes: ["Files.Read", "offline_access"] }, key);
+    await expect(refreshVaultCredential({ stateDir: state, key, exchange: async () => { throw new Error("credential_refresh_outcome_uncertain"); } })).rejects.toThrow("credential_refresh_outcome_uncertain");
+    const before = await readFile(vaultCredentialPath(state)); const marker = await readFile(vaultQuarantinePath(state));
+    const fetchFn = vi.fn();
+    const signIn = new DeviceCodeSignIn(config, () => state, fetchFn);
+    await expect(signIn.reauthorize()).rejects.toThrow("credential_vault_conflict_quarantined");
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(await readFile(vaultCredentialPath(state))).toEqual(before);
+    expect(await readFile(vaultQuarantinePath(state))).toEqual(marker);
+  });
+
 });

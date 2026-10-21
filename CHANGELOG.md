@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## 3.16.1 - 2026-10-21
+
+- Guide existing-vault permission renewal entirely through the administrator Control UI, reusing authoritative app/tenant identifiers and retaining consent/binding/quarantine safeguards.
+- Preserve open disclosures, in-progress text, focus and caret during background UI renders; clarify German Entra identifier labels and sanitized conflict recovery.
+- Ignore stale sign-in responses after cancellation, a new session, authority loss or unmount; omit browser-stored tenant attribution from renewal failure diagnostics. No Microsoft permission, policy, vault format or compatibility-floor change.
+
 ## 3.16.0 - 2026-10-21
 
 - Add policy-gated access to the signed-in user's default Outlook Contacts collection: bounded list/search/get and create/update/delete of selected contact fields. Existing policies remain valid and deny Contacts by default. Contact deletion uses call-bound critical approval; creation and updates use warning approval by default.

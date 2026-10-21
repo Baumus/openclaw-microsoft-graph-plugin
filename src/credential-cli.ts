@@ -50,6 +50,11 @@ const SAFE_OPERATION_ERRORS = new Set([
   "credential_scope_missing",
   "credential_unavailable",
   "credential_vault_conflict",
+  "credential_vault_conflict_changed",
+  "credential_vault_conflict_identity",
+  "credential_vault_conflict_quarantined",
+  "credential_vault_conflict_exists",
+  "credential_vault_conflict_policy_changed",
   "credential_vault_locked",
   "credential_vault_unavailable",
   "credential_vault_write_failed",
@@ -218,6 +223,8 @@ export function registerCredentialGatewayMethods(api: GatewayApi, config: CliCon
     return device.start(params.clientId, params.tenant);
   }, deviceStartResult), { scope: "operator.admin" });
   api.registerGatewayMethod(CREDENTIAL_GATEWAY_METHODS.deviceReauthorizeStart, gatewayHandler(async (input) => {
+    // Existing explicit-ID callers remain supported; UI renewal needs no IDs.
+    if (input && typeof input === "object" && !Array.isArray(input) && Object.keys(input).length === 0) return device.reauthorize();
     const params = exactParams(input, ["clientId", "tenant"]);
     if (typeof params.clientId !== "string" || typeof params.tenant !== "string") throw new Error("invalid_rpc_parameters");
     return device.reauthorize(params.clientId, params.tenant);
