@@ -21,7 +21,7 @@ function mount(initialIds?: { clientId: string; tenant: string }) {
   const host = {
     locale: "de", connection: { connected: true, canAdmin: true }, agents: { rows: [{ id: "main", name: "Main" }] },
     subscribe: () => () => undefined,
-    request: async (method: string, params: unknown) => { calls.push({ method, params }); if (!(method in responses)) throw new Error(`Unexpected RPC ${method}`); return responses[method]; },
+    request: async (method: string, params: unknown) => { calls.push({ method, params }); if (!(method in responses)) throw new Error(`Unexpected RPC ${method}`); if (responses[method] instanceof Error) throw responses[method]; return responses[method]; },
     ui: { registerPage: (value: Page) => { page = value; return () => undefined; }, registerNavigation: () => () => undefined },
   };
   const stop = plugin.activate(host as never);
@@ -37,6 +37,51 @@ function clickByText(container: HTMLElement, text: string) {
 }
 describe("guided Microsoft sign-in", () => {
   beforeEach(() => { localStorage.clear(); });
+  it("guides a connected operator to terminal reauthorization when policy scopes are missing", async () => {
+    const view = mount({ clientId, tenant });
+    view.responses["microsoft-graph.credentials.status"] = { ok: true, value: { policyVersion: 2, credential: { result: "valid", missingScopes: ["Contacts.ReadWrite"] } } };
+    await view.settle();
+    expect(view.container.textContent).toContain("Microsoft-Zugang erneut autorisieren");
+    expect(view.container.textContent).toContain(`openclaw microsoft-graph credentials reauthorize --client-id ${clientId} --tenant ${tenant}`);
+    expect(view.container.textContent).not.toContain("Verbindung hergestellt");
+    expect(view.calls.some(call => call.method === "microsoft-graph.credentials.reauthorize-start")).toBe(false);
+    view.dispose();
+  });
+  it("offers a manual renewal path when Microsoft revokes consent after connection", async () => {
+    const view = mount({ clientId, tenant });
+    view.responses["microsoft-graph.credentials.status"] = { ok: true, value: { policyVersion: 2, credential: { result: "valid", missingScopes: [] } } };
+    await view.settle();
+    expect(view.container.textContent).toContain("Microsoft-Berechtigungen erneuern");
+    expect(view.container.textContent).toContain(`openclaw microsoft-graph credentials reauthorize --client-id ${clientId} --tenant ${tenant}`);
+    view.dispose();
+  });
+  it("does not retain a connected status after a failed scope refresh and offers retry", async () => {
+    const view = mount({ clientId, tenant });
+    view.responses["microsoft-graph.credentials.status"] = { ok: true, value: { policyVersion: 2, credential: { result: "valid", missingScopes: [] } } };
+    await view.settle();
+    expect(view.container.textContent).toContain("Verbindung hergestellt");
+    view.responses["microsoft-graph.credentials.status"] = new Error("gateway offline");
+    clickByText(view.container, "Berechtigungen erneut prüfen"); await view.settle();
+    expect(view.container.textContent).not.toContain("Verbindung hergestellt");
+    expect(view.container.textContent).toContain("Der Zugangsstatus ist nicht verfügbar");
+    view.responses["microsoft-graph.credentials.status"] = { ok: true, value: { policyVersion: 2, credential: { result: "valid", missingScopes: ["Contacts.ReadWrite"] } } };
+    clickByText(view.container, "Berechtigungen erneut prüfen"); await view.settle();
+    expect(view.container.textContent).toContain("Microsoft-Zugang erneut autorisieren");
+    view.dispose();
+  });
+  it("shows Contacts as an optional default-deny service without changing legacy policy until selected", async () => {
+    const view = mount(); await view.settle();
+    clickByText(view.container, "2  Dienste");
+    const card = [...view.container.querySelectorAll("fieldset")].find(fieldset => fieldset.querySelector("legend")?.textContent === "Kontakte");
+    expect(card).toBeTruthy();
+    const toggle = card!.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    expect(toggle.checked).toBe(false);
+    expect((policy.services as Record<string, unknown>).contacts).toBeUndefined();
+    toggle.checked = true; toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    clickByText(view.container, "4  Prüfen"); await view.settle();
+    expect(view.calls.find(call => call.method === "microsoft-graph.configuration.validate" && (call.params as any)?.policy?.services?.contacts)?.params).toMatchObject({ policy: { services: { contacts: { agents: { main: { operations: ["read", "create", "update", "delete"] } } } } } });
+    view.dispose();
+  });
   it("uses saved identifiers without claiming they were verified, then shows the device-code steps", async () => {
     const view = mount({ clientId, tenant }); await view.settle();
     expect(view.container.textContent).toContain("Anmeldung und Freigabe prüfen wir beim Verbinden");

@@ -58,7 +58,7 @@ describe("microsoft-graph plugin contract", () => {
     expect(() => entry.register(api as any)).not.toThrow();
     expect(registerTool).toHaveBeenCalled();
     expect(registerCli).toHaveBeenCalledTimes(1);
-    expect(registerGatewayMethod).toHaveBeenCalledTimes(11);
+    expect(registerGatewayMethod).toHaveBeenCalledTimes(12);
     expect(registerGatewayMethod.mock.calls.map(([method, _handler, options]) => [method, options.scope])).toEqual([
       ["microsoft-graph.configuration.applicationStatus", "operator.admin"],
       ["microsoft-graph.configuration.validate", "operator.admin"],
@@ -69,6 +69,7 @@ describe("microsoft-graph plugin contract", () => {
       ["microsoft-graph.credentials.restore-pass", "operator.admin"],
       ["microsoft-graph.credentials.recover-refresh", "operator.admin"],
       ["microsoft-graph.credentials.device-start", "operator.admin"],
+      ["microsoft-graph.credentials.reauthorize-start", "operator.admin"],
       ["microsoft-graph.credentials.device-status", "operator.admin"],
       ["microsoft-graph.credentials.device-cancel", "operator.admin"],
     ]);
@@ -78,7 +79,7 @@ describe("microsoft-graph plugin contract", () => {
     const metadata = getToolPluginMetadata(entry)!;
     expect(metadata.tools.map((tool) => tool.name)).toEqual([
       "onedrive_search", "onedrive_list", "onedrive_read", "onedrive_download", "onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete",
-      "outlook_calendar_read", "outlook_calendar_write", "outlook_mail_read", "outlook_mail_write", "microsoft_todo_read", "microsoft_todo_write",
+      "outlook_calendar_read", "outlook_calendar_write", "outlook_mail_read", "outlook_mail_write", "outlook_contacts_read", "outlook_contacts_write", "microsoft_todo_read", "microsoft_todo_write",
       "onedrive_agents_instructions", "microsoft_graph_capabilities",
     ]);
     expect(metadata.tools.every((tool) => tool.optional)).toBe(true);
@@ -648,7 +649,7 @@ describe("microsoft-graph plugin contract", () => {
 
   it("covers every shared write-schema field with an explicit action allowlist", () => {
     const metadata = getToolPluginMetadata(entry)!;
-    for (const [domain, toolName] of [["calendar", "outlook_calendar_write"], ["mail", "outlook_mail_write"], ["todo", "microsoft_todo_write"]] as const) {
+    for (const [domain, toolName] of [["calendar", "outlook_calendar_write"], ["mail", "outlook_mail_write"], ["contacts", "outlook_contacts_write"], ["todo", "microsoft_todo_write"]] as const) {
       const schema = metadata.tools.find((tool) => tool.name === toolName)?.parameters as any;
       const schemaFields = Object.keys(schema.properties).sort();
       const matrixFields = [...new Set([...Object.values(WRITE_ACTION_FIELDS[domain]).flat(), "chatConfirmed", "chatConfirmationToken", "timeoutMs"])].sort();
@@ -665,7 +666,7 @@ describe("microsoft-graph plugin contract", () => {
 
   it("exhaustively classifies only explicit read tools as approval-free", () => {
     const metadata = getToolPluginMetadata(entry)!;
-    const readTools = new Set(["onedrive_search", "onedrive_list", "onedrive_read", "onedrive_download", "onedrive_agents_instructions", "microsoft_graph_capabilities", "outlook_calendar_read", "outlook_mail_read", "microsoft_todo_read"]);
+    const readTools = new Set(["onedrive_search", "onedrive_list", "onedrive_read", "onedrive_download", "onedrive_agents_instructions", "microsoft_graph_capabilities", "outlook_calendar_read", "outlook_mail_read", "outlook_contacts_read", "microsoft_todo_read"]);
     const oneDriveWrites = new Set(["onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete"]);
     for (const tool of metadata.tools) {
       const actions = (tool.parameters as any).properties?.action?.anyOf?.map((value: any) => value.const) ?? [undefined];
@@ -681,11 +682,11 @@ describe("microsoft-graph plugin contract", () => {
   });
 
   it("fails closed for unknown or missing actions on current write tools", () => {
-    for (const toolName of ["outlook_calendar_write", "outlook_mail_write", "microsoft_todo_write"]) {
+    for (const toolName of ["outlook_calendar_write", "outlook_mail_write", "outlook_contacts_write", "microsoft_todo_write"]) {
       expect(classifyApproval(toolName, { action: "future_action" })).toBe("warning");
       expect(classifyApproval(toolName, {})).toBe("warning");
     }
-    for (const toolName of ["outlook_calendar_read", "outlook_mail_read", "microsoft_todo_read"]) {
+    for (const toolName of ["outlook_calendar_read", "outlook_mail_read", "outlook_contacts_read", "microsoft_todo_read"]) {
       expect(classifyApproval(toolName, { action: "future_action" })).toBe("warning");
       expect(classifyApproval(toolName, {})).toBe("warning");
     }
@@ -703,7 +704,7 @@ describe("microsoft-graph plugin contract", () => {
     expect(inventory.approvals).toContainEqual({ tool: "onedrive_agents_instructions", condition: "read", level: "none" });
     expect(inventory.approvals).toContainEqual({ tool: "outlook_calendar_write", action: "create", level: "warning" });
     expect(inventory.confirmationModes).toEqual({ none: "none", warning: "native-plugin-approval", critical: "native-plugin-approval" });
-    for (const tool of ["outlook_calendar_write", "outlook_mail_write", "microsoft_todo_write"]) {
+    for (const tool of ["outlook_calendar_write", "outlook_mail_write", "outlook_contacts_write", "microsoft_todo_write"]) {
       expect(inventory.approvals).toContainEqual({ tool, condition: "unknown_or_missing_action", level: "warning" });
     }
     expect(JSON.stringify(inventory)).not.toMatch(/credentials|secret|token|password/i);
@@ -1315,7 +1316,7 @@ describe("microsoft-graph plugin contract", () => {
         [factories[1]({ agentId: "fixture-reader" }), { rootLabel: "synthetic_documents", relativePath: "", continuation: raw }],
         [factories[9]({ agentId: "main" }), { action: "list_events", startDateTime: "2026-09-01T00:00:00Z", endDateTime: "2026-09-02T00:00:00Z", continuation: raw }],
         [factories[11]({ agentId: "main" }), { action: "list_messages", continuation: raw }],
-        [factories[13]({ agentId: "main" }), { action: "list_lists", continuation: raw }],
+        [factories[15]({ agentId: "main" }), { action: "list_lists", continuation: raw }],
       ] as const;
       for (const [tool, params] of calls) expect((await tool.execute("x", params)).details).toMatchObject({ ok: false, error: "invalid_continuation" });
       expect(fetchSpy).not.toHaveBeenCalled();

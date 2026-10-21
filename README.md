@@ -2,11 +2,11 @@
 
 **Independent community plugin by Baumus**
 
-Your Outlook messages, calendar, OneDrive files, and Microsoft To Do tasks are part of your day. Bring the parts you choose into OpenClaw so your agents can help you find information and work with it—under access rules you control.
+Your Outlook messages, calendar, personal contacts, OneDrive files, and Microsoft To Do tasks are part of your day. Bring the parts you choose into OpenClaw so your agents can help you find information and work with it—under access rules you control.
 
-This plugin connects one signed-in Microsoft user to OpenClaw under administrator-controlled access rules. Grant named agents specific access to Outlook Mail, Outlook Calendar, OneDrive, and Microsoft To Do. Access is denied by default. Changes require OpenClaw approval by default; sending, deleting, and responding always require call-bound approval. An administrator can turn off warning-level approval, so review that setting before granting write access.
+This plugin connects one signed-in Microsoft user to OpenClaw under administrator-controlled access rules. Grant named agents specific access to Outlook Mail, Outlook Calendar, personal Contacts, OneDrive, and Microsoft To Do. Access is denied by default. Changes require OpenClaw approval by default; sending, deleting, and responding always require call-bound approval. An administrator can turn off warning-level approval, so review that setting before granting write access.
 
-For example, an authorized agent can find a file in an approved OneDrive folder, check an upcoming event, find an Outlook message, or review permitted tasks. The plugin does not provide Teams, SharePoint, arbitrary Microsoft Graph access, or a service-principal connection.
+For example, an authorized agent can find a file in an approved OneDrive folder, check an upcoming event, find an Outlook message or personal contact, or review permitted tasks. The plugin does not provide Teams, SharePoint, arbitrary Microsoft Graph access, or a service-principal connection.
 
 **Start here:** [Check requirements and install from ClawHub](#1-check-requirements-and-install), then [choose access](#2-choose-access-and-connect-microsoft), then [verify a read-only request](#3-verify-your-first-request).
 
@@ -31,9 +31,9 @@ openclaw plugins install clawhub:@baumus/openclaw-microsoft-graph
 
 Installation alone does not sign you in, grant an agent access, or make an incomplete configuration usable. Existing installations should review changes before updating; this guide does not silently upgrade them.
 
-**Temporary ClawHub validation notice:** ClawHub may flag `contracts.tools` as an unsupported manifest contract (`manifest-unknown-contracts`). For this plugin, that finding is a validator false positive: OpenClaw requires the field to discover its agent tools, so removing it would break them. The [upstream Inspector fix](https://github.com/openclaw/plugin-inspector/commit/d0cfd5ef980e6fc9c10a2252760249a79baa8e3c) has merged. We expect the warning to disappear once that fix is released and adopted by ClawHub, but the timing is not confirmed.
+**Earlier ClawHub validation notice:** Older validation runs flagged `contracts.tools` as an unsupported manifest contract (`manifest-unknown-contracts`). OpenClaw requires this field to discover the plugin's agent tools. The [upstream Inspector fix](https://github.com/openclaw/plugin-inspector/commit/d0cfd5ef980e6fc9c10a2252760249a79baa8e3c) has merged, and the current local package validation reports no findings. Check the hosted result for each published version separately.
 
-**OpenClaw SDK migration:** Version 3.15.1 uses the awaited `getSessionEntryAsync` reader for session-bound approval checks, eliminating the `getSessionEntry` deprecation warning. This API requires OpenClaw 2026.10.5 or newer. Earlier plugin releases remain available for older hosts; this change does not alter Microsoft permissions or stored credentials.
+**OpenClaw SDK migration:** Version 3.16.0 uses the awaited `getSessionEntryAsync` reader for session-bound approval checks, eliminating the `getSessionEntry` deprecation warning. This API requires OpenClaw 2026.10.5 or newer. Earlier plugin releases remain available for older hosts; this change does not itself alter Microsoft permissions or stored credentials.
 
 ### 2. Choose access and connect Microsoft
 
@@ -56,6 +56,8 @@ Wait until the Control UI confirms that the Gateway has applied your rules. Run 
 - HTTP-200 OAuth responses require a 1–16 KiB RFC 6750 `b64token`/header-safe access token and a positive integer `expires_in` no greater than 86,400 seconds. Cache residency is capped at one hour with a 60-second skew.
 
 This simpler shared-credential model has an explicit tradeoff: compromise of the credential, vault key, or a plugin bypass can expose the union of Microsoft delegated scopes granted to that credential. The policy and write-approval gates constrain normal plugin behavior; they are not provider-side credential isolation.
+
+Contacts access is optional and denied for existing policies until an administrator grants it. Read requires delegated `Contacts.Read`; create, update, and delete require `Contacts.ReadWrite`. Existing vault credentials do not gain newly requested scopes automatically. After saving and applying a new grant, the Control UI shows missing scopes and guides the operator through `credentials reauthorize` in the host terminal. Affected operations fail closed until reauthorization succeeds; the old vault remains in place until the new grant is verified and atomically published.
 
 See [architecture](docs/ARCHITECTURE.md), [OAuth access matrix](docs/OAUTH_ACCESS_MATRIX.md), [vault design](docs/CREDENTIAL_VAULT_DESIGN.md), and [support](docs/SUPPORT.md).
 
@@ -146,7 +148,7 @@ A conservative OneDrive read-only policy looks like this:
 }
 ```
 
-Use agent IDs from the OpenClaw host configuration; the plugin does not infer policy grants from local workspace content. For OneDrive, obtain the immutable drive and item IDs with Microsoft Graph Explorer or another tenant-approved administrative client; the display path alone is not an authorization boundary. Calendar grants may use `me` or exact calendar IDs. Mail and To Do use fixed signed-in-user `/me` routes. Add only the operations and resources you intend to permit, and add the corresponding delegated scopes to the one credential.
+Use agent IDs from the OpenClaw host configuration; the plugin does not infer policy grants from local workspace content. For OneDrive, obtain the immutable drive and item IDs with Microsoft Graph Explorer or another tenant-approved administrative client; the display path alone is not an authorization boundary. Calendar grants may use `me` or exact calendar IDs. Mail, Contacts, and To Do use fixed signed-in-user `/me` routes. Contacts are limited to the default `/me/contacts` collection. Add only the operations and resources you intend to permit, and add the corresponding delegated scopes to the one credential.
 
 Keep `rules.default: "deny"`. `include_descendants` must be literal `true`; remove a root entirely if descendants must not be available. Leave `agents_instructions` absent unless trusted administrators control every writer to that root and you intentionally set `agents_instructions: "trusted"`. This optional plugin feature applies OpenClaw's standard `AGENTS.md` instruction format to policy-pinned OneDrive content; it does not read, copy, or modify the host agent's local workspace `AGENTS.md`.
 
@@ -231,7 +233,18 @@ openclaw microsoft-graph credentials status
 openclaw microsoft-graph credentials sign-in --client-id <approved-app-id> --tenant <tenant-id>
 ```
 
-Tenant consent and conditional-access rules remain authoritative. Sign-in will not overwrite an existing or quarantined vault; use a separately reviewed recovery or reauthorization procedure in that case. `status` requires `operator.read`; sign-in, cancellation, recovery, and optional `restore-pass` require `operator.admin`. Gateway RPC parameters and responses have closed validated shapes and do not include OAuth tokens, the vault key, `pass` contents, or raw errors.
+Tenant consent and conditional-access rules remain authoritative. Initial sign-in will not overwrite an existing or quarantined vault. For an existing valid vault needing additional policy scopes, save and apply the policy, then run the guided terminal command as the OpenClaw host user:
+
+```bash
+openclaw microsoft-graph credentials reauthorize --client-id <same-approved-app-id> --tenant <same-tenant-id>
+openclaw microsoft-graph credentials status
+```
+
+Use the **same Microsoft account** on Microsoft's device page. The command requests all scopes required by the active policy, checks Microsoft's returned scopes, and replaces the existing credential only after successful consent. It refuses a different app/tenant, quarantined vault, stale vault binding, or changed policy; an unsuccessful sign-in leaves the original credential in place. The existing vault does not record an independently verified account identity, so the operator must confirm the account shown by Microsoft. The terminal keeps the one-time code and verification URL out of chat. `status` requires `operator.read`; sign-in, reauthorization, cancellation, recovery, and optional `restore-pass` require `operator.admin`. Gateway RPC parameters and responses have closed validated shapes and do not include OAuth tokens, the vault key, `pass` contents, or raw errors.
+
+`missingScopes` compares the active policy with scopes stored when Microsoft issued the credential; it does not call Microsoft to detect a later consent revocation. If Microsoft subsequently denies an operation despite `missingScopes: []`, check the policy, account, and tenant first. The Control UI also keeps a collapsible renewal command available for that case.
+
+Agent-facing tool errors distinguish missing stored consent, blocked credential refresh, and Microsoft HTTP 401/403. They point to credential status and the guided operator flow; a provider denial alone is not treated as proof that reauthorization is required.
 
 ### Validate the setup
 
@@ -245,7 +258,7 @@ openclaw secrets audit --check
 openclaw microsoft-graph credentials status
 ```
 
-Expected credential status is `result: "valid"` with secret-free metadata. Then, from an agent explicitly granted in policy, make one read-only request against an allowlisted resource and confirm that an ungranted agent or resource is denied. Do not start validation with a write or destructive action. `plugins list` or a cold manifest inspection alone does not prove that the running Gateway registered the plugin.
+Expected credential status is `result: "valid"` with `missingScopes: []` and secret-free metadata. Then, from an agent explicitly granted in policy, make one read-only request against an allowlisted resource and confirm that an ungranted agent or resource is denied. Do not start validation with a write or destructive action. `plugins list` or a cold manifest inspection alone does not prove that the running Gateway registered the plugin.
 
 ### Understand approvals
 
@@ -276,11 +289,12 @@ OneDrive mutation authorization occurs before a warning approval request or appr
 `openclaw microsoft-graph credentials status` returns one of:
 
 - `missing`: no vault exists; use the browser sign-in above.
+- `valid` with nonempty `missingScopes`: the saved policy requires consent absent from the stored credential; use the terminal reauthorization command above. Do not delete the vault.
 - `valid`: the vault decrypts and has no authenticated refresh marker.
 - `quarantined`: a dispatched refresh has an uncertain outcome. Normal exchanges remain blocked.
 - `unavailable`: the key, record, permissions, ownership, filesystem, or authenticated envelope could not be validated. Stop and investigate; do not overwrite the vault.
 
-For `quarantined`, reauthorization is the safest recovery whenever Microsoft may have rotated the refresh token. Only if an operator has independently established that the current vault credential remains usable should they copy the current **sanitized binding** from `status` and run:
+For `quarantined`, the ordinary `reauthorize` command refuses to replace the vault. Arrange a separately reviewed recovery or replacement whenever Microsoft may have rotated the refresh token. Only if an operator has independently established that the current vault credential remains usable should they copy the current **sanitized binding** from `status` and run:
 
 ```text
 openclaw microsoft-graph credentials recover-refresh --expected-binding <binding> --dry-run
@@ -335,11 +349,11 @@ The default selector requires independently allowed To Do `read` and `create` op
 
 ## Configuration UI (OpenClaw 2026.10.5+)
 
-Administrators can enable **Settings → Labs → Custom plugin UI**, then open **Connect Microsoft 365 to OpenClaw** in the Control UI. The page offers English, German, Spanish, and Arabic; other host locales fall back to English. When a newer security-clean stable release is published on ClawHub, an administrator-only, read-only Gateway check shows an update badge beside the established-connection status. It contacts ClawHub with no Microsoft credentials or policy data, and the badge never installs or activates an update. The page edits OneDrive folder/agent rights, per-agent Calendar/Mail/To Do access, and warning-level approval choices for each service. On **Services**, Calendar shows the effective scope for the selected agent: a grant without `resources` means **default calendar only**. An admin-only Gateway lookup retrieves calendar IDs and names (never events); selecting a calendar changes only that agent's resource list, not its operation rights. Unavailable lists do not imply full access, and configured IDs absent from the list remain visible and retained unless explicitly unchecked. The **Review** step names added and removed calendar grants before save. New OneDrive paths are resolved to immutable drive/item IDs by an admin-only Gateway method. Critical delete, send, and respond actions always retain call-bound approval.
+Administrators can enable **Settings → Labs → Custom plugin UI**, then open **Connect Microsoft 365 to OpenClaw** in the Control UI. The page offers English, German, Spanish, and Arabic; other host locales fall back to English. When a newer security-clean stable release is published on ClawHub, an administrator-only, read-only Gateway check shows an update badge beside the established-connection status. It contacts ClawHub with no Microsoft credentials or policy data, and the badge never installs or activates an update. The page edits OneDrive folder/agent rights, per-agent Calendar/Mail/Contacts/To Do access, and warning-level approval choices for each service. On **Services**, Calendar shows the effective scope for the selected agent: a grant without `resources` means **default calendar only**. An admin-only Gateway lookup retrieves calendar IDs and names (never events); selecting a calendar changes only that agent's resource list, not its operation rights. Unavailable lists do not imply full access, and configured IDs absent from the list remain visible and retained unless explicitly unchecked. The **Review** step names added and removed calendar grants before save. New OneDrive paths are resolved to immutable drive/item IDs by an admin-only Gateway method. Critical delete, send, and respond actions always retain call-bound approval.
 
 The page validates the policy and submits a revision-checked, policy-only `config.patch`. A supported single-file object-key `$include` is written through by OpenClaw; an unsupported include layout or concurrent change fails closed. The page immediately locks duplicate writes and re-reads the effective policy independently of the save response. A timeout or disconnect does not imply that saving failed: unknown outcomes are reconciled without resaving. Drafts and operation state remain only in authenticated host memory across page remounts (not browser storage). An administrator-only read-only status method compares the running Microsoft Graph generation’s canonical policy hash with the saved target; unrelated Gateway changes do not make Graph rules appear inactive. Pending application is checked automatically for up to 12 checks, with bounded read timeouts and a manual recheck available. After a persisted save, the page can request a targeted, drain-aware plugin reload; **Apply saved rules** retries application without rewriting policy or interrupting admitted work. A disconnect during application may require another application attempt. Concurrent policy changes fail closed and require loading the current state. Confirmed Microsoft account connection remains visible during pending activation. Do not treat “saved” as proof that the Gateway is using the new rules.
 
-When new delegated scopes would be required, the page blocks saving while the plugin is enabled until Microsoft consent is verified through the separate operator workflow. The browser sign-in is a guided Microsoft device-code flow; only the one-time code is displayed. Tokens and the vault key stay on the Gateway. Recovery remains in the interactive CLI. Generic plugin settings and CLI paths remain available when Custom plugin UI is disabled.
+When new delegated scopes are required, the page warns before saving. After the policy is applied, it displays the missing scopes and a terminal reauthorization command; affected tools remain denied until the new grant is verified. The browser sign-in remains create-only; reauthorization runs in the interactive host terminal. Tokens and the vault key stay on the Gateway. Generic plugin settings and CLI paths remain available when Custom plugin UI is disabled.
 
 ## Development
 

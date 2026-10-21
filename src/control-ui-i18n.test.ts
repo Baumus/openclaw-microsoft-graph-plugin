@@ -25,6 +25,15 @@ describe("Microsoft Graph Control UI localization", () => {
     }
   });
 
+  it("translates the reauthorization guidance in all supported locales", () => {
+    for (const code of ["en", "de", "es", "ar"]) {
+      setLocale(code);
+      expect(localize("Microsoft-Zugang erneut autorisieren")).toBeTruthy();
+      expect(format("Diese Berechtigungen fehlen: {scopes}. Bis zur Erneuerung bleiben die betreffenden Aktionen gesperrt.", { scopes: "Contacts.ReadWrite" })).toContain("Contacts.ReadWrite");
+      if (code !== "de") expect(localize("Berechtigungen erneut prüfen")).not.toBe("Berechtigungen erneut prüfen");
+    }
+  });
+
   it("localizes compact connection copy without claiming a tested read", () => {
     for (const code of ["en", "de", "es", "ar"]) {
       setLocale(code);

@@ -28,16 +28,23 @@ describe("Gateway credential handling", () => {
     expect(() => assertScopes(credential, ["Mail.Read"])).toThrow("credential_scope_missing");
   });
 
-  it("selects and requests only the operation-specific scope", async () => {
+  it("requests the granted write scope when it also authorizes a read operation", async () => {
     const credential = parseCredential(JSON.stringify({ clientId: "client", refreshToken: "refresh", scopes: ["Files.ReadWrite"] }));
-    expect(selectScope(credential, ["Files.Read"])).toBe("Files.Read");
+    expect(selectScope(credential, ["Files.Read"])).toBe("Files.ReadWrite");
     let requested = "";
     const fetchFn = async (_url: string | URL | Request, init?: RequestInit) => {
       requested = String(init?.body);
       return new Response(JSON.stringify({ access_token: "bounded-token", expires_in: 3600 }), { status: 200, headers: { "content-type": "application/json" } });
     };
     await expect(exchangeRefreshToken(credential, ["Files.Read"], undefined, fetchFn as typeof fetch)).resolves.toBe("bounded-token");
-    expect(new URLSearchParams(requested).get("scope")).toBe("Files.Read");
+    expect(new URLSearchParams(requested).get("scope")).toBe("Files.ReadWrite");
+  });
+
+  it("accepts Contacts.ReadWrite consent for contact reads without inventing write consent", () => {
+    const writable = parseCredential(JSON.stringify({ clientId: "client", refreshToken: "refresh", scopes: ["Contacts.ReadWrite"] }));
+    expect(selectScope(writable, ["Contacts.Read"])).toBe("Contacts.ReadWrite");
+    const readable = parseCredential(JSON.stringify({ clientId: "client", refreshToken: "refresh", scopes: ["Contacts.Read"] }));
+    expect(() => selectScope(readable, ["Contacts.ReadWrite"])).toThrow("credential_scope_missing");
   });
 
   it("rejects oversized OAuth responses", async () => {

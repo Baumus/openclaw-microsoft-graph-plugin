@@ -290,6 +290,31 @@ async function replaceRecord(stateDir: string, current: VaultRecord, credential:
   catch { throw new Error("credential_vault_write_failed"); }
 }
 
+/** Publish a newly consented credential only after OAuth scope validation. The
+ * original record remains intact through sign-in and every pre-publication check. */
+export async function replaceVaultCredentialAfterReauthorization(stateDir: string, keyValue: unknown, expectedBinding: string, credential: VaultCredential): Promise<VaultRecord> {
+  const lock = await acquireVaultLock(stateDir, "reauthorize");
+  try {
+    const current = await readVaultCredential(stateDir, keyValue);
+    if (vaultRecordBinding(current).binding !== expectedBinding || await readMarker(stateDir, keyValue)) throw new Error("credential_vault_conflict");
+    if (current.credential.clientId.toLowerCase() !== credential.clientId.toLowerCase()
+      || current.credential.tenant.toLowerCase() !== credential.tenant.toLowerCase()) throw new Error("credential_vault_conflict");
+    if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked");
+    await publishInitialMarker(stateDir, current, keyValue, lock);
+    try {
+      const published = await replaceRecord(stateDir, current, credential, keyValue, lock);
+      await clearMarker(stateDir, keyValue, lock);
+      return published;
+    } catch (error) {
+      // A verified unchanged record means the old credential can safely resume.
+      // Ambiguous publication retains the authenticated marker and fails closed.
+      const observed = await readVaultCredential(stateDir, keyValue).catch(() => undefined);
+      if (observed?.digest === current.digest && await lock.verifyStillHeld()) await clearMarker(stateDir, keyValue, lock);
+      throw error;
+    }
+  } finally { await lock.release().catch(() => undefined); }
+}
+
 export async function refreshVaultCredential(params: { stateDir: string; key: unknown; signal?: AbortSignal; exchange: (credential: VaultCredential, binding: VaultBinding) => Promise<VaultRefreshResult>; onDurableResult?: (result: VaultRefreshResult, predecessor: VaultBinding, durable: VaultBinding) => void; testHooks?: MutationHooks }): Promise<string> {
   params.signal?.throwIfAborted(); const lock = await acquireVaultLock(params.stateDir, "refresh");
   try {

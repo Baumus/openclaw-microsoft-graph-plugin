@@ -21,6 +21,8 @@
     },
     calendar: { agents: {} },
     mail: { agents: {} },
+    // Optional; add an exact agent grant only after delegated Contacts consent.
+    contacts: { agents: {} },
     todo: { agents: {} },
   },
 }

@@ -59,7 +59,21 @@ const timestamp = "2026-09-25T00:00:00.000Z";
 
 describe("single credential operator surfaces", () => {
   it("derives the all-scope migration requirement from the policy", () => {
-    expect(requiredPolicyScopes(graphPolicyFixture())).toEqual(["Calendars.Read", "Calendars.ReadWrite", "Files.Read", "Files.ReadWrite", "Mail.Read", "Mail.ReadWrite", "Mail.Send", "Tasks.Read", "Tasks.ReadWrite"]);
+    expect(requiredPolicyScopes(graphPolicyFixture())).toEqual(["Calendars.ReadWrite", "Files.ReadWrite", "Mail.ReadWrite", "Mail.Send", "Tasks.ReadWrite"]);
+    const policy = graphPolicyFixture();
+    policy.services.contacts = { agents: { main: { operations: ["read", "create", "update", "delete"], resources: ["me"] } } };
+    expect(requiredPolicyScopes(policy)).toContain("Contacts.ReadWrite");
+    expect(requiredPolicyScopes(policy)).not.toContain("Contacts.Read");
+  });
+
+  it("reports missing policy scopes without exposing credential material", async () => {
+    const state = await stateDir(); const active = key();
+    const policy = graphPolicyFixture();
+    policy.services.contacts = { agents: { main: { operations: ["read", "create"], resources: ["me"] } } };
+    await createVaultCredential(state, credential, active);
+    const status = await credentialVaultStatus({ policy, credentialVaultKey: active }, state);
+    expect(status.credential).toMatchObject({ result: "valid", missingScopes: ["Contacts.ReadWrite"] });
+    expect(JSON.stringify(status)).not.toContain(credential.refreshToken);
   });
 
   it("restores the one current credential to one explicit destination with an uncertainty receipt", async () => {
@@ -90,6 +104,7 @@ describe("single credential operator surfaces", () => {
       [CREDENTIAL_GATEWAY_METHODS.restore]: "operator.admin",
       [CREDENTIAL_GATEWAY_METHODS.recover]: "operator.admin",
       [CREDENTIAL_GATEWAY_METHODS.deviceStart]: "operator.admin",
+      [CREDENTIAL_GATEWAY_METHODS.deviceReauthorizeStart]: "operator.admin",
       [CREDENTIAL_GATEWAY_METHODS.deviceStatus]: "operator.admin",
       [CREDENTIAL_GATEWAY_METHODS.deviceCancel]: "operator.admin",
     });
@@ -164,6 +179,12 @@ describe("single credential operator surfaces", () => {
       expect(write.mock.calls.some(([value]) => String(value).includes("https://login.microsoft.com/device") && String(value).includes("offline_access"))).toBe(true);
       expect(output.mock.calls.some(([value]) => String(value).includes('"result":"created"') && String(value).includes("offline_access"))).toBe(true);
       expect(spawnProcess).toHaveBeenCalledTimes(2);
+      replies.push(start, status);
+      const renewed = commands.children.get("reauthorize")!.actionHandler!({ clientId: "client", tenant: "tenant" });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await renewed;
+      expect(output.mock.calls.some(([value]) => String(value).includes('"result":"reauthorized"'))).toBe(true);
+      expect((spawnProcess.mock.calls[2] as unknown[])[1]).toContain(CREDENTIAL_GATEWAY_METHODS.deviceReauthorizeStart);
     } finally {
       vi.useRealTimers();
       if (inputDescriptor) Object.defineProperty(process.stdin, "isTTY", inputDescriptor);

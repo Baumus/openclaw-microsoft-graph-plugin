@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 
-export type Service = "onedrive" | "calendar" | "mail" | "todo";
+export type Service = "onedrive" | "calendar" | "mail" | "contacts" | "todo";
 export type OneDriveOperation = "read" | "write" | "delete";
 export type AllowedRoot = {
   label: string; path: string; drive_id: string; item_id: string; include_descendants: boolean;
@@ -14,6 +14,7 @@ const OPERATIONS: Record<Service, Set<string>> = {
   onedrive: new Set(["read", "write", "delete"]),
   calendar: new Set(["read", "create", "update", "respond", "attach", "delete"]),
   mail: new Set(["read", "draft", "update", "move", "mark", "send", "delete"]),
+  contacts: new Set(["read", "create", "update", "delete"]),
   todo: new Set(["read", "create", "update", "delete"]),
 };
 
@@ -22,6 +23,7 @@ type GraphPolicyServices = {
   onedrive: { allowed_roots: AllowedRoot[] };
   calendar: { agents: Record<string, AgentGrant> };
   mail: { agents: Record<string, AgentGrant> };
+  contacts?: { agents: Record<string, AgentGrant> };
   todo: { agents: Record<string, AgentGrant> };
 };
 type GraphPolicyBase = {
@@ -59,12 +61,13 @@ const GraphPolicyServicesSchema = Type.Object({
   }, { additionalProperties: false }),
   calendar: Type.Object({ agents: agents(["read", "create", "update", "respond", "attach", "delete"]) }, { additionalProperties: false }),
   mail: Type.Object({ agents: agents(["read", "draft", "update", "move", "mark", "send", "delete"]) }, { additionalProperties: false }),
+  contacts: Type.Optional(Type.Object({ agents: agents(["read", "create", "update", "delete"]) }, { additionalProperties: false })),
   todo: Type.Object({ agents: agents(["read", "create", "update", "delete"]) }, { additionalProperties: false }),
 }, { additionalProperties: false });
 
 export const GraphPolicySchema = Type.Object({
   version: Type.Literal(2),
-  rules: Type.Object({ default: Type.Literal("deny"), warningApprovalsByService: Type.Optional(Type.Object({ onedrive: Type.Optional(Type.Boolean()), calendar: Type.Optional(Type.Boolean()), mail: Type.Optional(Type.Boolean()), todo: Type.Optional(Type.Boolean()) }, { additionalProperties: false })) }, { additionalProperties: false }),
+  rules: Type.Object({ default: Type.Literal("deny"), warningApprovalsByService: Type.Optional(Type.Object({ onedrive: Type.Optional(Type.Boolean()), calendar: Type.Optional(Type.Boolean()), mail: Type.Optional(Type.Boolean()), contacts: Type.Optional(Type.Boolean()), todo: Type.Optional(Type.Boolean()) }, { additionalProperties: false })) }, { additionalProperties: false }),
   services: GraphPolicyServicesSchema,
 }, { additionalProperties: false });
 
@@ -87,9 +90,10 @@ export function validatePolicy(value: unknown): GraphPolicy {
       for (const [op, allowed] of Object.entries(grant.permissions)) if (!OPERATIONS.onedrive.has(op) || typeof allowed !== "boolean") throw new Error("invalid_policy");
     }
   }
-  for (const service of ["calendar", "mail", "todo"] as const) {
-    if (!record(services[service].agents)) throw new Error("invalid_policy");
-    for (const [agentId, grant] of Object.entries(services[service].agents)) {
+  for (const service of ["calendar", "mail", "contacts", "todo"] as const) {
+    if (service === "contacts" && services.contacts === undefined) continue;
+    if (!record(services[service]?.agents)) throw new Error("invalid_policy");
+    for (const [agentId, grant] of Object.entries(services[service]!.agents)) {
       if (!agentId || !record(grant) || !Array.isArray(grant.operations) || grant.operations.some((op) => typeof op !== "string" || !OPERATIONS[service].has(op))) throw new Error("invalid_policy");
       if (grant.resources !== undefined && (!Array.isArray(grant.resources) || grant.resources.some((resource) => typeof resource !== "string" || !resource))) throw new Error("invalid_policy");
     }
@@ -99,7 +103,7 @@ export function validatePolicy(value: unknown): GraphPolicy {
 
 export function authorizeOperation(policy: GraphPolicy, agentId: string | undefined, service: Exclude<Service, "onedrive">, operation: string, resource = "me"): void {
   if (!agentId) throw new Error("trusted_agent_identity_required");
-  const grant = policy.services[service].agents[agentId];
+  const grant = policy.services[service]?.agents[agentId];
   if (!grant?.operations.includes(operation)) throw new Error("access_denied");
   const resources = grant.resources ?? ["me"];
   if (!resources.includes(resource)) throw new Error("access_denied");

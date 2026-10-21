@@ -22,7 +22,7 @@ function harness(mode: Mode = "active", pluginsInclude = false) {
       calls.push({ method, params });
       if (method === "config.get") return getOverride ? getOverride() : snapshot();
       if (method === "microsoft-graph.configuration.applicationStatus") return { activePolicyHash: active, activeVersion: "3.12.1" };
-      if (method === "microsoft-graph.configuration.validate") return { valid: true, requiredScopes: ["Mail.Read"], policyHash: hash(params.policy) };
+      if (method === "microsoft-graph.configuration.validate") return { valid: true, requiredScopes: (params.policy as any)?.services?.contacts?.agents?.main ? ["Mail.Read", "Contacts.ReadWrite"] : ["Mail.Read"], policyHash: hash(params.policy) };
       if (method === "microsoft-graph.credentials.status") return { ok: true, value: { policyVersion: 2, credential: { result: "valid" } } };
       if (method === "microsoft-graph.updateStatus") return { updateAvailable: false };
       if (method === "config.patch") {
@@ -51,6 +51,19 @@ function view(mode?: Mode, pluginsInclude = false) { const h=harness(mode, plugi
 beforeEach(() => { localStorage.clear(); vi.useFakeTimers(); });
 afterEach(() => { for (const fn of cleanup.splice(0)) fn(); vi.useRealTimers(); });
 describe("policy save and application lifecycle", () => {
+  it("permits a new scope grant to save before reauthorization while the old credential remains", async () => {
+    const h=view(); await h.settle(); h.click("2  Dienste");
+    const contacts = [...h.container.querySelectorAll("fieldset")].find(fieldset => fieldset.querySelector("legend")?.textContent === "Kontakte")!;
+    const toggle = contacts.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    toggle.checked = true; toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    h.click("4  Prüfen"); await h.settle();
+    expect(h.container.textContent).toContain("benötigen nach dem Speichern eine Reautorisierung");
+    const confirm = h.container.querySelector<HTMLInputElement>(".mg-body input[type=checkbox]")!;
+    confirm.checked=true; confirm.dispatchEvent(new Event("change", { bubbles: true }));
+    h.click("Speichern und anwenden"); await h.settle();
+    expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1);
+    expect(h.calls.some(c=>c.method==="microsoft-graph.credentials.reauthorize-start")).toBe(false);
+  });
   it("edits a policy under one top-level plugins include without changing the patch path", async () => { const h=view("active", true); await h.settle(); await h.edit(); expect(h.container.textContent).toContain("Konfigurationsquelle: plugins.json"); h.click("Speichern und anwenden"); await h.settle(); expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1); expect(JSON.parse(h.calls.find(c=>c.method==="config.patch")!.params.raw as string).plugins.entries["microsoft-graph"].config.policy).toBeTruthy(); expect(h.container.textContent).toContain("Gespeichert und aktiv"); });
   it("proves Graph activation despite unrelated global revision mismatch and preserves connection", async () => { const h=view(); await h.settle(); expect(h.container.textContent).toContain("Verbindung hergestellt"); expect(h.container.textContent).not.toContain("Aktivierung noch nicht bestätigt"); expect(h.calls.filter(c=>c.method==="microsoft-graph.updateStatus")).toHaveLength(1); });
   it("locks editing immediately and issues one write for duplicate clicks, then confirms saved and active", async () => { const h=view(); await h.settle(); await h.edit(); h.click("Speichern und anwenden"); h.click("Speichert …"); expect([...h.container.querySelectorAll(".mg-steps button")].every(b=>(b as HTMLButtonElement).disabled)).toBe(true); await h.settle(); expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1); expect(h.container.textContent).toContain("Gespeichert und aktiv"); expect(h.calls.some(c=>c.method==="plugins.reload")).toBe(false); });
