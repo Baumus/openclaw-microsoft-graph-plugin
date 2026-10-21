@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented here.
 
+## 3.15.1 - Unreleased
+
+- Guide agents to use `reply_draft` when answering an identified email, use `reply_all_draft` only when all recipients are intended, and reserve `create_draft` for independent messages. Ask for clarification when the original email is missing or ambiguous instead of creating a standalone draft. No Graph behavior, permissions, or compatibility-floor changes.
+
 ## 3.15.0 - 2026-10-21
 
 - Support PNG, JPEG, and GIF images positioned inside Outlook HTML drafts by matching a `cid:` image reference with `inlineContentId` on `outlook_mail_write` `add_attachment`. Both direct and upload-session attachments carry Graph `isInline` and `contentId`; ordinary attachments remain unchanged. Validate CID, MIME, and image signature before provider access. No additional Microsoft permissions or compatibility-floor changes.
