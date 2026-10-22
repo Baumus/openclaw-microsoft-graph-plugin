@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { saveMediaStream } from "openclaw/plugin-sdk/media-store";
-import { contentTypeAllowed, drivePath, graphRequest, graphStreamRequest, ONEDRIVE_READ_MAX_BYTES, OUTLOOK_ATTACHMENT_MAX_BYTES, safeDriveItem, safeId } from "./graph.js";
+import { drivePath, graphRequest, graphStreamRequest, ONEDRIVE_READ_MAX_BYTES, OUTLOOK_ATTACHMENT_MAX_BYTES, safeDriveItem, safeId } from "./graph.js";
 import type { AllowedRoot } from "./policy.js";
 
 const MAX_SAFE_FILENAME_BYTES = 180;
@@ -95,7 +95,7 @@ export async function publishPrivateMediaBytes(bytes: Uint8Array, nameValue: unk
   return { artifact, media: { outbound: false, attachments: [artifact] } };
 }
 
-/** Stream one allowlisted OneDrive file directly into OpenClaw private media. */
+/** Transfer one policy-authorized OneDrive file as opaque bytes, without parsing or executing its content. */
 export async function downloadOneDriveFile(options: { root: AllowedRoot; relativePath: string; token: string; signal?: AbortSignal; fetchFn?: typeof fetch }) {
   const fetchFn = options.fetchFn ?? fetch;
   const metadata = await graphRequest(options.token, `${drivePath(options.root, options.relativePath)}?$select=id,name,size,file,createdDateTime,lastModifiedDateTime,webUrl`, { signal: options.signal }, fetchFn);
@@ -103,7 +103,6 @@ export async function downloadOneDriveFile(options: { root: AllowedRoot; relativ
   if (metadata.size > ONEDRIVE_READ_MAX_BYTES) throw new Error("provider_file_too_large");
   const name = sanitizeAttachmentName(metadata.name);
   const contentType = sanitizeAttachmentMime(metadata.file.mimeType ?? "application/octet-stream");
-  if (!contentTypeAllowed(contentType)) fail("unsupported_attachment_type");
   const response = await graphStreamRequest(options.token, drivePath(options.root, options.relativePath, "/content"), { signal: options.signal }, fetchFn);
   const hash = createHash("sha256");
   let streamedBytes = 0;

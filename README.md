@@ -45,6 +45,12 @@ The [detailed configuration guide](#configuration-reference) has the exact key c
 
 Wait until the Control UI confirms that the Gateway has applied your rules. Run the [local checks](#validate-the-setup), then ask an explicitly allowed agent for one read-only item within its grant. Confirm that an ungranted agent or resource is denied. A visible installed-plugin entry alone does not prove the running Gateway can serve the request.
 
+## OneDrive file downloads
+
+An agent with read access to a OneDrive folder in the Control UI can use `onedrive_download` for any file type in that grant, including Word, PowerPoint, custom binary, and HTML files. Locate the file with list/search, then supply the exact `rootLabel` and `relativePath`. Downloads return an opaque `media://inbound/...` file reference, byte count, and SHA-256—not inline file bytes or a host path.
+
+Downloading transfers untrusted bytes; it does not parse, render, execute, or grant trust to file content. Content inspection and subsequent uploads are separate operations with their existing type and authorization checks. Missing MIME metadata falls back to `application/octet-stream`; malformed MIME metadata is rejected. Filename, folder, policy, size, timeout, cancellation, and integrity checks still apply.
+
 ## Security model
 
 - Every operation is checked against a credential-free, default-deny per-agent policy before plugin-side key selection, vault I/O, OAuth, or Graph access.

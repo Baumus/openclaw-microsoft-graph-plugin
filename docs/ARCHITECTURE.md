@@ -53,7 +53,7 @@ Discovered instruction content has a one-hour absolute freshness limit, independ
 
 - OAuth access-token, continuation, warning approval trust, and OneDrive instruction caches are process-local and bounded. Warning `allow-always` trust is capped at 1,024 scopes, keyed by authenticated agent ID, exact tool name, and normalized action; it is never persisted and resets on plugin reload or process restart. The token cache is a 128-entry expiry-aware LRU keyed to durable vault identity, capped at one hour of residency with a 60-second expiry skew.
 - The plugin persists encrypted OAuth credential envelopes and an authenticated secret-free write-ahead refresh marker (`in_flight`, then `quarantined` after uncertainty). It does not persist Graph content, access tokens, or continuation URLs.
-- Private-media downloads use opaque `media://inbound/...` artifacts managed by OpenClaw.
+- Private-media downloads use opaque `media://inbound/...` artifacts managed by OpenClaw. OneDrive download accepts any syntactically valid MIME type under existing root/per-agent read grants, independently of the read/upload MIME eligibility list. It streams untrusted bytes without parsing, rendering, or executing content; missing MIME uses `application/octet-stream`. MIME normalization, filename safety, metadata/folder checks, bounded streaming, cancellation, byte equality, and SHA-256 remain enforced.
 - Uploads accept only canonical private-media URIs and revalidate containment, file identity, size, and links.
 - Continuations are opaque random handles bound to caller, service, action, policy resource, and normalized criteria.
 

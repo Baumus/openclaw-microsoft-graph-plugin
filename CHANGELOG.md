@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## 3.16.3 - 2026-10-22
+
+- Fix OneDrive private-media downloads to accept any file type within the existing folder and per-agent read grants, including Word, PowerPoint, custom binary, and HTML files. Retain MIME syntax validation and normalization, safe filenames, folder/size/stream bounds, cancellation, and byte/hash verification.
+- Clarify that download is opaque byte transfer, not content parsing, rendering, or execution. Read/upload type restrictions, Outlook behavior, all 19 tools, permissions, compatibility floors, and the 3.16.2 Control UI startup fix are unchanged.
+
 ## 3.16.2 - 2026-10-21
 
 - Bundle the unchanged scoped Microsoft Graph stylesheet into the native Control UI entry and install it synchronously before page registration, removing a separate stylesheet download from plugin startup. Release styles and registrations on failed activation or disposal, including overlapping activations.
