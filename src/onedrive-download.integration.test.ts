@@ -13,7 +13,7 @@ vi.mock("./credential.js", () => ({
 
 import { downloadOneDriveFile } from "./attachment-download.js";
 import { exchangeRefreshToken, readCredential, tokenForAuthorizedOperation } from "./credential.js";
-import { contentTypeAllowed, driveRead, ONEDRIVE_READ_MAX_BYTES, validateDriveWriteBytes } from "./graph.js";
+import { contentTypeAllowed, driveRead, ONEDRIVE_READ_MAX_BYTES, validTransferContentType, validateDriveWriteBytes } from "./graph.js";
 import entry from "./index.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 
@@ -163,9 +163,10 @@ describe("OneDrive generic opaque downloads through the real private-media SDK",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "application/x-synthetic-custom-binary",
-  ])("does not implicitly expand read or upload eligibility for %s", async (mimeType) => {
+  ])("keeps content-reading eligibility separate from opaque transfer for %s", async (mimeType) => {
     expect(contentTypeAllowed(mimeType)).toBe(false);
-    expect(() => validateDriveWriteBytes("report.bin", new Uint8Array([1]), mimeType, 1024)).toThrow("invalid_write_input");
+    expect(validTransferContentType(mimeType)).toBe(true);
+    expect(() => validateDriveWriteBytes("report.bin", new Uint8Array([1]), mimeType, 1024)).not.toThrow();
     const fetchFn = vi.fn(async () => Response.json({ name: "report.bin", size: 1, file: { mimeType } }));
     await expect(driveRead(root, "report.bin", "synthetic-access-token", "digest", 1024, undefined, fetchFn)).rejects.toThrow("unsupported_file_type");
     expect(fetchFn).toHaveBeenCalledTimes(1);

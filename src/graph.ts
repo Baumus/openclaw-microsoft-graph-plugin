@@ -151,13 +151,13 @@ export function decodeBase64Strict(value: unknown, message = "invalid_write_inpu
 }
 
 export function validateDriveWriteInput(relativePath: string, contentBase64: string, contentType: string, maxBytes?: number): void {
-  if (!relativePath || !contentTypeAllowed(contentType)) throw new Error("invalid_write_input");
+  if (!relativePath || !validTransferContentType(contentType)) throw new Error("invalid_write_input");
   const decodedBytes = base64DecodedByteLengthStrict(contentBase64);
   if (maxBytes !== undefined && decodedBytes > maxBytes) throw new Error("file_too_large");
 }
 
 export function validateDriveWriteBytes(relativePath: string, content: Uint8Array, contentType: string, maxBytes?: number): void {
-  if (!relativePath || !(content instanceof Uint8Array) || !contentTypeAllowed(contentType)) throw new Error("invalid_write_input");
+  if (!relativePath || !(content instanceof Uint8Array) || !validTransferContentType(contentType)) throw new Error("invalid_write_input");
   if (maxBytes !== undefined && content.byteLength > maxBytes) throw new Error("file_too_large");
 }
 
@@ -1079,6 +1079,20 @@ export async function driveSearchScoped(
 
 export function contentTypeAllowed(value: string): boolean { const mime = value.split(";", 1)[0].trim().toLowerCase(); return TEXT_MIME.test(mime) || BINARY_MIME.has(mime); }
 
+/** OneDrive byte transfers accept arbitrary file types, but never malformed HTTP media types. */
+export function validTransferContentType(value: unknown): value is string {
+  if (typeof value !== "string" || value.length < 3 || value.length > 160 || /[\u0000-\u001f\u007f]/.test(value)) return false;
+  const [mediaType, ...parameters] = value.split(";").map((part) => part.trim());
+  const token = /^[A-Za-z0-9!#$&^_.+\-]+$/;
+  if (!mediaType || mediaType.split("/").length !== 2 || !mediaType.split("/").every((part) => token.test(part))) return false;
+  return parameters.every((parameter) => {
+    const equals = parameter.indexOf("=");
+    if (equals < 1 || !token.test(parameter.slice(0, equals))) return false;
+    const field = parameter.slice(equals + 1);
+    return token.test(field) || /^"[^"\r\n]*"$/.test(field);
+  });
+}
+
 export async function driveRead(root: AllowedRoot, relativePath: string, token: string, mode: "text" | "base64" | "digest", maxBytes: number, signal?: AbortSignal, fetchFn: typeof fetch = fetch) {
   if (!relativePath) throw new Error("invalid_relative_path");
   const metadata = await graphRequest(token, `${drivePath(root, relativePath)}?$select=${encodeURIComponent(DRIVE_SELECT)}`, { signal }, fetchFn);
@@ -1191,7 +1205,7 @@ async function parseDriveItemResponse(response: Response): Promise<unknown> {
 
 /** Stream a protected source through simple upload or a sequential OneDrive upload session. */
 export async function driveWriteSource(root: AllowedRoot, relativePath: string, token: string, source: DriveUploadSource, contentType: string, update: boolean, signal?: AbortSignal, fetchFn: typeof fetch = fetch, requestTimeoutMs = 30_000, simpleUploadMaxBytes = ONEDRIVE_SIMPLE_UPLOAD_MAX_BYTES, uploadChunkBytes = ONEDRIVE_UPLOAD_CHUNK_BYTES) {
-  if (!relativePath || !contentTypeAllowed(contentType) || !Number.isSafeInteger(source.size) || source.size < 0 || !/^[a-f0-9]{64}$/.test(source.sha256)) throw new Error("invalid_write_input");
+  if (!relativePath || !validTransferContentType(contentType) || !Number.isSafeInteger(source.size) || source.size < 0 || !/^[a-f0-9]{64}$/.test(source.sha256)) throw new Error("invalid_write_input");
   if (source.size > ONEDRIVE_WRITE_MAX_BYTES) throw new Error("provider_file_too_large");
   if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1000 || requestTimeoutMs > 30_000) throw new Error("invalid_request_timeout");
   if (!Number.isSafeInteger(simpleUploadMaxBytes) || simpleUploadMaxBytes < 1 || simpleUploadMaxBytes > ONEDRIVE_SIMPLE_UPLOAD_MAX_BYTES) throw new Error("invalid_byte_limit");

@@ -303,15 +303,34 @@ describe("protected media write inputs", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(update ? 2 : 1);
   });
 
-  it("rejects an unsupported MIME from a protected source before Graph", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
-    const response = await registeredTools().onedrive_upload.execute("unsupported", {
+  it.each(["application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/x-synthetic-custom-binary", "video/webm"])("uploads protected opaque bytes with valid MIME %s", async (contentType) => {
+    let wireBytes: Buffer | undefined;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      if (init?.method === "PUT") {
+        expect(new Headers(init.headers).get("content-type")).toBe(contentType);
+        wireBytes = await requestBodyBytes(init.body);
+      }
+      return Response.json({ id: "item-custom", name: "report.bin", size: mp4Bytes.byteLength, file: { mimeType: contentType } }, { status: 201 });
+    });
+    const response = await registeredTools().onedrive_upload.execute("generic", {
       rootLabel: "synthetic_documents",
-      relativePath: "clip.webm",
+      relativePath: "report.bin",
       sourceMediaUri: "media://inbound/clip.mp4",
       sourceSha256: digest(mp4Bytes),
       sourceByteSize: mp4Bytes.byteLength,
-      contentType: "video/webm",
+      contentType,
+    });
+    expect(response.details).toMatchObject({ ok: true, source_sha256: digest(mp4Bytes), size_match: true });
+    expect(wireBytes).toEqual(mp4Bytes);
+    expect(JSON.stringify(response.details)).not.toContain(mp4Bytes.toString("base64"));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects malformed MIME from a protected source before Graph", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = await registeredTools().onedrive_upload.execute("malformed", {
+      rootLabel: "synthetic_documents", relativePath: "report.bin", sourceMediaUri: "media://inbound/clip.mp4",
+      sourceSha256: digest(mp4Bytes), sourceByteSize: mp4Bytes.byteLength, contentType: "text/html\r\nx-injected: yes",
     });
     expect(response.details).toMatchObject({ ok: false, error: "invalid_write_input" });
     expect(fetchSpy).not.toHaveBeenCalled();
