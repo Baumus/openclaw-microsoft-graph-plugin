@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## 3.17.0 - 2026-10-22
+
+- Let OneDrive upload and update transfer any file type that the generic download can carry, including Word, PowerPoint, WebM, HTML, and custom binary formats. Validate MIME syntax and retain path, workspace-staging, per-agent policy, native approval, fingerprint, size, timeout, and transport integrity checks. Content-reading eligibility remains narrower.
+- Investigated reported post-install reload failures: host logs show active-turn plugin leases exceeding the Core 60-second drain window, not a plugin crash. No speculative plugin reload workaround or Gateway restart behavior is added; use OpenClaw’s turn-yielding reload path and verify the applied generation.
+
 ## 3.16.3 - 2026-10-22
 
 - Fix OneDrive private-media downloads to accept any file type within the existing folder and per-agent read grants, including Word, PowerPoint, custom binary, and HTML files. Retain MIME syntax validation and normalization, safe filenames, folder/size/stream bounds, cancellation, and byte/hash verification.

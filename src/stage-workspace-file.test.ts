@@ -67,6 +67,9 @@ describe("one-call workspace source staging", () => {
     await result.lease.cleanup();
     expect(await readdir(join(directory, "media", "inbound", "baumus-msgraph-workspace-staging", result.sourceMediaUri.split("/")[4]))).toEqual([]);
     expect(workspaceFileContentType("reports/onepager.PDF")).toBe("application/pdf");
+    expect(workspaceFileContentType("reports/letter.docx")).toBe("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    expect(workspaceFileContentType("reports/slides.pptx")).toBe("application/vnd.openxmlformats-officedocument.presentationml.presentation");
+    expect(workspaceFileContentType("reports/unknown.custom")).toBe("application/octet-stream");
   });
 
   it("stages through a trusted state root whose parent has a filesystem alias", async () => {

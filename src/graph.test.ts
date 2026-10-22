@@ -999,7 +999,10 @@ describe("pinned OneDrive addressing", () => {
       size_match: true,
       item: { id: "item-id", name: "binary.bin", size: content.byteLength },
     });
-    expect(() => validateDriveWriteBytes("unsupported.webm", content, "video/webm", content.byteLength)).toThrow("invalid_write_input");
+    expect(() => validateDriveWriteBytes("clip.webm", content, "video/webm", content.byteLength)).not.toThrow();
+    for (const malformed of ["not-a-mime", "text/html\r\nx-injected: yes", "text/html; bad", "application/pdf; charset=", "application/pdf; charset=\"bad\"quote\""]) {
+      expect(() => validateDriveWriteBytes("report.bin", content, malformed, content.byteLength)).toThrow("invalid_write_input");
+    }
   });
 
   it.each([false, true])("uses sequential Graph upload sessions above the simple-upload threshold (update=%s)", async (update) => {

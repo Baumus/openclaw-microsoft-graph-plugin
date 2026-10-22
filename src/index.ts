@@ -13,7 +13,7 @@ import { registerConfigurationUiMethods } from "./config-ui-rpc.js";
 import { registerUpdateStatusMethod } from "./update-status.js";
 import { ContinuationStore, normalizedCriteria, type ContinuationBinding } from "./continuation.js";
 import { authorizeOperation, authorizeRoot, GraphPolicySchema, normalizeRelativePath, validatePolicy, type AllowedRoot, type GraphPolicy, type OneDriveOperation } from "./policy.js";
-import { base64DecodedByteLengthStrict, base64JsonResponseLimit, canonicalGraphContinuation, contentTypeAllowed, decodeBase64Strict, DIRECT_ATTACHMENT_MAX_BYTES, driveCreateFolder, driveDelete, driveList, driveListContinuation, driveMetadataUpdate, drivePath, driveRead, driveReadInstructionsCandidate, driveSearchPath, driveSearchScoped, driveWriteSource, graphOperationSignal, graphRequest, normalizeDriveSearch, ONEDRIVE_READ_MAX_BYTES, ONEDRIVE_WRITE_MAX_BYTES, OUTLOOK_ATTACHMENT_MAX_BYTES, safeId, TODO_ATTACHMENT_MAX_BYTES, uploadAttachmentSession, validateDriveFolderInput, validateDriveMetadataInput, validateDriveWriteBytes, type DriveUploadSource } from "./graph.js";
+import { base64DecodedByteLengthStrict, base64JsonResponseLimit, canonicalGraphContinuation, validTransferContentType, decodeBase64Strict, DIRECT_ATTACHMENT_MAX_BYTES, driveCreateFolder, driveDelete, driveList, driveListContinuation, driveMetadataUpdate, drivePath, driveRead, driveReadInstructionsCandidate, driveSearchPath, driveSearchScoped, driveWriteSource, graphOperationSignal, graphRequest, normalizeDriveSearch, ONEDRIVE_READ_MAX_BYTES, ONEDRIVE_WRITE_MAX_BYTES, OUTLOOK_ATTACHMENT_MAX_BYTES, safeId, TODO_ATTACHMENT_MAX_BYTES, uploadAttachmentSession, validateDriveFolderInput, validateDriveMetadataInput, validateDriveWriteBytes, type DriveUploadSource } from "./graph.js";
 import { ONEDRIVE_AGENTS_MAX_FILE_BYTES, ONEDRIVE_AGENTS_MAX_PARALLEL, OneDriveAgentsSessionCache, oneDriveAgentsSessionCache } from "./onedrive-agents-instructions.js";
 
 const MAX_RESULTS = 50;
@@ -576,7 +576,7 @@ const TOOL_GUIDANCE: Readonly<Record<string, string>> = {
   onedrive_search: "Search an allowlisted OneDrive root. Supply its exact rootLabel; use provider search or filename modes. Results distinguish scan completion from match satisfaction; follow continuation until complete. Read matching relativePath with onedrive_read. Trusted AGENTS.md instructions may require acknowledgement first.",
   onedrive_list: "List one allowlisted OneDrive root or relative directory. Supply rootLabel; follow continuation for all items. Use returned relativePath for read/download/write. Trusted AGENTS.md instructions may require acknowledgement first.",
   onedrive_read: "Read bounded text or SHA-256 digest from rootLabel and exact relativePath discovered by list/search. Digest does not return bytes. Use download for private media; inspect truncation and narrow large reads.",
-  onedrive_download: "Download any file type from a read-authorized rootLabel and exact relativePath to private media, never inline bytes or a host path. Locate the file by list/search first. Download transfers opaque bytes; it does not parse, render, execute, or trust file content. Reading or uploading the artifact has separate type and authorization checks. Large transfers may exceed the host's 600-second outer limit; an aborted result may need readback.",
+  onedrive_download: "Download any file type from a read-authorized rootLabel and exact relativePath to private media, never inline bytes or a host path. Locate the file by list/search first. Download transfers opaque bytes; it does not parse, render, execute, or trust file content. Content reading remains type-restricted; uploading has separate authorization and source-integrity checks. Large transfers may exceed the host's 600-second outer limit; an aborted result may need readback.",
   onedrive_upload: "Create one file without overwrite. For a file you created in your workspace, pass sourceWorkspacePath relative to your workspace; the plugin stages it privately, hashes it, requests native approval, and uploads in this same call. Alternatively pass an existing media://inbound/... sourceMediaUri. Supply exactly one source, plus authorized rootLabel and destination relativePath. On uncertain timeout, read back before retrying.",
   onedrive_update: "Replace an existing file at exact rootLabel/relativePath with ETag protection. Pass sourceWorkspacePath relative to your workspace for automatic private staging in this same call, or an existing media://inbound/... sourceMediaUri; supply exactly one. Native approval binds the computed content hash. Read back after uncertain timeout.",
   onedrive_metadata_update: "Rename, move, or change metadata of exact rootLabel/relativePath; destination stays in the same root. Discover path first. Native warning approval is required unless policy permits bypass; read back on uncertain outcome.",
@@ -1360,7 +1360,7 @@ export function oneDriveWriteApprovalCriteria(toolName: string, params: Record<s
   const relativePath = normalizeRelativePath(params.relativePath);
   if (!relativePath) throw new Error("invalid_relative_path");
   const contentType = params.contentType === undefined ? "application/octet-stream" : params.contentType;
-  if (typeof contentType !== "string" || !contentTypeAllowed(contentType)) throw new Error("invalid_write_input");
+  if (!validTransferContentType(contentType)) throw new Error("invalid_write_input");
   if (!root || root.label !== params.rootLabel || !root.drive_id || !root.item_id) throw new Error("invalid_confirmation_root");
   return {
     operation: toolName === "onedrive_upload" ? "upload" : "update",
@@ -1490,7 +1490,7 @@ function warningApprovalPreflight(config: RuntimeConfig, toolName: string, param
   if (typeof params.relativePath !== "string" || !normalizeRelativePath(params.relativePath)) throw new Error("invalid_relative_path");
   validateProtectedMediaUri(params.sourceMediaUri);
   const contentType = params.contentType === undefined ? "application/octet-stream" : params.contentType;
-  if (typeof contentType !== "string" || !contentTypeAllowed(contentType)) throw new Error("invalid_write_input");
+  if (!validTransferContentType(contentType)) throw new Error("invalid_write_input");
   const root = authorizedRoot ?? authorizeRoot(validatePolicy(config.policy), agentId, params.rootLabel, "write");
   oneDriveWriteApprovalCriteria(toolName, params, root);
   return root;
@@ -1641,7 +1641,7 @@ const plugin = defineToolPlugin({
         }, (root) => { if (verified) providerPath = continuationStore.providerPath(verified, drivePath(root, path, "/children")); });
       }) }),
       tool({ name: "onedrive_read", label: "OneDrive Read", optional: true, description: "Read bounded text or stream a digest for supported files, including XLSX, in one allowlisted root. Digest mode returns metadata, byte count, and SHA-256 only.", parameters: readSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_read", readSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, mode }, signal) => withDrive(config, toolContext.agentId, rootLabel, "read", signal, (root, token, bounded) => driveRead(root, normalizeRelativePath(relativePath), token, mode, mode === "digest" ? config.maxReadBytes ?? ONEDRIVE_READ_MAX_BYTES : config.maxReadOutputBytes ?? DEFAULT_READ_OUTPUT_BYTES, bounded))) }),
-      tool({ name: "onedrive_download", label: "OneDrive Download", optional: true, description: "Stream any file type from a read-authorized OneDrive root into OpenClaw's private media store without exposing bytes or host paths. Opaque transfer only: no content parsing, rendering, or execution; read/upload type restrictions remain separate.", parameters: downloadSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_download", downloadSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath }, signal) => withDrive(config, toolContext.agentId, rootLabel, "read", signal, async (root, token, bounded) => ({
+      tool({ name: "onedrive_download", label: "OneDrive Download", optional: true, description: "Stream any file type from a read-authorized OneDrive root into OpenClaw's private media store without exposing bytes or host paths. Opaque transfer only: no content parsing, rendering, or execution; content-reading restrictions remain separate.", parameters: downloadSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_download", downloadSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath }, signal) => withDrive(config, toolContext.agentId, rootLabel, "read", signal, async (root, token, bounded) => ({
         ok: true,
         operation: "download",
         ...await downloadOneDriveFile({ root, relativePath: normalizeRelativePath(relativePath), token, signal: bounded }),
@@ -1650,7 +1650,7 @@ const plugin = defineToolPlugin({
         void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
         validateProtectedMediaUri(sourceMediaUri);
-        if (!contentTypeAllowed(contentType)) throw new Error("invalid_write_input");
+        if (!validTransferContentType(contentType)) throw new Error("invalid_write_input");
         const fingerprint = sourceFingerprint({ sourceSha256, sourceByteSize });
         let source: ProtectedMediaUploadSource | undefined;
         try {
@@ -1668,7 +1668,7 @@ const plugin = defineToolPlugin({
         void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
         validateProtectedMediaUri(sourceMediaUri);
-        if (!contentTypeAllowed(contentType)) throw new Error("invalid_write_input");
+        if (!validTransferContentType(contentType)) throw new Error("invalid_write_input");
         const fingerprint = sourceFingerprint({ sourceSha256, sourceByteSize });
         let source: ProtectedMediaUploadSource | undefined;
         try {

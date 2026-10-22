@@ -7,7 +7,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { root as secureRoot, type OpenResult } from "@openclaw/fs-safe";
 import { saveMediaStream } from "openclaw/plugin-sdk/media-store";
 import { sanitizeAttachmentName } from "./attachment-download.js";
-import { ONEDRIVE_WRITE_MAX_BYTES } from "./graph.js";
+import { ONEDRIVE_WRITE_MAX_BYTES, validTransferContentType } from "./graph.js";
 
 const CHUNK_BYTES = 4 * 1024 * 1024;
 export const WORKSPACE_STAGING_QUOTA_BYTES = 128 * 1024 * 1024;
@@ -474,10 +474,13 @@ const STORE_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/workspace-staging
 export const workspaceStagingStore: WorkspaceStagingStore = ((globalThis as Record<symbol, unknown>)[STORE_KEY] as WorkspaceStagingStore | undefined)
   ?? ((globalThis as Record<symbol, unknown>)[STORE_KEY] = new WorkspaceStagingStore()) as WorkspaceStagingStore;
 const EXTENSION_CONTENT_TYPES: Readonly<Record<string, string>> = {
-  pdf: "application/pdf", txt: "text/plain", md: "text/markdown", csv: "text/csv",
-  json: "application/json", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+  pdf: "application/pdf", txt: "text/plain", md: "text/markdown", csv: "text/csv", html: "text/html",
+  json: "application/json", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+  doc: "application/msword", ppt: "application/vnd.ms-powerpoint",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  webm: "video/webm",
 };
 
 export function workspaceFileContentType(relativePath: string): string {
@@ -506,8 +509,7 @@ export async function stageWorkspaceFile(
 ) {
   const relativePath = validateWorkspaceRelativeFilePath(sourceRelativePath);
   if (typeof workspaceDir !== "string" || !workspaceDir) throw new Error("workspace_context_unavailable");
-  if (typeof contentType !== "string" || contentType.length < 3 || contentType.length > 160
-    || !/^[A-Za-z0-9!#$&^_.+\-]+\/[A-Za-z0-9!#$&^_.+\-]+$/.test(contentType)) throw new Error("invalid_content_type");
+  if (!validTransferContentType(contentType)) throw new Error("invalid_content_type");
   let opened: OpenResult | undefined;
   let release: (() => Promise<void>) | undefined;
   let publish: (() => Promise<void>) | undefined;

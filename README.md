@@ -49,7 +49,7 @@ Wait until the Control UI confirms that the Gateway has applied your rules. Run 
 
 An agent with read access to a OneDrive folder in the Control UI can use `onedrive_download` for any file type in that grant, including Word, PowerPoint, custom binary, and HTML files. Locate the file with list/search, then supply the exact `rootLabel` and `relativePath`. Downloads return an opaque `media://inbound/...` file reference, byte count, and SHA-256—not inline file bytes or a host path.
 
-Downloading transfers untrusted bytes; it does not parse, render, execute, or grant trust to file content. Content inspection and subsequent uploads are separate operations with their existing type and authorization checks. Missing MIME metadata falls back to `application/octet-stream`; malformed MIME metadata is rejected. Filename, folder, policy, size, timeout, cancellation, and integrity checks still apply.
+Downloading transfers untrusted bytes; it does not parse, render, execute, or grant trust to file content. Content inspection remains separately type-restricted. Subsequent uploads accept any syntactically valid MIME type but require their own write grant, native approval, protected source, and integrity checks. Missing MIME metadata falls back to `application/octet-stream`; malformed MIME metadata is rejected. Filename, folder, policy, size, timeout, cancellation, and integrity checks still apply.
 
 ## Security model
 
