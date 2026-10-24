@@ -219,7 +219,10 @@ class ConfigurationPage {
   private stopStatusChecks() { if (this.statusTimer) clearTimeout(this.statusTimer); this.statusTimer = undefined; this.statusChecksRemaining = 0; }
   private scheduleStatusCheck() {
     if (this.disposed || this.signal.aborted || this.statusChecksRemaining <= 0 || this.statusTimer) return;
-    this.statusTimer = setTimeout(() => { this.statusTimer = undefined; void this.checkApplication(); }, 5000);
+    // The first read can confirm a committed write while config.patch is still
+    // waiting for runtime drain. Later reads stay paced to avoid RPC churn.
+    const delay = this.statusChecksRemaining === 12 ? 1000 : 5000;
+    this.statusTimer = setTimeout(() => { this.statusTimer = undefined; void this.checkApplication(); }, delay);
   }
   private async readActivePolicy() {
     try {
@@ -233,8 +236,10 @@ class ConfigurationPage {
     const epoch = this.statusEpoch;
     this.statusInFlight = true; this.render();
     try {
-      const snap = await this.read<ConfigSnapshot>("config.get");
-      const active = await this.readActivePolicy();
+      const [snap, active] = await Promise.all([
+        this.read<ConfigSnapshot>("config.get"),
+        this.readActivePolicy(),
+      ]);
       if (this.disposed || this.signal.aborted || epoch !== this.statusEpoch) return;
       const expected = this.operation?.target ?? this.initial;
       const saved = snap.config?.plugins?.entries?.[id]?.config?.policy;
@@ -855,20 +860,18 @@ class ConfigurationPage {
       // replying to config.patch. Timeout is never evidence that no write occurred.
       this.statusChecksRemaining = 12; this.scheduleStatusCheck();
       const patch = this.host.request("config.patch", { raw, baseHash: fresh.hash, replacePaths: replacements, note: "Microsoft Graph configuration UI save" });
-      const settled = patch.then(() => { operation.settled = true; }, error => { operation.settled = true; operation.rejectedBeforeWrite = isPreCommitRejection(error);  });
-      void settled.then(async () => {
+      // An RPC response is not the commit oracle. Release the UI immediately;
+      // keep edits locked until config.get proves the target or a rejection is
+      // reconciled. Never resend an ambiguous write.
+      this.busy = false;
+      void patch.then(() => { operation.settled = true; }, error => { operation.settled = true; operation.rejectedBeforeWrite = isPreCommitRejection(error); }).then(async () => {
         if (this.disposed || this.operation !== operation) return;
         await this.checkApplication();
-        if (["applying", "pending"].includes(operation.phase) && !operation.reloadAttempted && this.applicationStatus === "pending") void this.applySavedPolicy();
       });
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      await Promise.race([settled, new Promise<void>(resolve => { timeout = setTimeout(resolve, 15000); })]);
-      if (timeout) clearTimeout(timeout);
-      if (this.operation !== operation || this.disposed) return;
-      this.busy = false;
-      await this.checkApplication();
-      if (operation.phase === "saving" && operation.settled) operation.phase = "unknown";
-      if (["applying", "pending"].includes(operation.phase) && operation.settled && !operation.reloadAttempted && this.applicationStatus === "pending") void this.applySavedPolicy();
+      // config.patch already requests the host's config activation. A second
+      // automatic plugins.reload can contend with that drain and time out.
+      // Leave an exact-target, manually initiated retry available if needed.
+      this.render();
     } catch {
       if (!operation.issued) { operation.phase = "failed"; this.error = "Policy validation failed. Check root labels, paths, IDs, and grant resources."; }
       else { operation.phase = "unknown"; this.busy = false; await this.checkApplication(); }

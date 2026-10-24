@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented here.
 
+## 3.17.1 - 2026-10-24
+
+- Confirm Control UI policy persistence independently of a delayed `config.patch` response, with an early status read and no duplicate automatic plugin reload. Keep an exact-target manual retry for pending application.
+
 ## 3.17.0 - 2026-10-22
 
 - Let OneDrive upload and update transfer any file type that the generic download can carry, including Word, PowerPoint, WebM, HTML, and custom binary formats. Validate MIME syntax and retain path, workspace-staging, per-agent policy, native approval, fingerprint, size, timeout, and transport integrity checks. Content-reading eligibility remains narrower.
