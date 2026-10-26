@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## 3.18.0 - 2026-10-26
+
+- Add an opt-in AGENTS.md working-instructions checkbox to each OneDrive folder card, preserving existing root-wide settings and unrelated agent grants. Disabling removes the optional setting; changes use the existing review/save/apply flow.
+- Explain mutable-source trust, receipt acknowledgement (not guaranteed compliance), unchanged access/security boundaries, the root AGENTS.md prerequisite, and the one-hour cache in a keyboard/touch-accessible info popover. No provider calls, permission expansion, runtime activation, or compatibility-floor increase is introduced by the control.
+
 ## 3.17.1 - 2026-10-24
 
 - Confirm Control UI policy persistence independently of a delayed `config.patch` response, with an early status read and no duplicate automatic plugin reload. Keep an exact-target manual retry for pending application.
