@@ -33,6 +33,14 @@ git diff --check
 
 If runtime metadata changes, run `npm run plugin:build` once to regenerate `openclaw.plugin.json`, inspect the diff, then rerun `npm run plugin:build:check`.
 
+For OneDrive folder-instruction controls, also run the synthetic native-browser regression with an existing Chromium installation (no browser download, Gateway connection, or provider access):
+
+```bash
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/path/to/chrome npm run test:ui:browser
+```
+
+This uses `playwright-core` supplied by the pinned OpenClaw development dependency. Set `UI_EVIDENCE_DIR` to override the default `/tmp/msgraph-instructions-ui-evidence` directory for desktop/mobile screenshots and the JSON report.
+
 ## Pull requests
 
 - Explain the behavior and security boundary being changed.

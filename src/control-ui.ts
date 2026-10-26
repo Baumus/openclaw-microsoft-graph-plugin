@@ -27,6 +27,7 @@ function isPreCommitRejection(error: unknown): boolean {
   return !!error && typeof error === "object" && (error as { code?: unknown }).code === "INVALID_REQUEST";
 }
 const id = "microsoft-graph";
+let configurationPageSequence = 0;
 function authoredPolicySource(snapshot: ConfigSnapshot): string {
   const policy = snapshot.parsed?.plugins?.entries?.[id]?.config?.policy;
   if (policy && typeof policy === "object" && "$include" in policy) return `policy:${String((policy as { $include: unknown }).$include)}`;
@@ -91,6 +92,19 @@ function policySummary(policy: Policy): string[] {
   ];
 }
 class ConfigurationPage {
+  private readonly helpIdPrefix = `mg-instructions-${++configurationPageSequence}`;
+  private instructionsHelpRoot?: string;
+  private readonly positionInstructionsHelp = () => {
+    const panel = this.container.querySelector<HTMLElement>(".mg-instructions-help[data-open=true]");
+    const trigger = panel && this.container.querySelector<HTMLElement>(`[aria-controls="${panel.id}"]`);
+    if (!panel || !trigger) return;
+    const anchor = trigger.getBoundingClientRect();
+    const bounds = panel.getBoundingClientRect();
+    const gap = 8, edge = 16;
+    panel.style.left = `${Math.max(edge, Math.min(anchor.right - bounds.width, window.innerWidth - bounds.width - edge))}px`;
+    const top = anchor.bottom + gap + bounds.height <= window.innerHeight - edge ? anchor.bottom + gap : anchor.top - bounds.height - gap;
+    panel.style.top = `${Math.max(edge, Math.min(top, window.innerHeight - bounds.height - edge))}px`;
+  };
   private snapshot?: ConfigSnapshot;
   private initial?: Policy;
   private policy = blankPolicy();
@@ -176,6 +190,8 @@ class ConfigurationPage {
     this.container.addEventListener("change", this.guardEvent, true);
     this.container.addEventListener("input", this.guardEvent, true);
     window.addEventListener("beforeunload", this.warnBeforeUnload);
+    window.addEventListener("resize", this.positionInstructionsHelp);
+    window.addEventListener("scroll", this.positionInstructionsHelp, true);
     const stored = savedAppIds();
     if (stored) { this.authClientId = stored.clientId; this.authTenant = stored.tenant; }
     this.unsubscribe = host.subscribe(() => {
@@ -190,7 +206,7 @@ class ConfigurationPage {
     void this.checkForUpdate();
     this.render();
   }
-  dispose() { contextByHost.set(this.host, { step: this.step, selectedAgent: this.selectedAgent, credential: this.credential }); this.disposed = true; this.statusEpoch++; this.container.removeEventListener("click", this.guardEvent, true); this.container.removeEventListener("change", this.guardEvent, true); this.container.removeEventListener("input", this.guardEvent, true); window.removeEventListener("beforeunload", this.warnBeforeUnload); if (this.authTimer) clearTimeout(this.authTimer); this.stopStatusChecks(); this.unsubscribe(); this.container.replaceChildren(); }
+  dispose() { contextByHost.set(this.host, { step: this.step, selectedAgent: this.selectedAgent, credential: this.credential }); this.disposed = true; this.statusEpoch++; this.container.removeEventListener("click", this.guardEvent, true); this.container.removeEventListener("change", this.guardEvent, true); this.container.removeEventListener("input", this.guardEvent, true); window.removeEventListener("beforeunload", this.warnBeforeUnload); window.removeEventListener("resize", this.positionInstructionsHelp); window.removeEventListener("scroll", this.positionInstructionsHelp, true); if (this.authTimer) clearTimeout(this.authTimer); this.stopStatusChecks(); this.unsubscribe(); this.container.replaceChildren(); }
   private async checkForUpdate() {
     if (!this.authorized || this.updateCheckStarted || this.disposed) return;
     this.updateCheckStarted = true;
@@ -348,13 +364,18 @@ class ConfigurationPage {
     const scrollTop = this.container.scrollTop;
     this.container.replaceChildren(main);
     this.container.scrollTop = scrollTop;
+    if (!this.locked && this.instructionsHelpRoot) {
+      const panel = [...main.querySelectorAll<HTMLElement>(".mg-instructions-help")].find(node => node.dataset.root === this.instructionsHelpRoot);
+      if (panel) { panel.showPopover({ source: main.querySelector<HTMLElement>(`[aria-controls="${panel.id}"]`) ?? undefined }); this.positionInstructionsHelp(); }
+      else this.instructionsHelpRoot = undefined;
+    }
     if (this.step === 1 && this.calendarCatalogState === "idle" && !this.calendarLoadScheduled) {
       this.calendarLoadScheduled = true;
       queueMicrotask(() => { this.calendarLoadScheduled = false; if (this.step === 1 && this.calendarCatalogState === "idle" && !this.disposed) void this.loadCalendars(); });
     }
     if (focused) {
       const candidates = [...main.querySelectorAll<HTMLElement>("button, input, select, textarea, summary, [tabindex]")];
-      const replacement = candidates.find(node => node.tagName === focused.tagName && (focusLabel ? node.closest("label")?.textContent === focusLabel : node.textContent === focusText)) ?? candidates[focusIndex];
+      const replacement = (focused.dataset.focusKey ? candidates.find(node => node.dataset.focusKey === focused.dataset.focusKey) : undefined) ?? candidates.find(node => node.tagName === focused.tagName && (focusLabel ? node.closest("label")?.textContent === focusLabel : node.textContent === focusText)) ?? candidates[focusIndex];
       if (replacement && !(replacement as HTMLButtonElement).disabled) { replacement.focus({ preventScroll: true }); if (selection && replacement instanceof HTMLInputElement && selection[0] !== null && selection[1] !== null) try { replacement.setSelectionRange(selection[0]!, selection[1]!); } catch { /* Checkbox inputs have no selection. */ } }
       else if (this.operation) main.querySelector<HTMLElement>(".mg-save-status")?.focus({ preventScroll: true });
     }
@@ -670,6 +691,7 @@ class ConfigurationPage {
       const name = root.path.split("/").filter(Boolean).at(-1) || root.path;
       const identity = el("div", "mg-root-identity"); append(identity, el("h3", "", name), el("p", "mg-root-path", root.path));
       append(header, identity, el("span", "mg-descendants", "Inkl. Unterordner")); append(card, header);
+      this.renderInstructionsControl(card, root, index);
       const agents = Object.entries(root.agents).filter(([, grant]) => Object.values(grant.permissions).some(Boolean));
       if (!agents.length) append(card, el("p", "mg-empty-grants", "Noch kein Agent berechtigt."));
       for (const [agentId, grant] of agents) {
@@ -711,6 +733,41 @@ class ConfigurationPage {
       append(card, actions); append(grid, card);
     }
     append(body, grid);
+  }
+  private renderInstructionsControl(card: HTMLElement, root: Root, index: number) {
+    const row = el("div", "mg-instructions-control");
+    const input = this.checkbox(row, "AGENTS.md als Arbeitsanweisungen verwenden", root.agents_instructions === "trusted", checked => {
+      if (checked) root.agents_instructions = "trusted";
+      else delete root.agents_instructions;
+      this.render();
+    });
+    input.dataset.focusKey = JSON.stringify(["instructions", "checkbox", root.label]);
+    const panel = el("div", "mg-instructions-help");
+    panel.id = `${this.helpIdPrefix}-${index}`;
+    panel.dataset.root = root.label;
+    panel.setAttribute("popover", "auto");
+    panel.setAttribute("role", "note");
+    panel.setAttribute("aria-label", localize("Informationen zu AGENTS.md-Arbeitsanweisungen"));
+    append(panel,
+      el("p", "", "Vor OneDrive-Zugriffen erhalten berechtigte Agenten die passenden AGENTS.md-Arbeitsanweisungen und müssen deren Empfang bestätigen. Aktiviere dies nur, wenn du den Bearbeitern dieser Dateien vertraust – auch zukünftige Änderungen können die Agenten anleiten."),
+      el("p", "", "Zusätzliche Zugriffsrechte entstehen nicht; Sicherheitsregeln bleiben vorrangig. Die Bestätigung garantiert keine vollständige Befolgung."),
+      el("p", "", "Voraussetzung: Im freigegebenen Hauptordner liegt eine AGENTS.md. Änderungen an Dateien können wegen des Caches bis zu einer Stunde verzögert erkannt werden."));
+    // Declarative invocation lets the browser coordinate touch light-dismiss
+    // with same-button toggling, Escape and focus return.
+    const info = this.action("ⓘ", () => {}, "ghost mg-instructions-info");
+    info.setAttribute("popovertarget", panel.id);
+    info.dataset.focusKey = JSON.stringify(["instructions", "help", root.label]);
+    info.setAttribute("aria-label", localize("Informationen zu AGENTS.md-Arbeitsanweisungen"));
+    info.setAttribute("aria-controls", panel.id);
+    info.setAttribute("aria-expanded", "false");
+    panel.addEventListener("beforetoggle", event => {
+      const open = (event as ToggleEvent).newState === "open";
+      info.setAttribute("aria-expanded", String(open));
+      panel.dataset.open = String(open);
+      if (open) { this.instructionsHelpRoot = root.label; requestAnimationFrame(this.positionInstructionsHelp); }
+      else if (panel.isConnected && this.instructionsHelpRoot === root.label) this.instructionsHelpRoot = undefined;
+    });
+    append(row, info, panel); append(card, row);
   }
   private renderAccessEditor(card: HTMLElement, root: Root) {
     const editing = this.editingAccess!;
