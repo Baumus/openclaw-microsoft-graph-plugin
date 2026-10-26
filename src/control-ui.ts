@@ -741,7 +741,7 @@ class ConfigurationPage {
       else delete root.agents_instructions;
       this.render();
     });
-    input.dataset.focusKey = `instructions-${root.label}`;
+    input.dataset.focusKey = JSON.stringify(["instructions", "checkbox", root.label]);
     const panel = el("div", "mg-instructions-help");
     panel.id = `${this.helpIdPrefix}-${index}`;
     panel.dataset.root = root.label;
@@ -756,7 +756,7 @@ class ConfigurationPage {
     // with same-button toggling, Escape and focus return.
     const info = this.action("ⓘ", () => {}, "ghost mg-instructions-info");
     info.setAttribute("popovertarget", panel.id);
-    info.dataset.focusKey = `instructions-help-${root.label}`;
+    info.dataset.focusKey = JSON.stringify(["instructions", "help", root.label]);
     info.setAttribute("aria-label", localize("Informationen zu AGENTS.md-Arbeitsanweisungen"));
     info.setAttribute("aria-controls", panel.id);
     info.setAttribute("aria-expanded", "false");

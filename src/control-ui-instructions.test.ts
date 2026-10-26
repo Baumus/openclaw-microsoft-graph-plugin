@@ -8,8 +8,9 @@ const initial = () => ({ version: 2, rules: { default: "deny", warningApprovalsB
 type Policy = ReturnType<typeof initial>;
 const cleanup: Array<() => void> = [];
 afterEach(() => { for (const stop of cleanup.splice(0)) stop(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-function mount(locale = "de") {
+function mount(locale = "de", roots?: Root[]) {
   let saved = initial();
+  if (roots) saved.services.onedrive.allowed_roots = roots;
   const baseline = structuredClone(saved);
   let page!: { mount(container: HTMLElement, context: unknown): { dispose(): void } };
   let listener = () => {};
@@ -61,6 +62,20 @@ describe("OneDrive root instruction opt-in", () => {
     expect(h.container.textContent).toContain("Keine ungespeicherten Änderungen");
     expect(await h.candidate()).toEqual(h.baseline);
     expect(confirm).not.toHaveBeenCalled();
+  });
+  it("restores each checkbox and info button for the collision labels foo and help-foo", async () => {
+    const h = mount("de", [root("foo"), root("help-foo")]); await h.settle();
+    for (const index of [0, 1]) {
+      for (const selector of [".mg-instructions-control input", ".mg-instructions-info"]) {
+        const control = h.container.querySelectorAll<HTMLElement>(selector)[index]!;
+        control.focus(); h.notify(); await h.settle();
+        const replacement = h.container.querySelectorAll<HTMLElement>(selector)[index]!;
+        expect(replacement).not.toBe(control);
+        expect(document.activeElement).toBe(replacement);
+      }
+    }
+    h.toggle(1);
+    expect(document.activeElement).toBe(h.container.querySelectorAll(".mg-instructions-control input")[1]);
   });
   it.each([0, 1])("saves root %i through the existing review flow with exact property and grant preservation", async index => {
     const h = mount(); await h.settle(); h.toggle(index);

@@ -26,7 +26,7 @@ try {
     await page.addScriptTag({ content: bundle.outputFiles[0].text });
     await page.evaluate(() => {
       const root = (label, trusted = false) => ({ label, path: `/Synthetic/${label}`, drive_id: "synthetic-drive", item_id: label, include_descendants: true, ...(trusted ? { agents_instructions: "trusted" } : {}), permissions: { read: true, write: true, delete: false }, agents: { reader: { permissions: { read: true } }, editor: { permissions: { read: true, write: true } } } });
-      const policy = { version: 2, rules: { default: "deny" }, services: { onedrive: { allowed_roots: [root("Documents"), root("Projects", true)] }, calendar: { agents: {} }, mail: { agents: {} }, todo: { agents: {} } } };
+      const policy = { version: 2, rules: { default: "deny" }, services: { onedrive: { allowed_roots: [root("foo"), root("help-foo", true)] }, calendar: { agents: {} }, mail: { agents: {} }, todo: { agents: {} } } };
       let pageDefinition; let listener; let delayedStatus;
       const host = { locale: "de", connection: { connected: true, canAdmin: true }, agents: { rows: [{ id: "reader", name: "Reader" }, { id: "editor", name: "Editor" }] }, subscribe: fn => { listener = fn; return () => {}; },
         request: async method => {
@@ -41,8 +41,18 @@ try {
       window.fixture = { notify: () => listener(), delay: () => { delayedStatus = new Promise(resolve => { window.fixture.finish = resolve; }); }, dispose: () => { view.dispose(); controller.abort(); stop(); } };
     });
     const info = page.locator(".mg-instructions-info"); const inputs = page.locator(".mg-instructions-control input");
-    await inputs.first().waitFor();
+    const settleRender = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await inputs.first().waitFor(); await settleRender();
     assert.equal(await inputs.count(), 2); assert.equal(await inputs.nth(0).isChecked(), false); assert.equal(await inputs.nth(1).isChecked(), true);
+    // R-001: these exact labels formerly aliased the first info button and
+    // second checkbox. Each control must retain its own focus on rerender.
+    for (const index of [0, 1]) {
+      for (const controls of [inputs, info]) {
+        await controls.nth(index).focus();
+        await page.evaluate(() => window.fixture.notify()); await settleRender();
+        assert.equal(await controls.nth(index).evaluate(node => node === document.activeElement), true);
+      }
+    }
     await info.first().scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(output, `${name}-closed.png`), fullPage: true });
     const open = page.locator(".mg-instructions-help:popover-open");
@@ -74,9 +84,9 @@ try {
     await inputs.nth(1).focus(); await page.evaluate(() => window.fixture.finish());
     await page.waitForTimeout(50); assert.equal(await inputs.nth(1).evaluate(node => node === document.activeElement), true);
     // Exercise native keyboard toggling and root-specific focus restoration.
-    await page.keyboard.press("Space"); assert.equal(await inputs.nth(1).isChecked(), false);
+    await page.keyboard.press("Space"); await settleRender(); assert.equal(await inputs.nth(1).isChecked(), false);
     assert.equal(await inputs.nth(1).evaluate(node => node === document.activeElement), true);
-    await page.keyboard.press("Space"); assert.equal(await inputs.nth(1).isChecked(), true);
+    await page.keyboard.press("Space"); await settleRender(); assert.equal(await inputs.nth(1).isChecked(), true);
     // Short viewport still permits all help text through its own scroller.
     await page.setViewportSize({ width: viewport.width, height: 420 });
     await info.first().scrollIntoViewIfNeeded(); await info.first().click(); await checkOpen(0);
@@ -84,7 +94,7 @@ try {
     await open.evaluate(node => { node.scrollTop = node.scrollHeight; });
     assert.equal(await open.evaluate(node => node.scrollTop + node.clientHeight >= node.scrollHeight - 1), true);
     assert.deepEqual(errors, []);
-    report.push({ viewport: name, checks: "default/preexisting; native Enter/Space/Escape; outside/same-button/touch; persistence; correct-root/delayed focus; bounded top layer; short viewport scrolling", screenshots: [`${name}-closed.png`, `${name}-open.png`], consoleErrors: errors });
+    report.push({ viewport: name, checks: "default/preexisting; native Enter/Space/Escape; outside/same-button/touch; persistence; correct-root/delayed focus; R-001 foo/help-foo all-control focus; bounded top layer; short viewport scrolling", screenshots: [`${name}-closed.png`, `${name}-open.png`], consoleErrors: errors });
     await page.evaluate(() => window.fixture.dispose()); await context.close();
   }
   await writeFile(path.join(output, "report.json"), JSON.stringify(report, null, 2) + "\n");
