@@ -84,3 +84,12 @@ A fresh browser or plugin generation automatically resumes a prepared intent aft
 | Persistence / activation | Native config acknowledgement or applied config revision is required before tool activation is confirmed; no extra reload/restart |
 
 Synthetic planner, journal, UI race and Chromium fixtures use no credentials or provider data. Journals contain only hashes, agent IDs and tool names, not policies/resources or credentials. Existing secure atomic-file permissions and lock checks remain unchanged. No backup/restore artifact is required: tests mutate only disposable fixture files, and the released feature uses the host's revision-checked configuration writer and existing current-state recovery UI. No new AI retrieval/output path, credential scope or Graph permission is introduced.
+
+
+## Caller discovery contract (3.19.1)
+
+`microsoft_graph_capabilities` is a local, credential-free policy projection. Every saved effective Microsoft grant includes its tool opt-in; existing installations receive the same deny-aware administrator Control UI reconciliation as operation tools. The activation journal admits the helper name. Removal prunes only exact owned helper names and never empties a restrictive allowlist. Explicit denies, wildcard/operator grants, and unchanged-peer boundaries remain authoritative.
+
+OneDrive tools and schemas direct the caller to discover first and use the exact returned `rootLabel`, not an inferred agent ID, title, or path. The additive `rootPath` field is returned only after intersecting root and caller permissions; no foreign-agent roots/grants or drive/item IDs are projected. It identifies a configured folder, not a provider connectivity check. Local access denials keep a generic code and safe discovery guidance rather than disclosing whether a foreign root exists. Absent or ambiguous access requires operator review, not guessed-label retries or automatic consent repair.
+
+`onedrive_agents_instructions` is included only for trusted roots with effective read permission. Trusted writes/deletes still require independently authorized instruction reads; capability discovery explains the unmet read prerequisite for write-only callers without granting it. No runtime agent can use discovery to change policy, impersonate another caller, or bypass native approvals.

@@ -5,13 +5,14 @@ const credential = vi.hoisted(() => ({ tokenForAuthorizedOperation: vi.fn(async 
 vi.mock("./credential.js", async () => ({ ...await vi.importActual<typeof import("./credential.js")>("./credential.js"), ...credential }));
 
 import entry, { beforeMicrosoftGraphToolCall, callerCapabilities, lifecycleResult } from "./index.js";
+import { planPolicyToolReconciliation } from "./control-ui-tool-exposure.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 
-function runtime(policy = graphPolicyFixture()) {
+function runtime(policy = graphPolicyFixture(), agentId = "main") {
   const factories: Array<(context: any) => any> = [];
   const hooks: Record<string, (...args: any[]) => any> = {};
   entry.register({ pluginConfig: { enabled: true, policy }, registerTool: (factory: any) => factories.push(factory), on: (name: string, handler: any) => { hooks[name] = handler; }, logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
-  const context = { agentId: "main", sessionId: "agent-usability" };
+  const context = { agentId, sessionId: "agent-usability" };
   const tools = Object.fromEntries(factories.map((factory) => { const tool = factory(context); return [tool.name, tool]; }));
   return { tools, hooks, context };
 }
@@ -176,5 +177,61 @@ describe("agent-facing Microsoft Graph contracts", () => {
     expect(result.services.mail).toMatchObject({ actions: ["read", "send"], resources: ["me"], limitation: expect.stringContaining("other resource grants are unsupported") });
     expect(result.services.todo).toMatchObject({ actions: ["read", "create"], resources: ["me"], limitation: expect.stringContaining("other resource grants are unsupported") });
     expect(JSON.stringify(result)).not.toMatch(/other-mailbox|other-list|foreign-mailbox|foreign/);
+  });
+});
+
+
+describe("discovery-first OneDrive journey", () => {
+  it("maps a UI-generated root to its authorized caller, rejects guessed labels locally, then lists the exact root", async () => {
+    const policy = graphPolicyFixture();
+    const root = policy.services.onedrive.allowed_roots[0];
+    root.label = "folder_42";
+    root.path = "/Synthetic/Studio";
+    delete root.agents_instructions;
+    root.agents = { studio: { permissions: { read: true } } };
+    policy.services.onedrive.allowed_roots.push({ ...structuredClone(root), label: "private_root", path: "/Private/Foreign", agents: { foreign: { permissions: { read: true } } } });
+    const plan = planPolicyToolReconciliation(policy, { studio: {}, foreign: {}, main: {}, "secondary-agent": {} });
+    expect(plan.patch.studio.tools.alsoAllow).toContain("microsoft_graph_capabilities");
+    const { tools } = runtime(policy, "studio");
+    credential.tokenForAuthorizedOperation.mockClear();
+    const provider = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ value: [] }));
+    try {
+      const discovery = (await tools.microsoft_graph_capabilities.execute("discover", {})).details;
+      expect(discovery.roots).toEqual([{ rootLabel: "folder_42", rootPath: "/Synthetic/Studio", actions: ["read"], instructions: "none" }]);
+      expect(JSON.stringify(discovery)).not.toMatch(/private_root|Private|foreign|synthetic-drive|synthetic-root/);
+      expect(credential.tokenForAuthorizedOperation).not.toHaveBeenCalled();
+      expect(provider).not.toHaveBeenCalled();
+      for (const guessed of ["studio", "private_root", "unknown"]) {
+        const denied = (await tools.onedrive_list.execute(`denied-${guessed}`, { rootLabel: guessed })).details;
+        expect(denied).toMatchObject({ ok: false, error: "access_denied", mutationApplied: false });
+        expect(denied.nextAction).toContain("microsoft_graph_capabilities");
+        expect(JSON.stringify(denied)).not.toMatch(/folder_42|Private|Foreign/);
+      }
+      expect(provider).not.toHaveBeenCalled();
+      expect(credential.tokenForAuthorizedOperation).not.toHaveBeenCalled();
+      const listed = (await tools.onedrive_list.execute("exact-root", { rootLabel: discovery.roots[0].rootLabel })).details;
+      expect(listed).toMatchObject({ ok: true, root_label: "folder_42", items: [] });
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(credential.tokenForAuthorizedOperation).toHaveBeenCalledTimes(1);
+      expect((await runtime(policy, "ungranted").tools.microsoft_graph_capabilities.execute("none", {})).details.roots).toEqual([]);
+      expect(() => callerCapabilities({ enabled: true, policy }, undefined)).toThrow("trusted_agent_identity_required");
+    } finally { provider.mockRestore(); }
+  });
+
+  it("keeps root discovery requirements in every OneDrive description and schema", () => {
+    for (const definition of getToolPluginMetadata(entry)!.tools.filter(tool => tool.name.startsWith("onedrive_"))) {
+      expect(definition.description).toMatch(/First call microsoft_graph_capabilities/);
+      expect((definition.parameters as any).properties.rootLabel.description).toMatch(/never infer/);
+    }
+  });
+
+  it("reports missing read prerequisites for trusted write-only roots without granting reads", () => {
+    const policy = graphPolicyFixture();
+    const discovery = callerCapabilities({ enabled: true, policy }, "main") as any;
+    expect(discovery.roots[0]).toMatchObject({ actions: ["write"], instructionPrerequisite: expect.stringContaining("lacks") });
+    const names = planPolicyToolReconciliation(policy, { main: {}, "fixture-reader": {}, "secondary-agent": {} }).patch.main.tools.alsoAllow!;
+    expect(names).toContain("microsoft_graph_capabilities");
+    expect(names).not.toContain("onedrive_agents_instructions");
+    expect(names).not.toContain("onedrive_read");
   });
 });
