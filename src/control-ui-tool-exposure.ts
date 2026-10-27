@@ -82,3 +82,10 @@ export function planChangedToolExposure(before: AccessPolicy, after: AccessPolic
   }
   return planToolExposure(required, entries, globalDeny);
 }
+
+/** Explicit recovery only for the selected saved service/agent; never backfill peers. */
+export function planSelectedServiceToolExposure(policy: AccessPolicy, service: "calendar" | "mail" | "contacts" | "todo", agent: string, entries: Record<string, AgentEntry> | undefined, globalDeny: string[] = []) {
+  const before = structuredClone(policy);
+  if (before.services[service]) delete before.services[service]!.agents[agent];
+  return planChangedToolExposure(before, policy, entries, globalDeny);
+}

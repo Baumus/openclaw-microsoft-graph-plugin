@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planChangedToolExposure, oneDriveToolExposureSaved, planOneDriveToolExposure, requiredOneDriveTools } from "./control-ui-tool-exposure.js";
+import { planSelectedServiceToolExposure, planChangedToolExposure, oneDriveToolExposureSaved, planOneDriveToolExposure, requiredOneDriveTools } from "./control-ui-tool-exposure.js";
 
 const root = (permissions: { read: boolean; write: boolean; delete: boolean }, agentPermissions = permissions) => [{ permissions, agents: { studio: { permissions: agentPermissions } } }];
 
@@ -48,4 +48,11 @@ describe("changed service tool exposure", () => {
     const after={...before,services:{...before.services,calendar:{agents:{reader:{operations:["read"]}}}}};
     expect(planChangedToolExposure(before,after,{reader:{}}).patch.reader.tools.alsoAllow).toEqual(["outlook_calendar_read"]);
   });
+});
+
+it("explicit recovery uses only the selected saved grant, preserving read-only and deny rules", () => {
+ const policy={services:{onedrive:{allowed_roots:[]},calendar:{agents:{main:{operations:["read"]},studio:{operations:["read","create"]}}},mail:{agents:{}},todo:{agents:{}}}};
+ const entries={main:{tools:{alsoAllow:["outlook_mail_read"]}},studio:{tools:{alsoAllow:[]}}};
+ expect(planSelectedServiceToolExposure(policy,"calendar","main",entries).patch).toEqual({main:{tools:{alsoAllow:["outlook_mail_read","outlook_calendar_read"]}}});
+ expect(()=>planSelectedServiceToolExposure(policy,"calendar","main",entries,["outlook_calendar_read"])).toThrow("denied_tool");
 });

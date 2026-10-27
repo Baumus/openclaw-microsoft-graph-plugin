@@ -19,7 +19,7 @@ function harness(mode: Mode = "active", pluginsInclude = false, oneDriveGrant = 
   const calls: { method: string; params: Record<string, unknown> }[] = [];
   let getOverride: (() => Promise<unknown>) | undefined;
   const snapshot = () => ({ hash: revision, configRevisionHash: "unrelated-new", appliedConfigHash: globalApplied ? "unrelated-new" : "unrelated-old", parsed: pluginsInclude ? { plugins: { $include: "plugins.json" } } : undefined, config: { agents: { entries: clone(agentEntries) }, plugins: { entries: { "microsoft-graph": { enabled: true, config: { credentialVaultKey: "synthetic-secret-ref", policy: clone(saved) } } } } } });
-  const host = { locale: "de", connection: { connected: true, canAdmin: true }, agents: { rows: [{ id: "main", name: "Main" }, { id: "studio", name: "Studio" }] },
+  let host = { locale: "de", connection: { connected: true, canAdmin: true }, agents: { rows: [{ id: "main", name: "Main" }, { id: "studio", name: "Studio" }] },
     subscribe: (fn: () => void) => { listener = fn; return () => { listener = () => {}; }; },
     request: async (method: string, params: Record<string, unknown>) => {
       calls.push({ method, params });
@@ -52,7 +52,7 @@ function harness(mode: Mode = "active", pluginsInclude = false, oneDriveGrant = 
   const settle = async () => { for (let i=0;i<100;i++) await Promise.resolve(); };
   const click = (text: string) => { const node = [...container.querySelectorAll("button")].find(b => b.textContent === text); expect(node, text + "\n" + container.textContent).toBeTruthy(); node!.click(); };
   const edit = async () => { click("3  Freigaben"); const input = container.querySelector<HTMLInputElement>(".mg-body input[type=checkbox]")!; input.checked=false; input.dispatchEvent(new Event("change", { bubbles: true })); click("4  Prüfen"); await settle(); const confirm = container.querySelector<HTMLInputElement>(".mg-body input[type=checkbox]")!; confirm.checked=true; confirm.dispatchEvent(new Event("change", { bubbles: true })); };
-  return { host, calls, container, settle, click, edit, patch, reload, snapshot, setGet: (fn?: () => Promise<unknown>) => { getOverride=fn; }, notify: () => listener(), setActive: () => { active=hash(saved); globalApplied=true; }, changeRevision: () => { revision="unrelated"; }, persistTarget: () => { saved.rules = { ...saved.rules, warningApprovalsByService: { onedrive: false } } as never; revision="late"; }, restoreBaseline: () => { saved = clone(initial); revision="rollback"; }, changeSaved: () => { saved.services.mail.agents.main.operations.push("draft"); revision="external"; }, remount: () => { mounted.dispose(); controller.abort(); mount(); }, dispose: () => { mounted.dispose(); controller.abort(); if (typeof stop === "function") stop(); container.remove(); } };
+  return { host, calls, container, settle, click, edit, patch, reload, snapshot, setInactive: () => { active=hash(initial); }, setMode: (next: Mode) => { mode=next; }, hardReload: () => { mounted.dispose(); controller.abort(); host={...host}; mount(); }, setGet: (fn?: () => Promise<unknown>) => { getOverride=fn; }, notify: () => listener(), setActive: () => { active=hash(saved); globalApplied=true; }, changeRevision: () => { revision="unrelated"; }, persistTarget: () => { saved.rules = { ...saved.rules, warningApprovalsByService: { onedrive: false } } as never; revision="late"; }, restoreBaseline: () => { saved = clone(initial); revision="rollback"; }, changeSaved: () => { saved.services.mail.agents.main.operations.push("draft"); revision="external"; }, remount: () => { mounted.dispose(); controller.abort(); mount(); }, dispose: () => { mounted.dispose(); controller.abort(); if (typeof stop === "function") stop(); container.remove(); } };
 }
 const cleanup: (() => void)[] = [];
 function view(mode?: Mode, pluginsInclude = false, oneDriveGrant = false) { const h=harness(mode, pluginsInclude, oneDriveGrant); cleanup.push(h.dispose); return h; }
@@ -127,6 +127,35 @@ describe("policy save and application lifecycle", () => {
     expect(h.container.textContent).toContain("Microsoft-Regeln sind gespeichert, aber die Agent-Tools konnten nicht freigeschaltet werden");
     expect(h.container.textContent).not.toContain("Gespeichert und aktiv");
     expect(h.snapshot().config.plugins.entries["microsoft-graph"].config.policy.services.calendar.agents).toHaveProperty("main");
+  });
+  it("recovers missing selected calendar tools after hard refresh without rewriting policy or backfilling peers", async () => {
+    const h=view("persist-hang", true, true); await h.settle(); await calendarDraft(h); h.click("Speichern und anwenden"); await h.settle();
+    expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1);
+    h.setActive(); h.hardReload(); await h.settle(); expect(h.container.textContent).not.toContain("Gespeichert und aktiv"); expect(h.container.textContent).toContain("Zugang noch nicht vollständig aktiv"); h.click("2  Dienste"); await h.settle();
+    expect(h.container.textContent).toContain("Benötigte Agent-Tools fehlen noch");
+    h.setMode("active"); h.click("Agent-Tools aktivieren"); await h.settle();
+    const writes=h.calls.filter(c=>c.method==="config.patch"); expect(writes).toHaveLength(2);
+    const repair=JSON.parse(writes[1]!.params.raw as string);
+    expect(repair.plugins).toBeUndefined(); expect(Object.keys(repair.agents.entries)).toEqual(["main"]);
+    expect(repair.agents.entries.main.tools.alsoAllow).toEqual(["outlook_mail_read", "outlook_calendar_read", "outlook_calendar_write"]);
+    expect(h.container.textContent).toContain("Gespeichert und aktiv");
+  });
+  it("recovers a known rejected tool stage through reload and explicit selected-service repair", async () => {
+    const h=view("tools-reject", true); await h.settle(); await calendarDraft(h); h.click("Speichern und anwenden"); await h.settle(); await vi.advanceTimersByTimeAsync(1000); await h.settle();
+    expect(h.container.textContent).toContain("Zugang noch nicht vollständig aktiv");
+    const previousConfirm=window.confirm; window.confirm=()=>true;
+    h.click("Aktuellen Stand laden"); await h.settle(); window.confirm=previousConfirm; h.click("2  Dienste"); await h.settle();
+    h.setMode("active"); h.click("Agent-Tools aktivieren"); await h.settle();
+    expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(3);
+    expect(h.container.textContent).toContain("Gespeichert und aktiv");
+  });
+  it("does not repair selected tools until the exact saved policy is active", async () => {
+    const h=view("persist-hang", true); await h.settle(); await calendarDraft(h); h.click("Speichern und anwenden"); await h.settle();
+    h.setActive(); h.hardReload(); await h.settle(); h.click("2  Dienste"); await h.settle();
+    h.setInactive(); h.click("Agent-Tools aktivieren"); await h.settle();
+    expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1);
+    expect(h.container.textContent).toContain("Agent-Tools konnten nicht aktiviert werden");
+    expect(h.container.textContent).not.toContain("Gespeichert und aktiv");
   });
   it("permits a new scope grant to save before reauthorization while the old credential remains", async () => {
     const h=view(); await h.settle(); h.click("2  Dienste");

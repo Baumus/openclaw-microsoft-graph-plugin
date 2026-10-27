@@ -4,7 +4,7 @@ import { localize, format, setLocale, isRtl } from "./control-ui-i18n.js";
 import { isMicrosoftDeviceVerificationUri } from "./device-verification.js";
 import { canonicalPolicy } from "./config-policy-identity.js";
 import { isConnectionEstablished } from "./control-ui-status.js";
-import { oneDriveToolExposureSaved, planChangedToolExposure } from "./control-ui-tool-exposure.js";
+import { oneDriveToolExposureSaved, planChangedToolExposure, planSelectedServiceToolExposure } from "./control-ui-tool-exposure.js";
 import { validClientId, validTenant } from "./app-identifiers.js";
 
 type Grant = { operations: string[]; resources?: string[] };
@@ -457,10 +457,18 @@ class ConfigurationPage {
     const check = button(this.operation?.phase === "unknown" ? "Speicherstatus prüfen" : "Status prüfen", () => { void this.checkApplication(); });
     check.dataset.safeStatus = "true"; check.disabled = this.statusInFlight || !this.authorized; append(parent, check);
   }
+  private get selectedServiceToolsMissing() {
+    if (!this.initial || !this.selectedAgent || !this.snapshot) return false;
+    return (["calendar", "mail", "contacts", "todo"] as const).some(service => {
+      try { return Object.keys(planSelectedServiceToolExposure(this.initial!, service, this.selectedAgent, this.snapshot!.config.agents?.entries, this.snapshot!.config.tools?.deny).patch).length > 0; }
+      catch { return true; }
+    });
+  }
   private renderSaveStatus(main: HTMLElement) {
     const phase = this.operation?.phase;
-    if (!phase && this.applicationStatus === "applied" && !this.statusError) return;
-    const status = el("section", phase === "applied" ? "mg-save-status mg-success" : phase === "failed" ? "mg-save-status mg-error" : "mg-save-status mg-warning");
+    const missingTools = this.selectedServiceToolsMissing;
+    if (!phase && this.applicationStatus === "applied" && !this.statusError && !missingTools) return;
+    const status = el("section", phase === "applied" && !missingTools ? "mg-save-status mg-success" : phase === "failed" ? "mg-save-status mg-error" : "mg-save-status mg-warning");
     status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite"); status.tabIndex = -1;
     let title = "Gespeichert. Aktivierung noch nicht bestätigt.";
     let detail = "Die bisherigen Regeln können noch gelten. Beim Wiederöffnen wird der Stand geprüft. Wenn die Verbindung während der Anwendung abbricht, kann ein neuer Anwendungsversuch nötig sein.";
@@ -472,6 +480,7 @@ class ConfigurationPage {
     else if (phase === "conflict") { title = "Die Regeln wurden inzwischen anderswo geändert."; detail = "Dein Entwurf bleibt erhalten. Lade den aktuellen Stand neu, bevor du weitere Änderungen speicherst."; }
     if (this.operation?.stage === "tools" && ["saving", "unknown"].includes(phase ?? "")) detail = "Die Microsoft-Regeln sind gespeichert. Die benötigten Agent-Tools werden noch angewendet; der Zugang ist noch nicht bestätigt.";
     if (this.operation?.policyPrepared && ["failed", "conflict"].includes(phase ?? "")) { title = "Regeln gespeichert. Zugang noch nicht vollständig aktiv."; detail = "Die Microsoft-Regeln sind gespeichert, aber die Agent-Tools konnten nicht freigeschaltet werden. Der Zugang ist noch nicht vollständig aktiv."; }
+    if (missingTools && (!phase || phase === "applied")) { title = "Regeln gespeichert. Zugang noch nicht vollständig aktiv."; detail = "Für den ausgewählten Agenten fehlen Tools. Öffne Dienste und aktiviere die Tools für den gewünschten gespeicherten Zugang."; }
     append(status, el("strong", "", title), el("p", "mg-status-detail", detail));
     if (this.operation?.applicationFailed && ["pending", "applying"].includes(phase ?? "")) append(status, el("p", "mg-status-detail", "Die automatische Anwendung konnte nicht abgeschlossen werden. Deine Regeln sind gespeichert; laufende Arbeit wird nicht abgebrochen."));
     if (this.operation?.reloadPending) append(status, el("p", "mg-status-detail", "Anwendung wurde angefordert. Wir prüfen, wann die gespeicherten Regeln aktiv sind."));
@@ -484,7 +493,7 @@ class ConfigurationPage {
     if (phase === "pending") {
       const overview = button("Übersicht anzeigen", () => { this.step = 0; this.render(); }); overview.dataset.safeStatus = "true"; append(status, overview);
     }
-    if (phase === "conflict") { const reload = button("Aktuellen Stand laden", () => { if (window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { operationsByHost.delete(this.host); this.operation = undefined; this.statusEpoch++; void this.load(); } }); reload.dataset.safeStatus = "true"; reload.disabled = this.busy || this.statusInFlight; append(status, reload); }
+    if (phase === "conflict" || phase === "failed" && this.operation?.policyPrepared) { const reload = button("Aktuellen Stand laden", () => { if (window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { operationsByHost.delete(this.host); this.operation = undefined; this.statusEpoch++; void this.load(); } }); reload.dataset.safeStatus = "true"; reload.disabled = this.busy || this.statusInFlight; append(status, reload); }
     append(main, status);
   }
   private renderSetup(main: HTMLElement) {
@@ -865,6 +874,16 @@ class ConfigurationPage {
         this.render();
       });
       if (existing && existing.operations.length < operations[service].length) append(card, el("p", "mg-hint", "Bestehender Zugang ist auf einzelne Funktionen eingeschränkt. Diese Einschränkung bleibt erhalten."));
+      if (existing && !this.dirty && this.initial) {
+        try {
+          const exposure = planSelectedServiceToolExposure(this.initial, service, agentId, this.snapshot?.config.agents?.entries, this.snapshot?.config.tools?.deny);
+          if (Object.keys(exposure.patch).length) {
+            append(card, el("p", "mg-warning", "Regel gespeichert. Benötigte Agent-Tools fehlen noch; der Zugang ist nicht vollständig aktiv."));
+            append(card, el("p", "mg-hint", Object.values(exposure.expected).flatMap(entry => entry.value.filter(name => !this.snapshot?.config.agents?.entries?.[agentId]?.tools?.[entry.key]?.includes(name))).join(", ")));
+            append(card, this.action("Agent-Tools aktivieren", () => { void this.repairServiceTools(service, agentId); }));
+          }
+        } catch { append(card, el("p", "mg-warning", "Agent-Tools sind durch die Agent-Policy gesperrt. Deny-Regeln bleiben unverändert.")); }
+      }
       if (service === "calendar") this.renderCalendarAccess(card, agentId, existing);
       append(body, card);
     }
@@ -953,6 +972,31 @@ class ConfigurationPage {
     for (const root of candidate.services.onedrive.allowed_roots) for (const agent of Object.keys(root.agents)) if (!roster.has(agent)) { this.error = format("Unknown configured agent: {agent}", { agent }); this.render(); return false; }
     try { const result = await this.read<{ valid: boolean; requiredScopes: string[]; policyHash?: string }>("microsoft-graph.configuration.validate", { policy: candidate }); if (epoch !== this.validationEpoch || this.disposed) return false; this.scopes = result.requiredScopes; if (this.operation && candidate === this.operation.target) this.operation.targetHash = result.policyHash; this.render(); return result.valid; }
     catch { if (epoch !== this.validationEpoch || this.disposed) return false; this.error = "Policy validation failed. Check root labels, paths, IDs, and grant resources."; this.render(); return false; }
+  }
+  private async repairServiceTools(service: "calendar" | "mail" | "contacts" | "todo", agent: string) {
+    if (this.dirty || this.locked || !this.initial || !this.authorized) return;
+    const target = clone(this.initial);
+    this.busy = true; this.error = ""; this.render();
+    try {
+      const [fresh, active, validation] = await Promise.all([
+        this.read<ConfigSnapshot>("config.get"), this.readActivePolicy(),
+        this.read<{ valid: boolean; policyHash?: string }>("microsoft-graph.configuration.validate", { policy: target }),
+      ]);
+      if (this.disposed || this.signal.aborted || !this.authorized) return;
+      if (canonicalPolicy(fresh.config.plugins?.entries?.[id]?.config?.policy) !== canonicalPolicy(target) || authoredPolicySource(fresh) !== this.includeName)
+        throw new Error("Die Regeln wurden inzwischen geändert. Lade den aktuellen Stand neu.");
+      if (!validation.valid || !validation.policyHash || !active.available || active.hash !== validation.policyHash)
+        throw new Error("Die gespeicherten Regeln sind noch nicht nachweisbar aktiv. Prüfe zuerst den Aktivierungsstatus.");
+      const exposure = planSelectedServiceToolExposure(target, service, agent, fresh.config.agents?.entries, fresh.config.tools?.deny);
+      if (!Object.keys(exposure.patch).length) { this.snapshot = fresh; return; }
+      this.stopStatusChecks(); this.statusEpoch++;
+      const operation: SaveOperation = { target, baseline: clone(target), targetHash: validation.policyHash, toolExposure: exposure.expected,
+        phase: "saving", issued: false, settled: false, epoch: this.statusEpoch, splitWrite: true, policyPrepared: true, stage: "tools" };
+      this.operation = operation; operationsByHost.set(this.host, operation);
+      const replacements = Object.entries(exposure.expected).filter(([id, entry]) => Array.isArray(fresh.config.agents?.entries?.[id]?.tools?.[entry.key])).map(([id, entry]) => `agents.entries.${id}.tools.${entry.key}`);
+      this.dispatchWrite(operation, fresh.hash, { agents: { entries: exposure.patch } }, replacements);
+    } catch { this.error = "Agent-Tools konnten nicht aktiviert werden. Prüfe den aktuellen Regelstand, die Aktivierung und die Deny-Regeln; es wurden keine Zugriffsregeln erweitert."; }
+    finally { this.busy = false; this.render(); }
   }
   private dispatchPolicyWrite(operation: SaveOperation, fresh: ConfigSnapshot, agents: unknown = undefined) {
     const replacements: string[] = [];
