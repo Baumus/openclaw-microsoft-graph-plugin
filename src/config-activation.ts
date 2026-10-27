@@ -7,7 +7,7 @@ import { acquireFileLock } from "@openclaw/fs-safe/file-lock";
 import { readConfigFileSnapshotForWrite } from "openclaw/plugin-sdk/config-mutation";
 import { canonicalPolicy } from "./config-policy-identity.js";
 import { validatePolicy } from "./policy.js";
-import { planChangedToolExposure, planToolExposure, oneDriveToolExposureSaved } from "./control-ui-tool-exposure.js";
+import { planChangedToolExposure, planPolicyToolReconciliation, requiredPolicyTools, planToolExposure, oneDriveToolExposureSaved } from "./control-ui-tool-exposure.js";
 
 type Entries = Parameters<typeof planToolExposure>[1];
 type Expected = ReturnType<typeof planToolExposure>["expected"];
@@ -80,6 +80,23 @@ export class ActivationJournal {
       if (!Object.keys(required).length) throw Error("activation_no_tools");
       const record: ActivationIntent = { version: 1, ownerHash: this.ownerHash, id: randomUUID(), createdAt: Date.now(), targetHash: policyHash(after), sourceHash: sourceHash(s), beforeToolsHash: toolsHash(s, required), required, state: "prepared" };
       await write(record); return record;
+    });
+  }
+  /** Single claimed repair: only the already-saved, active policy is authority.
+   * Persist the exact target before replying so fresh pages reconcile, not replay. */
+  async reconcile(baseHash: string, activeHash: string | undefined) {
+    return this.transaction(async (current, write) => {
+      if (current && ["prepared", "issued"].includes(current.state) && Date.now() - current.createdAt <= 24 * 3600000) throw Error("activation_pending");
+      const s = await this.snapshot();
+      const policy = validatePolicy(savedPolicy(s)); const targetHash = policyHash(policy);
+      if (this.projectHash(s.hash) !== baseHash || activeHash !== targetHash) throw Error("activation_conflict");
+      const plan = planPolicyToolReconciliation(policy, s.config.agents?.entries, s.config.tools?.deny);
+      if (!Object.keys(plan.patch).length) return null;
+      const desired = requiredPolicyTools(policy);
+      const required = Object.fromEntries(Object.keys(plan.patch).map(agent => [agent, desired[agent] ?? []]));
+      const record: ActivationIntent = { version: 1, ownerHash: this.ownerHash, id: randomUUID(), createdAt: Date.now(), targetHash, sourceHash: sourceHash(s), beforeToolsHash: toolsHash(s, required), required, expected: plan.expected, state: "issued" };
+      await write(record);
+      return { record, patch: plan.patch, expected: plan.expected, baseHash };
     });
   }
   async status() {

@@ -35,7 +35,7 @@ describe("running Graph generation status", () => {
     expect(api.registerGatewayMethod).toHaveBeenCalledWith("microsoft-graph.configuration.applicationStatus", expect.any(Function), { scope: "operator.admin" });
     const respond = vi.fn(); handlers.get("microsoft-graph.configuration.applicationStatus")!({ params: {}, respond });
     const captured = respond.mock.calls[0][1];
-    expect(captured).toEqual({ activeVersion: "3.12.1", activePolicyHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(captured).toEqual({ toolReconciliation: "control-ui-cas-v1", activeVersion: "3.12.1", activePolicyHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
     api.version = "future"; config.policy.services.calendar.agents.main.operations = [];
     respond.mockClear(); handlers.get("microsoft-graph.configuration.applicationStatus")!({ params: {}, respond });
     expect(respond).toHaveBeenCalledWith(true, captured);
@@ -49,7 +49,7 @@ describe("running Graph generation status", () => {
     for (const policy of [undefined, { rules: { default: "allow" } }]) {
       const registerGatewayMethod=vi.fn(); registerConfigurationUiMethods({ registerGatewayMethod }, { policy });
       const handler=registerGatewayMethod.mock.calls.find(c=>c[0]==="microsoft-graph.configuration.applicationStatus")![1]; const respond=vi.fn(); handler({ params: {}, respond });
-      expect(respond).toHaveBeenCalledWith(true, { activePolicyHash: null, activeVersion: null });
+      expect(respond).toHaveBeenCalledWith(true, { activePolicyHash: null, activeVersion: null, toolReconciliation: "control-ui-cas-v1" });
     }
   });
 });
@@ -61,7 +61,7 @@ describe("activation RPC authority boundary", () => {
     registerConfigurationUiMethods({registerGatewayMethod}, { policy }, () => "/not-used-no-identity");
     expect(registerGatewayMethod).toHaveBeenCalledWith("microsoft-graph.configuration.activation",expect.any(Function),{scope:"operator.admin"});
     const handler=registerGatewayMethod.mock.calls.find(c=>c[0]==="microsoft-graph.configuration.activation")![1];
-    for (const params of [{action:"status"},{action:"prepare",baseHash:"x",baseline:policy,target:policy},{action:"status",authenticatedUserId:"forged"}]) {
+    for (const params of [{action:"status"},{action:"reconcile",baseHash:"opaque:revision"},{action:"prepare",baseHash:"x",baseline:policy,target:policy},{action:"status",authenticatedUserId:"forged"}]) {
       const respond=vi.fn(); await handler({params,respond});
       expect(respond).toHaveBeenCalledWith(false,undefined,expect.objectContaining({code:"INVALID_REQUEST"}));
     }

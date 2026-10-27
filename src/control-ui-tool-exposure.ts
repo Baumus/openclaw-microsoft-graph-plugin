@@ -89,3 +89,49 @@ export function planSelectedServiceToolExposure(policy: AccessPolicy, service: "
   if (before.services[service]) delete before.services[service]!.agents[agent];
   return planChangedToolExposure(before, policy, entries, globalDeny);
 }
+
+const servicePrefixes = { calendar: "outlook_calendar", mail: "outlook_mail", contacts: "outlook_contacts", todo: "microsoft_todo" } as const;
+const ownedTools = new Set([...Object.values(toolsByPermission).flat(), ...Object.values(servicePrefixes).flatMap(prefix => [`${prefix}_read`, `${prefix}_write`])]);
+export function requiredPolicyTools(policy: AccessPolicy): Record<string, string[]> {
+  const required = requiredOneDriveTools(policy.services.onedrive.allowed_roots);
+  for (const service of ["calendar", "mail", "contacts", "todo"] as const) {
+    for (const [agent, grant] of Object.entries(policy.services[service]?.agents ?? {})) {
+      const names = new Set(required[agent] ?? []);
+      if (grant.operations.includes("read")) names.add(`${servicePrefixes[service]}_read`);
+      if (grant.operations.some(operation => operation !== "read")) names.add(`${servicePrefixes[service]}_write`);
+      required[agent] = [...names];
+    }
+  }
+  return required;
+}
+/** Reconcile only exact Graph-owned opt-ins. Broad grants and other policy layers
+ * remain operator-owned. A blocked agent must not prevent repair of its peers. */
+export function planPolicyToolReconciliation(policy: AccessPolicy, entries: Record<string, AgentEntry> | undefined, globalDeny: string[] = []) {
+  const required = requiredPolicyTools(policy);
+  const patch: ReturnType<typeof planToolExposure>["patch"] = {};
+  const expected: ReturnType<typeof planToolExposure>["expected"] = {};
+  const drift: Record<string, { missing: string[]; stale: string[]; blocked: string[]; reason?: string }> = {};
+  for (const agent of new Set([...Object.keys(required), ...Object.keys(entries ?? {})])) {
+    const names = required[agent] ?? [];
+    const tools = entries?.[agent]?.tools ?? {};
+    const key = tools.allow ? "allow" : "alsoAllow";
+    const before = tools[key] ?? [];
+    const blocked = names.filter(name => [...globalDeny, ...(tools.deny ?? [])].some(pattern => ["group:plugins", "microsoft-graph"].includes(pattern.toLowerCase()) || matches(pattern, name)));
+    const missing = names.filter(name => !before.some(pattern => ["group:plugins", "microsoft-graph"].includes(pattern.toLowerCase()) || matches(pattern, name)));
+    const stale = before.filter(name => ownedTools.has(name.toLowerCase()) && !names.includes(name.toLowerCase()));
+    if (!missing.length && !stale.length && !blocked.length) continue;
+    const issue = drift[agent] = { missing, stale, blocked, reason: undefined as string | undefined };
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(agent)) { issue.reason = "unsupported_agent_id"; continue; }
+    if (!entries || !Object.hasOwn(entries, agent)) { issue.reason = "missing_agent_entry"; continue; }
+    if (tools.allow && tools.alsoAllow) { issue.reason = "conflicting_tool_policy"; continue; }
+    const value = [...before.filter(name => !stale.includes(name)), ...missing.filter(name => !blocked.includes(name))];
+    // Core interprets [] as unrestricted, not deny-all. Never turn a
+    // restrictive allowlist into an unrestricted policy while pruning Graph.
+    if (key === "allow" && before.length > 0 && value.length === 0) { issue.reason = "empty_allow_would_broaden_access"; continue; }
+    if (JSON.stringify(value) !== JSON.stringify(before)) {
+      patch[agent] = { tools: { [key]: value } };
+      expected[agent] = { key, value };
+    }
+  }
+  return { patch, expected, drift };
+}

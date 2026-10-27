@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planSelectedServiceToolExposure, planChangedToolExposure, oneDriveToolExposureSaved, planOneDriveToolExposure, requiredOneDriveTools } from "./control-ui-tool-exposure.js";
+import { planPolicyToolReconciliation, planSelectedServiceToolExposure, planChangedToolExposure, oneDriveToolExposureSaved, planOneDriveToolExposure, requiredOneDriveTools } from "./control-ui-tool-exposure.js";
 
 const root = (permissions: { read: boolean; write: boolean; delete: boolean }, agentPermissions = permissions) => [{ permissions, agents: { studio: { permissions: agentPermissions } } }];
 
@@ -55,4 +55,56 @@ it("explicit recovery uses only the selected saved grant, preserving read-only a
  const entries={main:{tools:{alsoAllow:["outlook_mail_read"]}},studio:{tools:{alsoAllow:[]}}};
  expect(planSelectedServiceToolExposure(policy,"calendar","main",entries).patch).toEqual({main:{tools:{alsoAllow:["outlook_mail_read","outlook_calendar_read"]}}});
  expect(()=>planSelectedServiceToolExposure(policy,"calendar","main",entries,["outlook_calendar_read"])).toThrow("denied_tool");
+});
+
+describe("saved policy reconciliation", () => {
+  const policy = { services: { onedrive: { allowed_roots: root({ read: true, write: false, delete: false }) }, calendar: { agents: { main: { operations: ["read"] } } }, mail: { agents: { main: { operations: ["read", "draft"] } } }, contacts: { agents: { blocked: { operations: ["read"] } } }, todo: { agents: {} } } };
+  it("synchronizes the policy union, removing only exact Graph names and preserving broad/operator grants", () => {
+    const entries = { main: { tools: { allow: ["exec", "onedrive_delete", "outlook_mail_write", "microsoft_todo_*", "outlook_calendar_*"] } }, studio: {}, blocked: { tools: { deny: ["outlook_contacts_*"] } }, retired: { tools: { alsoAllow: ["outlook_mail_read", "read"] } } };
+    const result = planPolicyToolReconciliation(policy, entries);
+    expect(result.patch.main.tools.allow).toEqual(["exec", "outlook_mail_write", "microsoft_todo_*", "outlook_calendar_*", "outlook_mail_read"]);
+    expect(result.patch.retired.tools.alsoAllow).toEqual(["read"]);
+    expect(result.patch.studio.tools.alsoAllow).toEqual(["onedrive_search", "onedrive_list", "onedrive_read", "onedrive_download"]);
+    expect(result.patch.blocked).toBeUndefined(); expect(result.drift.blocked.blocked).toEqual(["outlook_contacts_read"]);
+    expect(entries.main.tools.allow).toContain("onedrive_delete");
+    const repaired = structuredClone(entries) as any;
+    for (const [id, patch] of Object.entries(result.patch)) repaired[id].tools = { ...repaired[id].tools, ...patch.tools };
+    expect(planPolicyToolReconciliation(policy, repaired).patch).toEqual({});
+  });
+  it("respects global exact/wildcard/plugin-group denies without blocking revocation or peer diagnosis", () => {
+    for (const deny of [["*"], ["group:plugins"], ["microsoft-graph"], ["outlook_*", "onedrive_*"]]) {
+      const result = planPolicyToolReconciliation(policy, { main: { tools: { alsoAllow: ["onedrive_delete"] } }, studio: {}, blocked: {} }, deny);
+      expect(result.patch.main.tools.alsoAllow).toEqual([]); expect(result.patch.studio).toBeUndefined(); expect(result.drift.main.blocked).toContain("outlook_calendar_read");
+    }
+  });
+  it("reports missing/conflicting agents instead of inventing entries or policy precedence", () => {
+    const result = planPolicyToolReconciliation(policy, { main: { tools: { allow: [], alsoAllow: [] } } });
+    expect(result.drift.main.reason).toBe("conflicting_tool_policy"); expect(result.drift.studio.reason).toBe("missing_agent_entry"); expect(result.patch).toEqual({});
+  });
+});
+
+it("never empties a restrictive allow list: real Core empty-allow semantics would broaden unrelated access", async () => {
+  // Exercise the pinned Core's actual matcher, not a reimplementation. Internal
+  // discovery is test-only: production uses only supported native config CAS.
+  const { readdir } = await import("node:fs/promises");
+  const { createRequire } = await import("node:module");
+  const { dirname, resolve } = await import("node:path");
+  const { pathToFileURL } = await import("node:url");
+  const dist = resolve(dirname(createRequire(import.meta.url).resolve("openclaw/plugin-sdk/config-mutation")), "..");
+  const filename = (await readdir(dist)).find(name => /^tool-policy-match-.*\.mjs$/.test(name));
+  expect(filename).toBeTruthy();
+  const core = await import(/* @vite-ignore */ pathToFileURL(resolve(dist, filename!)).href);
+  const matcher = Object.values(core).find(value => typeof value === "function" && value.name === "createToolPolicyMatcher") as (policy: { allow: string[] }) => (name: string) => boolean;
+  expect(matcher).toBeTypeOf("function");
+  const policy = { services: { onedrive: { allowed_roots: [] }, calendar: { agents: {} }, mail: { agents: {} }, todo: { agents: {} } } };
+  const entries = { restrictive: { tools: { allow: ["outlook_mail_read"] } }, additive: { tools: { alsoAllow: ["outlook_mail_read"] } }, restrictedPeer: { tools: { allow: ["read", "outlook_mail_read"] } } };
+  expect(matcher({ allow: [] })("exec")).toBe(true);
+  expect(matcher(entries.restrictive.tools)("exec")).toBe(false);
+  const plan = planPolicyToolReconciliation(policy, entries);
+  expect(plan.patch.restrictive).toBeUndefined();
+  expect(plan.drift.restrictive.reason).toBe("empty_allow_would_broaden_access");
+  expect(entries.restrictive.tools.allow).toEqual(["outlook_mail_read"]);
+  expect(plan.patch.additive.tools.alsoAllow).toEqual([]);
+  expect(plan.patch.restrictedPeer.tools.allow).toEqual(["read"]);
+  expect(matcher({ allow: plan.patch.restrictedPeer.tools.allow! })("exec")).toBe(false);
 });

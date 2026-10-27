@@ -92,3 +92,28 @@ describe("Gateway public CAS revisions", () => {
     expect(claim.patch).toEqual({selected:{tools:{alsoAllow:["outlook_mail_read","outlook_calendar_read"]}}});
   });
 });
+
+describe("durable saved-policy reconciliation claims", () => {
+  it("claims all repairable drift once, recovers after a fresh instance and completes exact persistence", async () => {
+    const h=await setup(); h.persist();
+    const claimed=await h.journal().reconcile("after",hash(h.after)); expect(claimed).not.toBeNull();
+    expect(claimed!.patch.selected.tools.alsoAllow).toEqual(["outlook_calendar_read"]);
+    expect(claimed!.record.state).toBe("issued"); expect((await h.journal().status())?.expected).toEqual(claimed!.expected);
+    await expect(h.journal().reconcile("after",hash(h.after))).rejects.toThrow("activation_pending");
+    await expect(h.journal().complete(claimed!.record.id,hash(h.after))).rejects.toThrow();
+    h.entries.selected.tools.alsoAllow=claimed!.expected.selected.value;
+    await h.journal().complete(claimed!.record.id,hash(h.after));
+    expect(await h.journal().reconcile("after",hash(h.after))).toBeNull();
+    const raw=await readFile(h.file,"utf8"); expect(raw).not.toMatch(/resource-private|private-plugins-path|credential|baseline|policy/);
+  });
+  it("refuses stale public revisions, inactive generations, owner conflicts and simultaneous repair starts", async () => {
+    const h=await setup(); h.persist();
+    await expect(h.journal().reconcile("stale",hash(h.after))).rejects.toThrow("activation_conflict");
+    await expect(h.journal().reconcile("after",hash(h.before))).rejects.toThrow("activation_conflict");
+    const results=await Promise.allSettled([h.journal().reconcile("after",hash(h.after)),h.journal().reconcile("after",hash(h.after))]);
+    expect(results.filter(r=>r.status==="fulfilled")).toHaveLength(1);
+    const other=new ActivationJournal(h.dir,async()=>structuredClone(h.snapshot),"another-operator");
+    await expect(other.reconcile("after",hash(h.after))).rejects.toThrow("activation_pending");
+    expect(await other.status()).toBeNull();
+  });
+});
