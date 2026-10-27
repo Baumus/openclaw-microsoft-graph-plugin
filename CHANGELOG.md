@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## 3.18.2 - 2026-10-27
+
+- Reconcile ambiguous save responses until the bounded verification window expires instead of falsely reporting an external policy edit. A late committed target is recognized without repeating the write; genuine policy conflicts still preserve the draft and stop.
+- Permit saves after unrelated configuration changes by verifying the Graph policy and authored source, then revision-checking the single patch against the fresh snapshot. Preserve unrelated settings and tool grants.
+- Coalesce pending-save host notifications, avoid config/credential reads for unrelated active-session events, refresh credentials only on application transition, and load independent status checks concurrently.
+- Plugin-only changes; no Core changes, provider calls, credential migration, permission expansion, compatibility-floor changes, or duplicate automatic reloads.
+
 ## 3.18.1 - 2026-10-27
 
 - Atomically opt OneDrive-granted agents into the matching optional OneDrive tools when saving in the administrator Control UI. Select only operations permitted by both root and agent; preserve unrelated tool grants.

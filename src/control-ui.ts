@@ -129,6 +129,8 @@ class ConfigurationPage {
   private activeProofAvailable = false;
   private statusInFlight = false;
   private statusEpoch = 0;
+  private subscriptionStatusTimer?: ReturnType<typeof setTimeout>;
+  private wasConnected = false;
   private validationEpoch = 0;
   private readonly guardEvent = (event: Event) => {
     if (!this.locked) return;
@@ -202,12 +204,22 @@ class ConfigurationPage {
         this.authTimer = undefined;
       } else this.scheduleAuthCheck();
       setLocale(host.locale); if (this.authorized) void this.checkForUpdate(); if (!this.snapshot && !this.busy && this.authorized) void this.load();
-      else { this.render(); if (this.authorized && this.snapshot && !this.busy && !this.statusInFlight) void this.checkApplication(); } });
+      else {
+        this.render();
+        // The host publishes many unrelated session/agent updates. Coalesce
+        // those notifications rather than reading the entire config per event.
+        if (this.authorized && this.snapshot && !this.busy && !this.subscriptionStatusTimer
+          && (!this.wasConnected || this.operation && !["applied", "failed", "conflict"].includes(this.operation.phase))) {
+          this.subscriptionStatusTimer = setTimeout(() => { this.subscriptionStatusTimer = undefined; void this.checkApplication(); }, 250);
+        }
+      }
+      this.wasConnected = this.authorized;
+    });
     void this.load();
     void this.checkForUpdate();
     this.render();
   }
-  dispose() { contextByHost.set(this.host, { step: this.step, selectedAgent: this.selectedAgent, credential: this.credential }); this.disposed = true; this.statusEpoch++; this.container.removeEventListener("click", this.guardEvent, true); this.container.removeEventListener("change", this.guardEvent, true); this.container.removeEventListener("input", this.guardEvent, true); window.removeEventListener("beforeunload", this.warnBeforeUnload); window.removeEventListener("resize", this.positionInstructionsHelp); window.removeEventListener("scroll", this.positionInstructionsHelp, true); if (this.authTimer) clearTimeout(this.authTimer); this.stopStatusChecks(); this.unsubscribe(); this.container.replaceChildren(); }
+  dispose() { contextByHost.set(this.host, { step: this.step, selectedAgent: this.selectedAgent, credential: this.credential }); this.disposed = true; this.statusEpoch++; if (this.subscriptionStatusTimer) clearTimeout(this.subscriptionStatusTimer); this.container.removeEventListener("click", this.guardEvent, true); this.container.removeEventListener("change", this.guardEvent, true); this.container.removeEventListener("input", this.guardEvent, true); window.removeEventListener("beforeunload", this.warnBeforeUnload); window.removeEventListener("resize", this.positionInstructionsHelp); window.removeEventListener("scroll", this.positionInstructionsHelp, true); if (this.authTimer) clearTimeout(this.authTimer); this.stopStatusChecks(); this.unsubscribe(); this.container.replaceChildren(); }
   private async checkForUpdate() {
     if (!this.authorized || this.updateCheckStarted || this.disposed) return;
     this.updateCheckStarted = true;
@@ -252,6 +264,7 @@ class ConfigurationPage {
     if (!this.authorized || !this.snapshot || !this.initial || this.disposed || this.signal.aborted || this.statusInFlight) return;
     const epoch = this.statusEpoch;
     this.statusInFlight = true; this.render();
+    const previouslyApplied = this.operation?.phase === "applied" || !this.operation && this.applicationStatus === "applied";
     try {
       const [snap, active] = await Promise.all([
         this.read<ConfigSnapshot>("config.get"),
@@ -261,8 +274,11 @@ class ConfigurationPage {
       const expected = this.operation?.target ?? this.initial;
       const saved = snap.config?.plugins?.entries?.[id]?.config?.policy;
       if (canonicalPolicy(saved) !== canonicalPolicy(expected) || !oneDriveToolExposureSaved(snap.config?.agents?.entries, this.operation?.toolExposure ?? {})) {
-        if (this.operation?.issued && !this.operation.settled && canonicalPolicy(saved) === canonicalPolicy(this.operation.baseline)) {
-          this.operation.phase = "saving";
+        if (this.operation?.issued && !this.operation.rejectedBeforeWrite && canonicalPolicy(saved) === canonicalPolicy(this.operation.baseline)) {
+          // A transport failure is not an external edit or proof of rollback.
+          // Keep observing the exact target for the bounded reconciliation window.
+          this.statusError = "";
+          this.operation.phase = this.operation.settled ? "unknown" : "saving";
         } else {
           this.stopStatusChecks();
           if (this.operation?.rejectedBeforeWrite && canonicalPolicy(saved) === canonicalPolicy(this.operation.baseline)) {
@@ -275,7 +291,7 @@ class ConfigurationPage {
       } else {
         this.snapshot = snap; this.activePolicyHash = active.hash; this.activeProofAvailable = active.available; this.statusError = "";
         if (this.operation) { this.initial = clone(expected); this.savedPolicyHash = this.operation.targetHash; this.operation.phase = this.applicationStatus === "applied" ? "applied" : this.operation.reloadPending || this.statusChecksRemaining > 0 ? "applying" : "pending"; }
-        if (this.applicationStatus === "applied") { this.stopStatusChecks(); await this.refreshCredential(); }
+        if (this.applicationStatus === "applied") { this.stopStatusChecks(); if (!previouslyApplied) await this.refreshCredential(); }
       }
     } catch {
       if (epoch === this.statusEpoch && !this.disposed) { this.statusError = "Verbindung unterbrochen. Der Status wird nach Wiederverbindung geprüft."; if (this.operation && !["applied", "applying", "pending"].includes(this.operation.phase)) this.operation.phase = "unknown"; }
@@ -307,10 +323,16 @@ class ConfigurationPage {
       this.policy = this.operation && this.operation.phase !== "applied" ? clone(this.operation.target) : clone(this.initial);
       this.snapshot = snap;
       this.watchApplication();
-      await this.refreshCredential();
       this.selectedAgent ||= this.host.agents.rows[0]?.id ?? ""; this.removedServiceGrants = {};
-      try { const baseline = await this.host.request<{ requiredScopes: string[]; policyHash?: string }>("microsoft-graph.configuration.validate", { policy: this.initial }); this.initialScopes = baseline.requiredScopes; this.scopes = baseline.requiredScopes; this.savedPolicyHash = baseline.policyHash; } catch { this.initialScopes = []; this.scopes = []; }
-      const active = await this.readActivePolicy(); this.activePolicyHash = active.hash; this.activeProofAvailable = active.available;
+      const [, baseline, active] = await Promise.all([
+        this.refreshCredential(),
+        this.read<{ requiredScopes: string[]; policyHash?: string }>("microsoft-graph.configuration.validate", { policy: this.initial }).catch(() => undefined),
+        this.readActivePolicy(),
+      ]);
+      if (this.disposed || this.signal.aborted) return;
+      this.initialScopes = baseline?.requiredScopes ?? []; this.scopes = this.initialScopes; this.savedPolicyHash = baseline?.policyHash;
+      this.activePolicyHash = active.hash; this.activeProofAvailable = active.available;
+      this.wasConnected = this.authorized;
       if (!this.operation && this.applicationStatus === "pending") {
         this.operation = { target: clone(this.initial), baseline: clone(this.initial), targetHash: this.savedPolicyHash, phase: "pending", issued: true, settled: true, epoch: this.statusEpoch };
         operationsByHost.set(this.host, this.operation);
@@ -415,7 +437,7 @@ class ConfigurationPage {
     if (phase === "validating" || phase === "saving") { title = "Deine Änderungen werden gespeichert …"; detail = phase === "validating" ? "Zugriffe werden geprüft. Bitte warte; weitere Änderungen sind vorübergehend gesperrt." : "Bitte warte. Wir bestätigen zuerst, dass deine Änderungen gespeichert sind."; }
     else if (phase === "applying") { title = "Gespeichert. Änderungen werden jetzt angewendet …"; detail = "Die Aktivierung wird automatisch geprüft. Die bisherigen Regeln können noch gelten."; }
     else if (phase === "applied") { title = "Gespeichert und aktiv"; detail = "Die gespeicherten Microsoft-Regeln gelten jetzt. Du kannst wieder Änderungen bearbeiten."; }
-    else if (phase === "unknown") { title = "Speichern noch nicht bestätigt"; detail = "Prüfung pausiert. Prüfe zuerst den Speicherstatus; wir speichern nicht erneut. Dein Entwurf bleibt in dieser Ansicht erhalten."; }
+    else if (phase === "unknown") { title = "Speichern noch nicht bestätigt"; detail = this.statusChecksRemaining > 0 ? "Bitte warte. Wir bestätigen zuerst, dass deine Änderungen gespeichert sind." : "Prüfung pausiert. Prüfe zuerst den Speicherstatus; wir speichern nicht erneut. Dein Entwurf bleibt in dieser Ansicht erhalten."; }
     else if (phase === "failed") { title = "Nicht gespeichert. Dein Entwurf ist noch da."; detail = "Korrigiere die Ursache und versuche es erneut."; }
     else if (phase === "conflict") { title = "Die Regeln wurden inzwischen anderswo geändert."; detail = "Dein Entwurf bleibt erhalten. Lade den aktuellen Stand neu, bevor du weitere Änderungen speicherst."; }
     append(status, el("strong", "", title), el("p", "mg-status-detail", detail));
@@ -912,7 +934,7 @@ class ConfigurationPage {
       if (this.disposed || this.signal.aborted || !this.authorized) { operation.phase = "failed"; return; }
       const fresh = await this.read<ConfigSnapshot>("config.get");
       if (this.disposed || this.signal.aborted || !this.authorized) { operation.phase = "failed"; return; }
-      if (fresh.hash !== this.snapshot.hash || canonicalPolicy(fresh.config?.plugins?.entries?.[id]?.config?.policy) !== canonicalPolicy(operation.baseline)) { this.error = "Configuration changed since this draft loaded. Reload and reapply your changes."; operation.phase = "conflict"; return; }
+      if (canonicalPolicy(fresh.config?.plugins?.entries?.[id]?.config?.policy) !== canonicalPolicy(operation.baseline)) { this.error = "Configuration changed since this draft loaded. Reload and reapply your changes."; operation.phase = "conflict"; return; }
       if (authoredPolicySource(fresh) !== this.includeName) { this.error = "Die Konfigurationsquelle wurde geändert. Bitte neu laden."; operation.phase = "conflict"; return; }
       const exposure = planOneDriveToolExposure(operation.target.services.onedrive.allowed_roots, fresh.config?.agents?.entries, fresh.config?.tools?.deny);
       operation.toolExposure = exposure.expected;
