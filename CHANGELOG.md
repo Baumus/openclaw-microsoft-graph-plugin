@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## 3.18.1 - 2026-10-27
+
+- Atomically opt OneDrive-granted agents into the matching optional OneDrive tools when saving in the administrator Control UI. Select only operations permitted by both root and agent; preserve unrelated tool grants.
+- Refuse conflicting explicit tool-deny or missing-agent configurations, and verify tool-policy persistence before reporting the rules as saved and active. Existing Microsoft credentials and Graph grants are unchanged.
+
 ## 3.18.0 - 2026-10-26
 
 - Add an opt-in AGENTS.md working-instructions checkbox to each OneDrive folder card, preserving existing root-wide settings and unrelated agent grants. Disabling removes the optional setting; changes use the existing review/save/apply flow.

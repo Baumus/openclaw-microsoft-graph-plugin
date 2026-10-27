@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import plugin from "./control-ui.js";
+import { requiredOneDriveTools } from "./control-ui-tool-exposure.js";
 
 type Root = { label: string; path: string; drive_id: string; item_id: string; include_descendants: true; agents_instructions?: "trusted"; permissions: { read: boolean; write: boolean; delete: boolean }; agents: Record<string, { permissions: { read: boolean; write?: boolean } }> };
 const root = (label: string, trusted = false): Root => ({ label, path: `/Synthetic/${label}`, drive_id: "synthetic-drive", item_id: label, include_descendants: true, ...(trusted ? { agents_instructions: "trusted" as const } : {}), permissions: { read: true, write: true, delete: false }, agents: { reader: { permissions: { read: true } }, editor: { permissions: { read: true, write: true } } } });
@@ -12,6 +13,8 @@ function mount(locale = "de", roots?: Root[]) {
   let saved = initial();
   if (roots) saved.services.onedrive.allowed_roots = roots;
   const baseline = structuredClone(saved);
+  const selected = requiredOneDriveTools(saved.services.onedrive.allowed_roots);
+  const agentEntries = Object.fromEntries(Object.entries(selected).map(([id, tools]) => [id, { tools: { alsoAllow: tools } }]));
   let page!: { mount(container: HTMLElement, context: unknown): { dispose(): void } };
   let listener = () => {};
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
@@ -19,7 +22,7 @@ function mount(locale = "de", roots?: Root[]) {
     subscribe: (fn: () => void) => { listener = fn; return () => {}; },
     request: async (method: string, params: Record<string, unknown>) => {
       calls.push({ method, params: structuredClone(params) });
-      if (method === "config.get") return { hash: "synthetic-revision", configRevisionHash: "same", appliedConfigHash: "same", config: { plugins: { entries: { "microsoft-graph": { enabled: true, config: { credentialVaultKey: "synthetic-ref", policy: structuredClone(saved) } } } } } };
+      if (method === "config.get") return { hash: "synthetic-revision", configRevisionHash: "same", appliedConfigHash: "same", config: { agents: { entries: agentEntries }, plugins: { entries: { "microsoft-graph": { enabled: true, config: { credentialVaultKey: "synthetic-ref", policy: structuredClone(saved) } } } } } };
       if (method === "microsoft-graph.credentials.status") return { ok: true, value: { policyVersion: 2, credential: { result: "valid" } } };
       if (method === "microsoft-graph.configuration.validate") return { valid: true, requiredScopes: [] };
       if (method === "microsoft-graph.configuration.applicationStatus") return { activePolicyHash: null };
