@@ -45,7 +45,7 @@ export class ActivationJournal {
   private readonly file: string;
   private readonly directory: string;
   private readonly ownerHash: string;
-  constructor(private stateDir: string, private snapshot: () => Promise<Snapshot> = async () => (await readConfigFileSnapshotForWrite()).snapshot as unknown as Snapshot, owner: string = "") {
+  constructor(private stateDir: string, private snapshot: () => Promise<Snapshot> = async () => (await readConfigFileSnapshotForWrite()).snapshot as unknown as Snapshot, owner: string = "", private projectHash: (rawHash: string) => string = hash => hash) {
     if (!owner) throw Error("activation_identity_required");
     this.ownerHash = digest({ authority: "operator.admin", owner });
     this.directory = join(stateDir, "plugin-data", "microsoft-graph", "activation"); this.file = join(this.directory, "pending.json");
@@ -74,7 +74,7 @@ export class ActivationJournal {
     return this.transaction(async (current, write) => {
       if (current && current.ownerHash !== this.ownerHash && ["prepared", "issued"].includes(current.state) && Date.now() - current.createdAt <= 24 * 3600000) throw Error("activation_owner_conflict");
       const s = await this.snapshot();
-      if (s.hash !== baseHash || policyHash(savedPolicy(s)) !== policyHash(before)) throw Error("activation_conflict");
+      if (this.projectHash(s.hash) !== baseHash || policyHash(savedPolicy(s)) !== policyHash(before)) throw Error("activation_conflict");
       const plan = planChangedToolExposure(before, after, s.config.agents?.entries, s.config.tools?.deny);
       const required = Object.fromEntries(Object.entries(plan.expected).map(([id, e]) => [id, e.value.filter(n => !(s.config.agents?.entries?.[id]?.tools?.[e.key] ?? []).includes(n))]));
       if (!Object.keys(required).length) throw Error("activation_no_tools");
@@ -95,10 +95,11 @@ export class ActivationJournal {
       const s = await this.snapshot();
       if (activeHash !== record.targetHash || policyHash(savedPolicy(s)) !== record.targetHash || sourceHash(s) !== record.sourceHash || toolsHash(s, record.required) !== record.beforeToolsHash) throw Error("activation_conflict");
       const plan = planToolExposure(record.required, s.config.agents?.entries, s.config.tools?.deny);
+      const baseHash = this.projectHash(s.hash);
       record.state = "issued"; record.expected = plan.expected;
       // Claim before dispatch. A lost response cannot authorize a second write;
       // fresh hosts only reconcile it or offer explicit reviewed recovery.
-      await write(record); return { record, ...plan, baseHash: s.hash };
+      await write(record); return { record, ...plan, baseHash };
     });
   }
   async cancel(id: string) {

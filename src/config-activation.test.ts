@@ -73,3 +73,15 @@ describe("durable exact-target activation journal", () => {
     await expect(h.journal().prepare("before",h.before,h.after)).rejects.toThrow(); expect(await readFile(other,"utf8")).toBe("null");
   });
 });
+
+describe("Gateway public CAS revisions", () => {
+  it("compares and returns host-projected hashes without leaking raw hashes", async () => {
+    const h = await setup();
+    const journal = () => new ActivationJournal(h.dir, async () => structuredClone(h.snapshot), "device-admin", raw => "opaque:" + raw);
+    await expect(journal().prepare("before", h.before, h.after)).rejects.toThrow("activation_conflict");
+    const intent = await journal().prepare("opaque:before", h.before, h.after); h.persist();
+    const claim = await journal().claim(intent.id, hash(h.after));
+    expect(claim.baseHash).toBe("opaque:after");
+    expect(claim.patch).toEqual({selected:{tools:{alsoAllow:["outlook_mail_read","outlook_calendar_read"]}}});
+  });
+});

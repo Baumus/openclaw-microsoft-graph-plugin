@@ -6,10 +6,20 @@ import { validatePolicy } from "./policy.js";
 import { tokenForAuthorizedOperation } from "./credential.js";
 import { canonicalGraphContinuation, graphRequest, safeId } from "./graph.js";
 
-type HandlerContext = { client?: { authenticatedUserId?: string; pairedClientId?: string } | null; params: unknown; respond(ok: boolean, payload?: unknown, error?: unknown): void };
+type ActivationClient = { authenticatedUserId?: string; connect?: { device?: { id?: string } } };
+type HandlerContext = { client?: ActivationClient | null; context?: { configRevisionProjector?: { projectRawHash(rawHash: string): string } }; params: unknown; respond(ok: boolean, payload?: unknown, error?: unknown): void };
 type GatewayApi = { version?: string; registerGatewayMethod(method: string, handler: (context: HandlerContext) => void | Promise<void>, options: { scope: "operator.admin" }): void };
 
-/** Admin-only, read-only validation. Never resolves or returns credential material. */
+/** Only host-authenticated handshake fields, never RPC parameters or a client class name.
+ * Gateway verifies the device public-key digest and nonce-bound signature before dispatch.
+ */
+export function activationOwner(client?: ActivationClient | null): string {
+  if (typeof client?.authenticatedUserId === "string" && client.authenticatedUserId.trim()) return `user:${client.authenticatedUserId}`;
+  const deviceId = client?.connect?.device?.id;
+  return typeof deviceId === "string" && /^[a-f0-9]{64}$/.test(deviceId) ? `device:${deviceId}` : "";
+}
+
+/** Admin-only validation and bounded activation intent. Never returns credential material. */
 export function registerConfigurationUiMethods(api: GatewayApi, config?: { policy?: unknown; credentialVaultKey?: unknown; requestTimeoutMs?: number }, stateDir?: () => string): void {
   // Capture this generation, not a later mutated config object. No policy or
   // credential values leave this method, and no provider access is performed.
@@ -17,12 +27,14 @@ export function registerConfigurationUiMethods(api: GatewayApi, config?: { polic
   const digest = (value: unknown) => createHash("sha256").update(canonicalPolicy(validatePolicy(value))).digest("hex");
   let activePolicyHash: string | undefined;
   try { if (config?.policy) activePolicyHash = digest(config.policy); } catch { /* Invalid/missing active policy stays unconfirmed. */ }
-  api.registerGatewayMethod("microsoft-graph.configuration.activation", async ({ params, respond, client }) => {
+  api.registerGatewayMethod("microsoft-graph.configuration.activation", async ({ params, respond, client, context }) => {
     try {
       if (!stateDir || !params || typeof params !== "object" || Array.isArray(params) || JSON.stringify(params).length > 512_000) throw Error("invalid_activation_parameters");
       const p = params as Record<string, unknown>;
-      const owner = client?.authenticatedUserId ? `user:${client.authenticatedUserId}` : client?.pairedClientId ? `device:${client.pairedClientId}` : "";
-      const journal = new ActivationJournal(stateDir(), undefined, owner);
+      const owner = activationOwner(client);
+      // 2026.10.8 projects public CAS revisions; older hosts use raw hashes.
+      const projector = context?.configRevisionProjector;
+      const journal = new ActivationJournal(stateDir(), undefined, owner, projector ? hash => projector.projectRawHash(hash) : undefined);
       let result: unknown;
       if (p.action === "status" && Object.keys(p).length === 1) result = await journal.status();
       else if (p.action === "prepare" && Object.keys(p).length === 4 && typeof p.baseHash === "string" && "baseline" in p && "target" in p) result = await journal.prepare(p.baseHash, p.baseline, p.target);
