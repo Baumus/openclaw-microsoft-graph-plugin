@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## 3.19.0 - 2026-10-27
+
+- Replace the ambiguous incomplete-access warning with the selected agent plus exact missing, surplus and explicitly denied tools for every affected agent. Distinguish an idle mismatch, saving tools, awaiting activation and completed repair.
+- Automatically reconcile Microsoft Graph tool opt-ins when an administrator opens the Control UI or checks status, after the exact saved Microsoft policy is confirmed active. Synchronize all saved service/OneDrive grants; remove only obsolete exact Graph tool names, preserving unrelated tools, wildcard/group grants, global policy and explicit denies. No background daemon or provider request is added.
+- Claim each repair durably for the authenticated administrator before dispatching one native revision-checked, include-preserving config patch. Fresh pages recover uncertain tool stages without replay, concurrent saves fail closed, blocked agents do not prevent eligible peer repairs, and no duplicate reload or forced drain is introduced.
+
 ## 3.18.5 - 2026-10-27
 
 - Fix native Outlook deletion and other write approvals racing execution when OpenClaw notifies the asynchronous approval callback without awaiting it. Execution now joins the exact call's pending approval binding before consuming its single-use snapshot.

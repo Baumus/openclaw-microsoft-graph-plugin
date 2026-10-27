@@ -54,3 +54,11 @@ This uses `playwright-core` supplied by the pinned OpenClaw development dependen
 - Document new delegated permissions before using them.
 
 By contributing, you agree that your contribution is licensed under Apache-2.0.
+
+For tool-access reconciliation changes, also run the synthetic Chromium lifecycle:
+
+```bash
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/path/to/chrome npm run test:ui:healing
+```
+
+This checks agent/tool-specific warning text, include-preserving root CAS, repair completion, and explicit-deny handling without live Gateway or provider access. Screenshots and result JSON default to `/tmp/msgraph-tool-healing-ui-evidence`.

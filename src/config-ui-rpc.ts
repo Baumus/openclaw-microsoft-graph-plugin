@@ -37,6 +37,7 @@ export function registerConfigurationUiMethods(api: GatewayApi, config?: { polic
       const journal = new ActivationJournal(stateDir(), undefined, owner, projector ? hash => projector.projectRawHash(hash) : undefined);
       let result: unknown;
       if (p.action === "status" && Object.keys(p).length === 1) result = await journal.status();
+      else if (p.action === "reconcile" && Object.keys(p).length === 2 && typeof p.baseHash === "string") result = await journal.reconcile(p.baseHash, activePolicyHash);
       else if (p.action === "prepare" && Object.keys(p).length === 4 && typeof p.baseHash === "string" && "baseline" in p && "target" in p) result = await journal.prepare(p.baseHash, p.baseline, p.target);
       else if (p.action === "claim" && Object.keys(p).length === 2 && typeof p.id === "string") result = await journal.claim(p.id, activePolicyHash);
       else if (p.action === "cancel" && Object.keys(p).length === 2 && typeof p.id === "string") result = await journal.cancel(p.id);
@@ -49,7 +50,7 @@ export function registerConfigurationUiMethods(api: GatewayApi, config?: { polic
     if (!params || typeof params !== "object" || Array.isArray(params) || Object.keys(params).length) {
       respond(false, undefined, { code: "INVALID_REQUEST", message: "Invalid application status parameters" }); return;
     }
-    respond(true, { activePolicyHash: activePolicyHash ?? null, activeVersion });
+    respond(true, { activePolicyHash: activePolicyHash ?? null, toolReconciliation: "control-ui-cas-v1", activeVersion });
   }, { scope: "operator.admin" });
   api.registerGatewayMethod("microsoft-graph.configuration.validate", ({ params, respond }) => {
     try {

@@ -70,3 +70,17 @@ Method prefix: `microsoft-graph.`. Identity comes from the Gateway's authenticat
 The single intent lives in `<stateDir>/plugin-data/microsoft-graph/activation/pending.json` (directory `0700`, file `0600`), atomically published under a fail-closed filesystem lock. It contains hashes, opaque operation ID, timestamp and exact added tool names only: no policy/resource draft, credential, include path or user identifier. Existing grants, global and per-agent denies remain unchanged by journal operations. Config writes still use native `config.patch` and fresh CAS, with the included policy applied before root agent-tool exposure.
 
 A fresh browser or plugin generation automatically resumes a prepared intent after exact policy activation. An issued but unconfirmed dispatch is **not** automatically repeated: the UI reads back persistence/activation, or offers cancellation and a new explicit review. This is intentional unknown-outcome handling, not a claim of automatic completion for an ambiguous dispatch. Closing the browser does not authorize a background daemon: continuation resumes when the same administrator reopens the page. No provider calls, tokens or live grant changes are needed to test recovery.
+
+## Control UI tool self-healing boundary (3.19.0)
+
+| Concern | Authority / permitted effect |
+| --- | --- |
+| Trigger | Authenticated `operator.admin` Control UI load/status check or completed save; no daemon/provider call |
+| Desired permissions | Validated saved policy, matching the running plugin policy fingerprint |
+| Repairable surface | Exact Microsoft Graph-owned names in existing agent `allow` or `alsoAllow`; union across every saved service/root |
+| Preserved authority | Global/agent deny, wildcard/group grants, unrelated names, service/resource restrictions and native approval gates |
+| Blocked state | Missing/conflicting agent configuration, denied tool, changed CAS revision/source, inactive policy or pending claim |
+| Concurrency / recovery | Private locked administrator-bound journal claims exact targets before one native CAS; fresh pages observe issued claims without replay |
+| Persistence / activation | Native config acknowledgement or applied config revision is required before tool activation is confirmed; no extra reload/restart |
+
+Synthetic planner, journal, UI race and Chromium fixtures use no credentials or provider data. Journals contain only hashes, agent IDs and tool names, not policies/resources or credentials. Existing secure atomic-file permissions and lock checks remain unchanged. No backup/restore artifact is required: tests mutate only disposable fixture files, and the released feature uses the host's revision-checked configuration writer and existing current-state recovery UI. No new AI retrieval/output path, credential scope or Graph permission is introduced.
