@@ -47,7 +47,7 @@ function harness(mode: Mode = "active", pluginsInclude = false, oneDriveGrant = 
   const settle = async () => { for (let i=0;i<100;i++) await Promise.resolve(); };
   const click = (text: string) => { const node = [...container.querySelectorAll("button")].find(b => b.textContent === text); expect(node, text + "\n" + container.textContent).toBeTruthy(); node!.click(); };
   const edit = async () => { click("3  Freigaben"); const input = container.querySelector<HTMLInputElement>(".mg-body input[type=checkbox]")!; input.checked=false; input.dispatchEvent(new Event("change", { bubbles: true })); click("4  Prüfen"); await settle(); const confirm = container.querySelector<HTMLInputElement>(".mg-body input[type=checkbox]")!; confirm.checked=true; confirm.dispatchEvent(new Event("change", { bubbles: true })); };
-  return { host, calls, container, settle, click, edit, patch, reload, snapshot, setGet: (fn?: () => Promise<unknown>) => { getOverride=fn; }, notify: () => listener(), setActive: () => { active=hash(saved); }, changeRevision: () => { revision="unrelated"; }, persistTarget: () => { saved.rules = { ...saved.rules, warningApprovalsByService: { onedrive: false } } as never; revision="late"; }, changeSaved: () => { saved.services.mail.agents.main.operations.push("draft"); revision="external"; }, remount: () => { mounted.dispose(); controller.abort(); mount(); }, dispose: () => { mounted.dispose(); controller.abort(); if (typeof stop === "function") stop(); container.remove(); } };
+  return { host, calls, container, settle, click, edit, patch, reload, snapshot, setGet: (fn?: () => Promise<unknown>) => { getOverride=fn; }, notify: () => listener(), setActive: () => { active=hash(saved); }, changeRevision: () => { revision="unrelated"; }, persistTarget: () => { saved.rules = { ...saved.rules, warningApprovalsByService: { onedrive: false } } as never; revision="late"; }, restoreBaseline: () => { saved = clone(initial); revision="rollback"; }, changeSaved: () => { saved.services.mail.agents.main.operations.push("draft"); revision="external"; }, remount: () => { mounted.dispose(); controller.abort(); mount(); }, dispose: () => { mounted.dispose(); controller.abort(); if (typeof stop === "function") stop(); container.remove(); } };
 }
 const cleanup: (() => void)[] = [];
 function view(mode?: Mode, pluginsInclude = false, oneDriveGrant = false) { const h=harness(mode, pluginsInclude, oneDriveGrant); cleanup.push(h.dispose); return h; }
@@ -98,6 +98,15 @@ describe("policy save and application lifecycle", () => {
     expect(h.container.textContent).toContain("Speichern noch nicht bestätigt"); expect(h.container.textContent).not.toContain("außerhalb dieser Seite geändert");
     h.persistTarget(); h.setActive(); await vi.advanceTimersByTimeAsync(5000); await h.settle();
     expect(h.container.textContent).toContain("Gespeichert und aktiv"); expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1);
+  });
+  it("treats a rollback to baseline after proven persistence as a real conflict", async () => {
+    const h=view("pending"); await h.settle(); await h.edit(); h.click("Speichern und anwenden"); await h.settle();
+    expect(h.container.textContent).toContain("Gespeichert");
+    h.restoreBaseline(); h.notify(); await vi.advanceTimersByTimeAsync(250); await h.settle();
+    expect(h.container.textContent).toContain("außerhalb dieser Seite geändert");
+    expect(h.container.textContent).not.toContain("Speichern noch nicht bestätigt");
+    expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1);
+    expect(h.calls.filter(c=>c.method==="plugins.reload")).toHaveLength(0);
   });
   it("still refuses a real concurrent Graph policy change before writing", async () => {
     const h=view(); await h.settle(); await h.edit(); h.changeSaved(); h.click("Speichern und anwenden"); await h.settle();

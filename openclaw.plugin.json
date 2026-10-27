@@ -474,7 +474,7 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/56c359d5793c3e613827d608ecaff7010806ed847d308980a83805310addf8de/index.js"
+    "entry": "dist/control-ui/c7a10e8d1f3507f466244df977b0f47ab645a57aca14af59cbb4ba485c2d74db/index.js"
   },
   "contracts": {
     "tools": [

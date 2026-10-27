@@ -18,7 +18,7 @@ type DeviceStatus = { state: "pending" | "created" | "failed"; error?: string; s
 type CredentialReply<T> = { ok: true; value: T } | { ok: false; error: string };
 type ConfigSnapshot = { hash: string; config: { tools?: { deny?: string[] }; agents?: { entries?: Record<string, { tools?: { allow?: string[]; alsoAllow?: string[]; deny?: string[] } }> }; plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; parsed?: { plugins?: { $include?: unknown; entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; configRevisionHash?: string; appliedConfigHash?: string };
 type SavePhase = "idle" | "validating" | "saving" | "applying" | "pending" | "unknown" | "failed" | "conflict" | "applied";
-type SaveOperation = { target: Policy; baseline: Policy; toolExposure?: ReturnType<typeof planOneDriveToolExposure>["expected"]; targetHash?: string; phase: SavePhase; issued: boolean; settled: boolean; epoch: number; reloadAttempted?: boolean; reloadPending?: boolean; applicationFailed?: boolean; rejectedBeforeWrite?: boolean };
+type SaveOperation = { target: Policy; baseline: Policy; toolExposure?: ReturnType<typeof planOneDriveToolExposure>["expected"]; targetHash?: string; phase: SavePhase; issued: boolean; settled: boolean; epoch: number; reloadAttempted?: boolean; reloadPending?: boolean; applicationFailed?: boolean; rejectedBeforeWrite?: boolean; persistenceConfirmed?: boolean };
 // Private drafts live only in authenticated host memory, never browser storage.
 const operationsByHost = new WeakMap<ControlUiHost, SaveOperation>();
 const contextByHost = new WeakMap<ControlUiHost, { step: number; selectedAgent: string; credential?: CredentialStatus["credential"] }>();
@@ -274,7 +274,7 @@ class ConfigurationPage {
       const expected = this.operation?.target ?? this.initial;
       const saved = snap.config?.plugins?.entries?.[id]?.config?.policy;
       if (canonicalPolicy(saved) !== canonicalPolicy(expected) || !oneDriveToolExposureSaved(snap.config?.agents?.entries, this.operation?.toolExposure ?? {})) {
-        if (this.operation?.issued && !this.operation.rejectedBeforeWrite && canonicalPolicy(saved) === canonicalPolicy(this.operation.baseline)) {
+        if (this.operation?.issued && !this.operation.rejectedBeforeWrite && !this.operation.persistenceConfirmed && canonicalPolicy(saved) === canonicalPolicy(this.operation.baseline)) {
           // A transport failure is not an external edit or proof of rollback.
           // Keep observing the exact target for the bounded reconciliation window.
           this.statusError = "";
@@ -285,12 +285,12 @@ class ConfigurationPage {
             this.snapshot = snap; this.operation.phase = "failed"; this.statusError = "";
           } else {
             this.statusError = "Die Regeln wurden außerhalb dieser Seite geändert. Der Entwurf bleibt erhalten.";
-            if (this.operation) this.operation.phase = this.operation.issued && canonicalPolicy(saved) === canonicalPolicy(this.operation.baseline) ? "unknown" : "conflict";
+            if (this.operation) this.operation.phase = "conflict";
           }
         }
       } else {
         this.snapshot = snap; this.activePolicyHash = active.hash; this.activeProofAvailable = active.available; this.statusError = "";
-        if (this.operation) { this.initial = clone(expected); this.savedPolicyHash = this.operation.targetHash; this.operation.phase = this.applicationStatus === "applied" ? "applied" : this.operation.reloadPending || this.statusChecksRemaining > 0 ? "applying" : "pending"; }
+        if (this.operation) { this.operation.persistenceConfirmed = true; this.initial = clone(expected); this.savedPolicyHash = this.operation.targetHash; this.operation.phase = this.applicationStatus === "applied" ? "applied" : this.operation.reloadPending || this.statusChecksRemaining > 0 ? "applying" : "pending"; }
         if (this.applicationStatus === "applied") { this.stopStatusChecks(); if (!previouslyApplied) await this.refreshCredential(); }
       }
     } catch {
