@@ -157,6 +157,54 @@ const NATIVE_APPROVAL_SNAPSHOT_STORE_KEY = Symbol.for("@baumus/openclaw-microsof
 const nativeApprovalSnapshots: NativeApprovalSnapshotStore = ((globalThis as Record<symbol, unknown>)[NATIVE_APPROVAL_SNAPSHOT_STORE_KEY] as NativeApprovalSnapshotStore | undefined)
   ?? ((globalThis as Record<symbol, unknown>)[NATIVE_APPROVAL_SNAPSHOT_STORE_KEY] = new NativeApprovalSnapshotStore()) as NativeApprovalSnapshotStore;
 
+/** The native host notifies onResolution without awaiting its returned promise.
+ * Publish the in-flight binding synchronously, then join it at execution before
+ * consuming the single-use snapshot. Share across imports, just like snapshots.
+ * Failures are still logged by the host and leave no authorization snapshot.
+ */
+type PendingApprovalResolution = { sessionId?: string; cancelled: boolean; settled: Promise<void>; cancel: () => void };
+const NATIVE_APPROVAL_RESOLUTIONS_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-resolutions");
+const nativeApprovalResolutions: Map<string, PendingApprovalResolution> = ((globalThis as Record<symbol, unknown>)[NATIVE_APPROVAL_RESOLUTIONS_KEY] as Map<string, PendingApprovalResolution> | undefined)
+  ?? ((globalThis as Record<symbol, unknown>)[NATIVE_APPROVAL_RESOLUTIONS_KEY] = new Map<string, PendingApprovalResolution>()) as Map<string, PendingApprovalResolution>;
+
+function trackApprovalResolution(toolCallId: string, sessionId: string | undefined, resolve: (isCurrent: () => boolean) => Promise<void>): Promise<void> {
+  if (!nativeApprovalResolutions.has(toolCallId) && nativeApprovalResolutions.size >= MAX_NATIVE_APPROVAL_SNAPSHOTS) throw new Error("approval_context_capacity_exceeded");
+  // A later decision replaces this exact call's binding; the old asynchronous
+  // continuation must never recreate or discard the newer decision's snapshot.
+  nativeApprovalResolutions.get(toolCallId)?.cancel();
+  const entry: PendingApprovalResolution = { sessionId, cancelled: false, settled: Promise.resolve(), cancel: () => undefined };
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  const cancelled = new Promise<void>((finish) => {
+    entry.cancel = () => { entry.cancelled = true; clearTimeout(deadline); finish(); };
+  });
+  nativeApprovalResolutions.set(toolCallId, entry);
+  const resolution = resolve(() => !entry.cancelled && nativeApprovalResolutions.get(toolCallId) === entry);
+  // Session-store reads must not hold execution or capacity indefinitely, even
+  // when the host does not supply an AbortSignal. Late reads cannot authorize.
+  deadline = setTimeout(entry.cancel, 30_000);
+  deadline.unref?.();
+  // Binding failure still reaches consume() and the normal fail-closed result.
+  entry.settled = Promise.race([resolution.then(() => undefined, () => undefined), cancelled]);
+  void entry.settled.then(() => {
+    clearTimeout(deadline);
+    if (nativeApprovalResolutions.get(toolCallId) === entry) nativeApprovalResolutions.delete(toolCallId);
+  });
+  return resolution;
+}
+
+async function waitForApprovalResolution(toolCallId: string, signal?: AbortSignal): Promise<void> {
+  const pending = nativeApprovalResolutions.get(toolCallId);
+  if (!pending) return;
+  if (signal?.aborted) { pending.cancel(); throw new Error("approval_context_invalid_or_changed"); }
+  let onAbort: (() => void) | undefined;
+  try {
+    await Promise.race([pending.settled, new Promise<never>((_resolve, reject) => {
+      onAbort = () => { pending.cancel(); reject(new Error("approval_context_invalid_or_changed")); };
+      signal?.addEventListener("abort", onAbort, { once: true });
+    })]);
+  } finally { if (onAbort) signal?.removeEventListener("abort", onAbort); }
+}
+
 function stagingWorkspaceKey(agentId: string, sessionId: string): string {
   return JSON.stringify([agentId, sessionId]);
 }
@@ -644,6 +692,7 @@ export function concrete(name: string, parameters: any, agentId: string | undefi
       try {
         const semantic = semanticParams(params);
         const oneDriveRoot = approvalConfig ? () => authorizeOneDriveMutationPreflight(approvalConfig, agentId, name, semantic) : undefined;
+        await waitForApprovalResolution(_id, signal);
         const approvalSnapshotMatches = nativeApprovalSnapshots.consume(_id, agentId, sessionId, name, semantic, oneDriveRoot);
         if (approvalSnapshotMatches === false || (classifyApproval(name, semantic) !== "none" && (approvalSnapshotMatches !== true || !await sessionIsCurrent()))) throw new Error("approval_context_invalid_or_changed");
         workspaceStagingStore.beginExecution(_id, name, sessionId);
@@ -3213,8 +3262,8 @@ export async function beforeMicrosoftGraphToolCall(
 
   if (severity !== "none" && !event.toolCallId) return { block: true, blockReason: "approval_context_tool_call_id_required" };
 
-  const bindExecutionSnapshot = async () => {
-    if (!await sessionIdentityCurrent(lookupSession, ctx.agentId, ctx.sessionKey, ctx.sessionId)) throw new Error("approval_context_invalid_or_changed");
+  const bindExecutionSnapshot = async (isCurrent = () => true) => {
+    if (!await sessionIdentityCurrent(lookupSession, ctx.agentId, ctx.sessionKey, ctx.sessionId) || !isCurrent()) throw new Error("approval_context_invalid_or_changed");
     if (event.toolCallId) approvalSnapshots.record(event.toolCallId, {
       agentId: ctx.agentId,
       sessionId: ctx.sessionId,
@@ -3232,17 +3281,21 @@ export async function beforeMicrosoftGraphToolCall(
       severity,
       allowedDecisions: ["allow-once", "deny"] as Array<"allow-once" | "deny">,
       timeoutMs: 120_000,
-      async onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
-        if (ownedLease && !workspaceStagingStore.has(event.toolCallId!)) return;
-        if (decision === "allow-once") {
-          try { await bindExecutionSnapshot(); }
-          catch {
-            approvalSnapshots.discard(event.toolCallId);
-            await cleanupBoundLease();
-            throw new Error("approval_context_invalid_or_changed");
+      onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
+        return trackApprovalResolution(event.toolCallId!, ctx.sessionId, async (isCurrent) => {
+          if (ownedLease && !workspaceStagingStore.has(event.toolCallId!)) return;
+          if (decision === "allow-once") {
+            try { await bindExecutionSnapshot(isCurrent); }
+            catch {
+              if (isCurrent()) {
+                approvalSnapshots.discard(event.toolCallId);
+                await cleanupBoundLease();
+              }
+              throw new Error("approval_context_invalid_or_changed");
+            }
           }
-        }
-        else { approvalSnapshots.discard(event.toolCallId); await cleanupBoundLease(); }
+          else { approvalSnapshots.discard(event.toolCallId); await cleanupBoundLease(); }
+        });
       },
     } };
   }
@@ -3282,17 +3335,21 @@ export async function beforeMicrosoftGraphToolCall(
       severity,
       allowedDecisions: ["allow-once", "allow-always", "deny"] as Array<"allow-once" | "allow-always" | "deny">,
       timeoutMs: 120_000,
-      async onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
-        if (ownedLease && !workspaceStagingStore.has(event.toolCallId!)) return;
-        if (decision === "allow-once" || decision === "allow-always") {
-          try { await bindExecutionSnapshot(); }
-          catch {
-            approvalSnapshots.discard(event.toolCallId);
-            await cleanupBoundLease();
-            throw new Error("approval_context_invalid_or_changed");
-          }
-          if (decision === "allow-always") warningApprovalTrustStore.grant(scope);
-        } else { approvalSnapshots.discard(event.toolCallId); await cleanupBoundLease(); }
+      onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
+        return trackApprovalResolution(event.toolCallId!, ctx.sessionId, async (isCurrent) => {
+          if (ownedLease && !workspaceStagingStore.has(event.toolCallId!)) return;
+          if (decision === "allow-once" || decision === "allow-always") {
+            try { await bindExecutionSnapshot(isCurrent); }
+            catch {
+              if (isCurrent()) {
+                approvalSnapshots.discard(event.toolCallId);
+                await cleanupBoundLease();
+              }
+              throw new Error("approval_context_invalid_or_changed");
+            }
+            if (decision === "allow-always") warningApprovalTrustStore.grant(scope);
+          } else { approvalSnapshots.discard(event.toolCallId); await cleanupBoundLease(); }
+        });
       },
     },
   };
@@ -3340,6 +3397,7 @@ plugin.register = (api) => {
     { priority: Number.MIN_SAFE_INTEGER },
   );
   api.on("session_end", (_event, ctx) => {
+    for (const pending of nativeApprovalResolutions.values()) if (pending.sessionId === ctx.sessionId) pending.cancel();
     oneDriveAgentsSessionCache.clearSession(ctx.sessionId);
     clearStagingWorkspaceSession(ctx.sessionId);
     nativeApprovalSnapshots.clearSession(ctx.sessionId);

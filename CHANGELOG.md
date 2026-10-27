@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## 3.18.5 - 2026-10-27
+
+- Fix native Outlook deletion and other write approvals racing execution when OpenClaw notifies the asynchronous approval callback without awaiting it. Execution now joins the exact call's pending approval binding before consuming its single-use snapshot.
+- Preserve fail-closed target, caller, session-generation and decision checks. Abort, session-end, a newer decision or a 30-second binding deadline cancels pending work without resurrecting approval; superseded callbacks cannot discard the newer snapshot, and concurrent execution cannot reuse an approval. No policy, permission, confirmation or compatibility-floor changes.
+
 ## 3.18.4 - 2026-10-27
 
 - Resume reviewed include-split saves after a fresh browser, UI module or plugin generation: an administrator-bound, 24-hour server intent retains only hashes and exact tool targets, never credentials or policy drafts.
