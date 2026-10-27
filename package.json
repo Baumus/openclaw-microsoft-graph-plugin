@@ -86,7 +86,7 @@
     "happy-dom": "^20.14.5",
     "openclaw": "2026.10.5",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.2"
+    "vitest": "^5.0.5"
   },
   "openclaw": {
     "extensions": [
