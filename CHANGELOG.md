@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## 3.18.3
+
+- Preserve `$include` ownership when saving service grants: save the exact policy, verify its active generation, then enable only the edited agents' required optional tools with a fresh revision. Ambiguous replies are reconciled without duplicate writes or forced reloads.
+- Opt edited calendar, mail, contacts and To Do grants into their exact read/write tools while preserving explicit deny rules and unrelated agents.
+- Classify include-ownership refusals as failed saves; retain drafts and distinguish tool preparation, policy persistence and runtime activation.
+
 ## 3.18.2 - 2026-10-27
 
 - Reconcile ambiguous save responses until the bounded verification window expires instead of falsely reporting an external policy edit. A late committed target is recognized without repeating the write; genuine policy conflicts still preserve the draft and stop.
