@@ -172,6 +172,7 @@ class ConfigurationPage {
   private disposed = false;
   private statusTimer?: ReturnType<typeof setTimeout>;
   private statusChecksRemaining = 0;
+  private intentDiscoveryPending = false;
   private authTimer?: ReturnType<typeof setTimeout>;
   private credential?: CredentialStatus["credential"];
   private updateStatus?: UpdateStatus;
@@ -251,7 +252,7 @@ class ConfigurationPage {
   }
   private stopStatusChecks() { if (this.statusTimer) clearTimeout(this.statusTimer); this.statusTimer = undefined; this.statusChecksRemaining = 0; }
   private scheduleStatusCheck() {
-    if (this.disposed || this.signal.aborted || this.statusChecksRemaining <= 0 && (!this.operation?.intent || ["applied", "failed", "conflict"].includes(this.operation.phase)) || this.statusTimer) return;
+    if (this.disposed || this.signal.aborted || this.statusChecksRemaining <= 0 && !this.intentDiscoveryPending && (!this.operation?.intent || ["applied", "failed", "conflict"].includes(this.operation.phase)) || this.statusTimer) return;
     // The first read can confirm a committed write while config.patch is still
     // waiting for runtime drain. Later reads stay paced to avoid RPC churn.
     const delay = this.statusChecksRemaining === 12 ? 1000 : this.statusChecksRemaining > 0 ? 5000 : 15000;
@@ -274,6 +275,8 @@ class ConfigurationPage {
         this.read<ConfigSnapshot>("config.get"),
         this.readActivePolicy(),
       ]);
+      if (this.disposed || this.signal.aborted || epoch !== this.statusEpoch) return;
+      if (this.intentDiscoveryPending && active.available && !this.dirty) await this.discoverIntent();
       if (this.disposed || this.signal.aborted || epoch !== this.statusEpoch) return;
       if (this.operation?.splitWrite && this.operation.stage === "policy" && this.operation.issued) {
         const operation = this.operation;
@@ -325,7 +328,7 @@ class ConfigurationPage {
         const toolsApplied = !this.operation?.splitWrite || this.operation.stage !== "tools" || this.operation.toolApplicationConfirmed
           || !!snap.configRevisionHash && snap.configRevisionHash === snap.appliedConfigHash;
         if (this.operation) { this.operation.persistenceConfirmed = true; this.initial = clone(expected); this.savedPolicyHash = this.operation.targetHash; this.operation.phase = this.applicationStatus === "applied" && toolsApplied ? "applied" : this.operation.reloadPending || this.statusChecksRemaining > 0 ? "applying" : "pending"; }
-        if (this.applicationStatus === "applied" && toolsApplied) { this.stopStatusChecks();
+        if (this.applicationStatus === "applied" && toolsApplied && !this.intentDiscoveryPending) { this.stopStatusChecks();
           if (this.operation?.intent?.state === "issued") {
             try { await this.read("microsoft-graph.configuration.activation", { action: "complete", id: this.operation.intent.id }); this.operation.intent.state = "complete"; }
             catch { /* Issued journals never replay; completion is safe to reconcile later. */ }
@@ -340,12 +343,31 @@ class ConfigurationPage {
         if (this.statusChecksRemaining > 0) { this.statusChecksRemaining--; this.scheduleStatusCheck(); }
         if (this.operation && this.statusChecksRemaining === 0 && this.operation.phase === "applying") this.operation.phase = "pending";
         if (this.operation && this.statusChecksRemaining === 0 && this.operation.phase === "saving") this.operation.phase = "unknown";
-        if (this.operation?.intent && ["pending", "applying", "unknown"].includes(this.operation.phase)) this.scheduleStatusCheck();
+        if (this.intentDiscoveryPending || this.operation?.intent && ["pending", "applying", "unknown"].includes(this.operation.phase)) this.scheduleStatusCheck();
         this.render();
       }
     }
   }
   private watchApplication() { this.stopStatusChecks(); if (this.applicationStatus !== "applied" || this.operation?.issued && !["applied", "failed", "conflict"].includes(this.operation.phase)) { this.statusChecksRemaining = 12; this.scheduleStatusCheck(); } }
+  private async discoverIntent() {
+    const epoch = this.statusEpoch;
+    this.intentDiscoveryPending = true;
+    try {
+      const [intent, baseline] = await Promise.all([
+        this.read<ActivationIntent | null>("microsoft-graph.configuration.activation", { action: "status" }),
+        this.read<{ policyHash?: string }>("microsoft-graph.configuration.validate", { policy: this.initial }),
+      ]);
+      if (this.disposed || this.signal.aborted || !this.authorized || this.dirty || epoch !== this.statusEpoch) return;
+      this.intentDiscoveryPending = false;
+      this.savedPolicyHash = baseline.policyHash;
+      if (intent && intent.targetHash === this.savedPolicyHash && ["prepared", "issued"].includes(intent.state)) {
+        this.operation = { intent, target: clone(this.initial!), baseline: clone(this.initial!), targetHash: intent.targetHash,
+          toolExposure: intent.expected, phase: "pending", issued: true, settled: true, epoch: this.statusEpoch,
+          splitWrite: true, policyPrepared: true, stage: intent.state === "prepared" ? "policy" : "tools" };
+        operationsByHost.set(this.host, this.operation);
+      }
+    } catch { /* Runtime may be draining: null is not proof that no intent exists. */ }
+  }
   private async load() {
     if (!this.authorized || this.busy) return;
     this.busy = true; this.error = ""; this.render();
@@ -372,22 +394,13 @@ class ConfigurationPage {
       this.initialScopes = baseline?.requiredScopes ?? []; this.scopes = this.initialScopes; this.savedPolicyHash = baseline?.policyHash;
       this.activePolicyHash = active.hash; this.activeProofAvailable = active.available;
       this.wasConnected = this.authorized;
-      if (!this.operation) {
-        const intent = await this.read<ActivationIntent | null>("microsoft-graph.configuration.activation", { action: "status" }).catch(() => null);
-        if (this.disposed || this.signal.aborted || !this.authorized) return;
-        if (intent && intent.targetHash === this.savedPolicyHash && ["prepared", "issued"].includes(intent.state)) {
-          this.operation = { intent, target: clone(this.initial), baseline: clone(this.initial), targetHash: intent.targetHash,
-            toolExposure: intent.expected, phase: "pending", issued: true, settled: true, epoch: this.statusEpoch,
-            splitWrite: true, policyPrepared: true, stage: intent.state === "prepared" ? "policy" : "tools" };
-          operationsByHost.set(this.host, this.operation);
-        }
-      }
+      if (!this.operation) await this.discoverIntent();
       if (!this.operation && this.applicationStatus === "pending") {
         this.operation = { target: clone(this.initial), baseline: clone(this.initial), targetHash: this.savedPolicyHash, phase: "pending", issued: true, settled: true, epoch: this.statusEpoch };
         operationsByHost.set(this.host, this.operation);
       }
       if (this.operation) { this.statusChecksRemaining = 12; void this.checkApplication(); }
-      else this.watchApplication();
+      else { this.watchApplication(); if (this.intentDiscoveryPending) this.scheduleStatusCheck(); }
     } catch { this.error = "Configuration could not be loaded. Check administrator access and Gateway connection."; }
     finally { this.busy = false; this.render(); }
   }

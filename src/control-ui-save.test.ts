@@ -18,13 +18,14 @@ function harness(mode: Mode = "active", pluginsInclude = false, oneDriveGrant = 
   let listener = () => {};
   const patch = deferred<unknown>(); const reload = deferred<unknown>();
   const calls: { method: string; params: Record<string, unknown> }[] = [];
-  let intent: any = null; let loseClaimReply = false;
+  let intent: any = null; let loseClaimReply = false; let backendUnavailable = false;
   let getOverride: (() => Promise<unknown>) | undefined;
   const snapshot = () => ({ hash: revision, configRevisionHash: "unrelated-new", appliedConfigHash: globalApplied ? "unrelated-new" : "unrelated-old", parsed: pluginsInclude ? { plugins: { $include: "plugins.json" } } : undefined, config: { agents: { entries: clone(agentEntries) }, plugins: { entries: { "microsoft-graph": { enabled: true, config: { credentialVaultKey: "synthetic-secret-ref", policy: clone(saved) } } } } } });
   let host = { locale: "de", connection: { connected: true, canAdmin: true }, agents: { rows: [{ id: "main", name: "Main" }, { id: "studio", name: "Studio" }] },
     subscribe: (fn: () => void) => { listener = fn; return () => { listener = () => {}; }; },
     request: async (method: string, params: Record<string, unknown>) => {
       calls.push({ method, params });
+      if (backendUnavailable && method.startsWith("microsoft-graph.configuration.")) throw Error("UNAVAILABLE");
       if (method === "microsoft-graph.configuration.activation") {
         if (params.action === "prepare") {
           const plan = planChangedToolExposure(params.baseline as any, params.target as any, agentEntries);
@@ -70,7 +71,7 @@ function harness(mode: Mode = "active", pluginsInclude = false, oneDriveGrant = 
   const settle = async () => { for (let i=0;i<100;i++) await Promise.resolve(); };
   const click = (text: string) => { const node = [...container.querySelectorAll("button")].find(b => b.textContent === text); expect(node, text + "\n" + container.textContent).toBeTruthy(); node!.click(); };
   const edit = async () => { click("3  Freigaben"); const input = container.querySelector<HTMLInputElement>(".mg-body input[type=checkbox]")!; input.checked=false; input.dispatchEvent(new Event("change", { bubbles: true })); click("4  Prüfen"); await settle(); const confirm = container.querySelector<HTMLInputElement>(".mg-body input[type=checkbox]")!; confirm.checked=true; confirm.dispatchEvent(new Event("change", { bubbles: true })); };
-  return { loseClaim: () => { loseClaimReply=true; }, clearIntent: () => { intent=null; }, host, calls, container, settle, click, edit, patch, reload, snapshot, setInactive: () => { active=hash(initial); }, setMode: (next: Mode) => { mode=next; }, hardReload: () => { mounted.dispose(); controller.abort(); host={...host}; mount(); }, setGet: (fn?: () => Promise<unknown>) => { getOverride=fn; }, notify: () => listener(), setActive: () => { active=hash(saved); globalApplied=true; }, changeRevision: () => { revision="unrelated"; }, persistTarget: () => { saved.rules = { ...saved.rules, warningApprovalsByService: { onedrive: false } } as never; revision="late"; }, restoreBaseline: () => { saved = clone(initial); revision="rollback"; }, changeSaved: () => { saved.services.mail.agents.main.operations.push("draft"); revision="external"; }, remount: () => { mounted.dispose(); controller.abort(); mount(); }, dispose: () => { mounted.dispose(); controller.abort(); if (typeof stop === "function") stop(); container.remove(); } };
+  return { setBackendUnavailable: (v: boolean) => { backendUnavailable=v; }, loseClaim: () => { loseClaimReply=true; }, clearIntent: () => { intent=null; }, host, calls, container, settle, click, edit, patch, reload, snapshot, setInactive: () => { active=hash(initial); }, setMode: (next: Mode) => { mode=next; }, hardReload: () => { mounted.dispose(); controller.abort(); host={...host}; mount(); }, setGet: (fn?: () => Promise<unknown>) => { getOverride=fn; }, notify: () => listener(), setActive: () => { active=hash(saved); globalApplied=true; }, changeRevision: () => { revision="unrelated"; }, persistTarget: () => { saved.rules = { ...saved.rules, warningApprovalsByService: { onedrive: false } } as never; revision="late"; }, restoreBaseline: () => { saved = clone(initial); revision="rollback"; }, changeSaved: () => { saved.services.mail.agents.main.operations.push("draft"); revision="external"; }, remount: () => { mounted.dispose(); controller.abort(); mount(); }, dispose: () => { mounted.dispose(); controller.abort(); if (typeof stop === "function") stop(); container.remove(); } };
 }
 const cleanup: (() => void)[] = [];
 function view(mode?: Mode, pluginsInclude = false, oneDriveGrant = false) { const h=harness(mode, pluginsInclude, oneDriveGrant); cleanup.push(h.dispose); return h; }
@@ -160,6 +161,17 @@ describe("policy save and application lifecycle", () => {
     expect(h.calls.filter(c=>c.method==="plugins.reload")).toHaveLength(0);
     h.hardReload(); await h.settle(); await vi.advanceTimersByTimeAsync(20000);
     expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(2);
+  });
+  it("rediscovers the durable intent when a fresh page opens while the backend is unavailable", async () => {
+    const h=view("persist-hang", true); await h.settle(); await calendarDraft(h); h.click("Speichern und anwenden"); await h.settle();
+    h.setBackendUnavailable(true); h.hardReload(); await h.settle();
+    await vi.advanceTimersByTimeAsync(90000); await h.settle();
+    expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1);
+    h.setBackendUnavailable(false); h.setActive(); h.setMode("active");
+    await vi.advanceTimersByTimeAsync(30000); await h.settle();
+    expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(2);
+    expect(h.container.textContent).toContain("Gespeichert und aktiv");
+    expect(h.calls.filter(c=>c.method==="plugins.reload")).toHaveLength(0);
   });
   it("keeps observing late activation without host notifications after the old polling budget", async () => {
     const h=view("persist-hang", true); await h.settle(); await calendarDraft(h); h.click("Speichern und anwenden"); await h.settle();

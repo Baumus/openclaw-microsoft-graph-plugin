@@ -75,6 +75,13 @@ describe("durable exact-target activation journal", () => {
 });
 
 describe("Gateway public CAS revisions", () => {
+  it("does not consume a claim when host projection fails", async () => {
+    const h = await setup(); let fail = false;
+    const journal = () => new ActivationJournal(h.dir, async () => structuredClone(h.snapshot), "device-admin", raw => { if (fail) throw Error("projector_unavailable"); return "opaque:" + raw; });
+    const intent = await journal().prepare("opaque:before", h.before, h.after); h.persist(); fail = true;
+    await expect(journal().claim(intent.id, hash(h.after))).rejects.toThrow("projector_unavailable");
+    expect((await journal().status())?.state).toBe("prepared");
+  });
   it("compares and returns host-projected hashes without leaking raw hashes", async () => {
     const h = await setup();
     const journal = () => new ActivationJournal(h.dir, async () => structuredClone(h.snapshot), "device-admin", raw => "opaque:" + raw);
