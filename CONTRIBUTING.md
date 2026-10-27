@@ -27,9 +27,12 @@ npm run build
 npm run plugin:build:check
 npm run plugin:validate
 npm run package:check
+node scripts/check-include-save.mjs
 npx --no-install clawhub package validate .
 git diff --check
 ```
+
+The include-save regression uses a disposable synthetic config and the pinned host SDK. To also qualify the installed host, set `OPENCLAW_CONFIG_MUTATION_SDK` to its absolute `plugin-sdk/config-mutation.js` path. It must reproduce a rejected cross-owner write, then preserve `$include` while saving the exact calendar policy and tool opt-in separately. It never reads or writes the live config.
 
 If runtime metadata changes, run `npm run plugin:build` once to regenerate `openclaw.plugin.json`, inspect the diff, then rerun `npm run plugin:build:check`.
 

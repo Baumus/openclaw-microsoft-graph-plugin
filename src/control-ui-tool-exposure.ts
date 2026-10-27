@@ -34,9 +34,12 @@ export function requiredOneDriveTools(roots: Root[]): Record<string, string[]> {
 }
 
 export function planOneDriveToolExposure(roots: Root[], entries: Record<string, AgentEntry> | undefined, globalDeny: string[] = []) {
+  return planToolExposure(requiredOneDriveTools(roots), entries, globalDeny);
+}
+
+function planToolExposure(required: Record<string, string[]>, entries: Record<string, AgentEntry> | undefined, globalDeny: string[] = []) {
   const patch: Record<string, { tools: Partial<AgentTools> }> = {};
   const expected: Record<string, { key: "allow" | "alsoAllow"; value: string[] }> = {};
-  const required = requiredOneDriveTools(roots);
   for (const [agentId, names] of Object.entries(required)) {
     if (agentId.includes(".")) throw new Error(`unsupported_agent_id:${agentId}`);
     if (!entries || !Object.hasOwn(entries, agentId)) throw new Error(`missing_agent_entry:${agentId}`);
@@ -56,4 +59,26 @@ export function planOneDriveToolExposure(roots: Root[], entries: Record<string, 
 
 export function oneDriveToolExposureSaved(entries: Record<string, AgentEntry> | undefined, expected: Record<string, { key: "allow" | "alsoAllow"; value: string[] }>): boolean {
   return Object.entries(expected).every(([id, { key, value }]) => JSON.stringify(entries?.[id]?.tools?.[key]) === JSON.stringify(value));
+}
+
+
+type AccessPolicy = { services: { onedrive: { allowed_roots: Root[] }; calendar: { agents: Record<string, { operations: string[]; resources?: string[] }> }; mail: { agents: Record<string, { operations: string[]; resources?: string[] }> }; contacts?: { agents: Record<string, { operations: string[]; resources?: string[] }> }; todo: { agents: Record<string, { operations: string[]; resources?: string[] }> } } };
+/** Only the service/agent grants edited by this draft may opt tools in. */
+export function planChangedToolExposure(before: AccessPolicy, after: AccessPolicy, entries: Record<string, AgentEntry> | undefined, globalDeny: string[] = []) {
+  const required: Record<string, string[]> = {};
+  for (const [agent, names] of Object.entries(requiredOneDriveTools(after.services.onedrive.allowed_roots))) {
+    const footprint = (policy: AccessPolicy) => policy.services.onedrive.allowed_roots.filter(root => root.agents[agent]).map(({ agents, ...root }) => ({ ...root, grant: agents[agent] }));
+    if (JSON.stringify(footprint(before)) !== JSON.stringify(footprint(after))) required[agent] = names;
+  }
+  const prefixes = { calendar: "outlook_calendar", mail: "outlook_mail", contacts: "outlook_contacts", todo: "microsoft_todo" };
+  for (const service of ["calendar", "mail", "contacts", "todo"] as const) {
+    for (const [agent, grant] of Object.entries(after.services[service]?.agents ?? {})) {
+      if (JSON.stringify(grant) === JSON.stringify(before.services[service]?.agents[agent])) continue;
+      const names = required[agent] ?? [];
+      if (grant.operations.includes("read")) names.push(`${prefixes[service]}_read`);
+      if (grant.operations.some(operation => operation !== "read")) names.push(`${prefixes[service]}_write`);
+      if (names.length) required[agent] = [...new Set(names)];
+    }
+  }
+  return planToolExposure(required, entries, globalDeny);
 }

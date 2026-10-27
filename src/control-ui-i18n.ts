@@ -4,6 +4,14 @@ export const hostLocales = ["en", "ar", "de", "es", "fa", "fr", "hi", "id", "it"
 export type HostLocale = typeof hostLocales[number];
 const catalogs: Record<string, Record<string, string>> = {
   "en": {
+    "Regeln gespeichert. Zugang noch nicht vollständig aktiv.": "Rules saved. Access is not fully active yet.",
+    "Prüfe die Zugriffe und Rückfragen. Benötigte Microsoft-Graph-Tools werden für berechtigte Agenten zusammen mit den Microsoft-Graph-Regeln freigeschaltet.": "Review access and approvals. Required Microsoft Graph tools are enabled for the edited agent grants as part of saving the rules.",
+    "{agent}: zusätzliche Microsoft-Graph-Tools · {tools}": "{agent}: additional Microsoft Graph tools · {tools}",
+    "Microsoft-Graph-Tool-Freigabe ist mit der aktuellen Agent-Policy nicht vereinbar. Speichern wird verhindert.": "Microsoft Graph tool access conflicts with the current agent policy. Saving is blocked.",
+    "Microsoft-Graph-Tool-Freigabe kann wegen der Agent-Tool-Policy nicht sicher gespeichert werden. Prüfe Agent-Eintrag und Deny-Regeln.": "Microsoft Graph tool access cannot be saved safely. Check the agent entry and explicit deny rules.",
+    "Die Microsoft-Regeln sind gespeichert. Die benötigten Agent-Tools werden noch angewendet; der Zugang ist noch nicht bestätigt.": "Microsoft rules are saved. Required agent tools are still being applied; access is not yet confirmed.",
+    "Die Microsoft-Regeln sind gespeichert, aber die Agent-Tools konnten nicht freigeschaltet werden. Der Zugang ist noch nicht vollständig aktiv.": "Microsoft rules are saved, but agent tools could not be enabled. Access is not fully active.",
+
     "AGENTS.md als Arbeitsanweisungen verwenden": "Use AGENTS.md as working instructions",
     "Informationen zu AGENTS.md-Arbeitsanweisungen": "About AGENTS.md working instructions",
     "Vor OneDrive-Zugriffen erhalten berechtigte Agenten die passenden AGENTS.md-Arbeitsanweisungen und müssen deren Empfang bestätigen. Aktiviere dies nur, wenn du den Bearbeitern dieser Dateien vertraust – auch zukünftige Änderungen können die Agenten anleiten.": "Before accessing OneDrive, authorized agents receive the applicable AGENTS.md working instructions and must acknowledge receipt. Enable this only if you trust the editors of these files — future changes can also guide the agents.",
@@ -264,6 +272,14 @@ const catalogs: Record<string, Record<string, string>> = {
     "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Status check interrupted. Check the connection; this page will retry."
   },
   "de": {
+    "Regeln gespeichert. Zugang noch nicht vollständig aktiv.": "Regeln gespeichert. Zugang noch nicht vollständig aktiv.",
+    "Prüfe die Zugriffe und Rückfragen. Benötigte Microsoft-Graph-Tools werden für berechtigte Agenten zusammen mit den Microsoft-Graph-Regeln freigeschaltet.": "Prüfe die Zugriffe und Rückfragen. Benötigte Microsoft-Graph-Tools werden für berechtigte Agenten zusammen mit den Microsoft-Graph-Regeln freigeschaltet.",
+    "{agent}: zusätzliche Microsoft-Graph-Tools · {tools}": "{agent}: zusätzliche Microsoft-Graph-Tools · {tools}",
+    "Microsoft-Graph-Tool-Freigabe ist mit der aktuellen Agent-Policy nicht vereinbar. Speichern wird verhindert.": "Microsoft-Graph-Tool-Freigabe ist mit der aktuellen Agent-Policy nicht vereinbar. Speichern wird verhindert.",
+    "Microsoft-Graph-Tool-Freigabe kann wegen der Agent-Tool-Policy nicht sicher gespeichert werden. Prüfe Agent-Eintrag und Deny-Regeln.": "Microsoft-Graph-Tool-Freigabe kann wegen der Agent-Tool-Policy nicht sicher gespeichert werden. Prüfe Agent-Eintrag und Deny-Regeln.",
+    "Die Microsoft-Regeln sind gespeichert. Die benötigten Agent-Tools werden noch angewendet; der Zugang ist noch nicht bestätigt.": "Die Microsoft-Regeln sind gespeichert. Die benötigten Agent-Tools werden noch angewendet; der Zugang ist noch nicht bestätigt.",
+    "Die Microsoft-Regeln sind gespeichert, aber die Agent-Tools konnten nicht freigeschaltet werden. Der Zugang ist noch nicht vollständig aktiv.": "Die Microsoft-Regeln sind gespeichert, aber die Agent-Tools konnten nicht freigeschaltet werden. Der Zugang ist noch nicht vollständig aktiv.",
+
     "AGENTS.md als Arbeitsanweisungen verwenden": "AGENTS.md als Arbeitsanweisungen verwenden",
     "Informationen zu AGENTS.md-Arbeitsanweisungen": "Informationen zu AGENTS.md-Arbeitsanweisungen",
     "Vor OneDrive-Zugriffen erhalten berechtigte Agenten die passenden AGENTS.md-Arbeitsanweisungen und müssen deren Empfang bestätigen. Aktiviere dies nur, wenn du den Bearbeitern dieser Dateien vertraust – auch zukünftige Änderungen können die Agenten anleiten.": "Vor OneDrive-Zugriffen erhalten berechtigte Agenten die passenden AGENTS.md-Arbeitsanweisungen und müssen deren Empfang bestätigen. Aktiviere dies nur, wenn du den Bearbeitern dieser Dateien vertraust – auch zukünftige Änderungen können die Agenten anleiten.",
