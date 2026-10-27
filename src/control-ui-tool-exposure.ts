@@ -125,6 +125,9 @@ export function planPolicyToolReconciliation(policy: AccessPolicy, entries: Reco
     if (!entries || !Object.hasOwn(entries, agent)) { issue.reason = "missing_agent_entry"; continue; }
     if (tools.allow && tools.alsoAllow) { issue.reason = "conflicting_tool_policy"; continue; }
     const value = [...before.filter(name => !stale.includes(name)), ...missing.filter(name => !blocked.includes(name))];
+    // Core interprets [] as unrestricted, not deny-all. Never turn a
+    // restrictive allowlist into an unrestricted policy while pruning Graph.
+    if (key === "allow" && before.length > 0 && value.length === 0) { issue.reason = "empty_allow_would_broaden_access"; continue; }
     if (JSON.stringify(value) !== JSON.stringify(before)) {
       patch[agent] = { tools: { [key]: value } };
       expected[agent] = { key, value };

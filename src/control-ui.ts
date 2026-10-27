@@ -557,7 +557,8 @@ class ConfigurationPage {
         if (issue.missing.length) append(status, el("p", "mg-status-detail", format("{agent}: fehlende Tools: {tools}", { agent: label, tools: issue.missing.join(", ") })));
         if (issue.stale.length) append(status, el("p", "mg-status-detail", format("{agent}: überzählige Tools: {tools}", { agent: label, tools: issue.stale.join(", ") })));
         if (issue.blocked.length) append(status, el("p", "mg-status-detail", format("{agent}: durch Deny-Regeln gesperrt: {tools}", { agent: label, tools: issue.blocked.join(", ") })));
-        if (issue.reason) append(status, el("p", "mg-status-detail", format("{agent}: automatische Reparatur nicht möglich ({reason}). Agent-Konfiguration prüfen.", { agent: label, reason: issue.reason })));
+        if (issue.reason === "empty_allow_would_broaden_access") append(status, el("p", "mg-warning", format("{agent}: Die letzte restriktive Tool-Freigabe bleibt erhalten. Eine leere Allow-Liste würde andere Tools freigeben. Lege zuerst die gewünschte Agent-Tool-Policy fest; die Microsoft-Zugriffsregeln bleiben unverändert.", { agent: label })));
+        else if (issue.reason) append(status, el("p", "mg-status-detail", format("{agent}: automatische Reparatur nicht möglich ({reason}). Agent-Konfiguration prüfen.", { agent: label, reason: issue.reason })));
       }
     }
     if (this.operation?.applicationFailed && ["pending", "applying"].includes(phase ?? "")) append(status, el("p", "mg-status-detail", "Die automatische Anwendung konnte nicht abgeschlossen werden. Deine Regeln sind gespeichert; laufende Arbeit wird nicht abgebrochen."));

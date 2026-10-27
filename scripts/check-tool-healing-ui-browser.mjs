@@ -42,7 +42,7 @@ try {
       throw Error(`Unexpected RPC ${method}`);
     },ui:{registerPage:p=>{pageDefinition=p;return()=>{};},registerNavigation:()=>()=>{}}};
     GraphFixture.default.activate(host); pageDefinition.mount(document.querySelector("#fixture"),{host,signal:new AbortController().signal});
-    window.fixture={calls,releaseClaim:()=>finishClaim(),releasePatch:()=>finishPatch(),deny:()=>{entries.main.tools.alsoAllow=["read"];entries.main.tools.deny=["outlook_mail_*"];revision="r3";listener();}};
+    window.fixture={calls,restrictive:()=>{entries.retired={tools:{allow:["outlook_calendar_read"]}};host.agents.rows.push({id:"retired",name:"Retired agent"});revision="r4";listener();},releaseClaim:()=>finishClaim(),releasePatch:()=>finishPatch(),deny:()=>{entries.main.tools.alsoAllow=["read"];entries.main.tools.deny=["outlook_mail_*"];revision="r3";listener();}};
   },{policy,policyHash});
   await page.getByText("Synthetic agent (main): fehlende Tools: outlook_mail_read",{exact:true}).waitFor();
   assert.ok(await page.getByText("Synthetic agent (main): überzählige Tools: outlook_mail_write",{exact:true}).count());
@@ -57,8 +57,11 @@ try {
   await page.evaluate(()=>window.fixture.deny()); await page.getByRole("button",{name:"Status prüfen",exact:true}).click();
   await page.getByText("Synthetic agent (main): durch Deny-Regeln gesperrt: outlook_mail_read",{exact:true}).waitFor();
   await page.screenshot({path:path.join(output,"explicit-deny-preserved.png"),fullPage:true});
+  await page.evaluate(()=>window.fixture.restrictive()); await page.getByRole("button",{name:"Status prüfen",exact:true}).click();
+  await page.getByText("Retired agent (retired): Die letzte restriktive Tool-Freigabe bleibt erhalten.",{exact:false}).waitFor();
+  await page.screenshot({path:path.join(output,"restrictive-allow-preserved.png"),fullPage:true});
   const calls=await page.evaluate(()=>window.fixture.calls);
   assert.equal(calls.filter(c=>c.method==="config.patch").length,1); assert.equal(calls.filter(c=>c.method==="plugins.reload").length,0);
-  const result={result:"PASS",scenarios:["agent/tool-specific warning","root-only include-preserving CAS","unconfirmed tools not reported active","repair completion","explicit deny preserved"],writes:1,reloads:0};
+  const result={result:"PASS",scenarios:["agent/tool-specific warning","root-only include-preserving CAS","unconfirmed tools not reported active","repair completion","explicit deny preserved","final restrictive allow preserved"],writes:1,reloads:0};
   await writeFile(path.join(output,"result.json"),JSON.stringify(result,null,2)+"\n"); console.log(JSON.stringify(result));
 } finally {await browser.close();}

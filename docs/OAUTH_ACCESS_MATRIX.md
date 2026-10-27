@@ -79,7 +79,7 @@ A fresh browser or plugin generation automatically resumes a prepared intent aft
 | Desired permissions | Validated saved policy, matching the running plugin policy fingerprint |
 | Repairable surface | Exact Microsoft Graph-owned names in existing agent `allow` or `alsoAllow`; union across every saved service/root |
 | Preserved authority | Global/agent deny, wildcard/group grants, unrelated names, service/resource restrictions and native approval gates |
-| Blocked state | Missing/conflicting agent configuration, denied tool, changed CAS revision/source, inactive policy or pending claim |
+| Blocked state | Missing/conflicting agent configuration, final restrictive allow entry, denied tool, changed CAS revision/source, inactive policy or pending claim |
 | Concurrency / recovery | Private locked administrator-bound journal claims exact targets before one native CAS; fresh pages observe issued claims without replay |
 | Persistence / activation | Native config acknowledgement or applied config revision is required before tool activation is confirmed; no extra reload/restart |
 

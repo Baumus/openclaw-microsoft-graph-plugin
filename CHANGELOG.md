@@ -6,6 +6,7 @@ All notable changes to this project are documented here.
 
 - Replace the ambiguous incomplete-access warning with the selected agent plus exact missing, surplus and explicitly denied tools for every affected agent. Distinguish an idle mismatch, saving tools, awaiting activation and completed repair.
 - Automatically reconcile Microsoft Graph tool opt-ins when an administrator opens the Control UI or checks status, after the exact saved Microsoft policy is confirmed active. Synchronize all saved service/OneDrive grants; remove only obsolete exact Graph tool names, preserving unrelated tools, wildcard/group grants, global policy and explicit denies. No background daemon or provider request is added.
+- Preserve restrictive Core allowlist semantics: never remove the final exact Graph tool from `tools.allow`, because Core interprets an empty allowlist as unrestricted. Explain the blocked repair and require an explicit agent-policy decision instead; empty additive `alsoAllow` remains safe.
 - Claim each repair durably for the authenticated administrator before dispatching one native revision-checked, include-preserving config patch. Fresh pages recover uncertain tool stages without replay, concurrent saves fail closed, blocked agents do not prevent eligible peer repairs, and no duplicate reload or forced drain is introduced.
 
 ## 3.18.5 - 2026-10-27

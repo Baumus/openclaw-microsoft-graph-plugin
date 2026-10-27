@@ -359,3 +359,12 @@ it("discovers a lost automatic repair claim without dispatching or retrying its 
   expect(h.calls.filter(c=>c.method==="microsoft-graph.configuration.activation" && c.params.action==="reconcile")).toHaveLength(1);
   expect(h.container.textContent).toContain("nicht blind wiederholt");
 });
+
+it("explains why the last restrictive Graph allow entry cannot be automatically removed", async () => {
+  const h=view("active",true); await h.settle();
+  (h.agentEntries.studio as any).tools={allow:["outlook_calendar_read"]}; h.enableHealing(); h.hardReload(); await h.settle();
+  expect(h.container.textContent).toContain("Studio (studio): Die letzte restriktive Tool-Freigabe bleibt erhalten.");
+  expect(h.container.textContent).toContain("Eine leere Allow-Liste würde andere Tools freigeben.");
+  expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(0);
+  expect((h.agentEntries.studio as any).tools.allow).toEqual(["outlook_calendar_read"]);
+});

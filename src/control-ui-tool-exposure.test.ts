@@ -82,3 +82,29 @@ describe("saved policy reconciliation", () => {
     expect(result.drift.main.reason).toBe("conflicting_tool_policy"); expect(result.drift.studio.reason).toBe("missing_agent_entry"); expect(result.patch).toEqual({});
   });
 });
+
+it("never empties a restrictive allow list: real Core empty-allow semantics would broaden unrelated access", async () => {
+  // Exercise the pinned Core's actual matcher, not a reimplementation. Internal
+  // discovery is test-only: production uses only supported native config CAS.
+  const { readdir } = await import("node:fs/promises");
+  const { createRequire } = await import("node:module");
+  const { dirname, resolve } = await import("node:path");
+  const { pathToFileURL } = await import("node:url");
+  const dist = resolve(dirname(createRequire(import.meta.url).resolve("openclaw/plugin-sdk/config-mutation")), "..");
+  const filename = (await readdir(dist)).find(name => /^tool-policy-match-.*\.mjs$/.test(name));
+  expect(filename).toBeTruthy();
+  const core = await import(/* @vite-ignore */ pathToFileURL(resolve(dist, filename!)).href);
+  const matcher = Object.values(core).find(value => typeof value === "function" && value.name === "createToolPolicyMatcher") as (policy: { allow: string[] }) => (name: string) => boolean;
+  expect(matcher).toBeTypeOf("function");
+  const policy = { services: { onedrive: { allowed_roots: [] }, calendar: { agents: {} }, mail: { agents: {} }, todo: { agents: {} } } };
+  const entries = { restrictive: { tools: { allow: ["outlook_mail_read"] } }, additive: { tools: { alsoAllow: ["outlook_mail_read"] } }, restrictedPeer: { tools: { allow: ["read", "outlook_mail_read"] } } };
+  expect(matcher({ allow: [] })("exec")).toBe(true);
+  expect(matcher(entries.restrictive.tools)("exec")).toBe(false);
+  const plan = planPolicyToolReconciliation(policy, entries);
+  expect(plan.patch.restrictive).toBeUndefined();
+  expect(plan.drift.restrictive.reason).toBe("empty_allow_would_broaden_access");
+  expect(entries.restrictive.tools.allow).toEqual(["outlook_mail_read"]);
+  expect(plan.patch.additive.tools.alsoAllow).toEqual([]);
+  expect(plan.patch.restrictedPeer.tools.allow).toEqual(["read"]);
+  expect(matcher({ allow: plan.patch.restrictedPeer.tools.allow! })("exec")).toBe(false);
+});
