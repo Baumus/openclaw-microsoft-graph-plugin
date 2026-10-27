@@ -4,6 +4,9 @@ export const hostLocales = ["en", "ar", "de", "es", "fa", "fr", "hi", "id", "it"
 export type HostLocale = typeof hostLocales[number];
 const catalogs: Record<string, Record<string, string>> = {
   "en": {
+    "Die Regeln sind gespeichert. Wir warten auf laufende Arbeit und prüfen die Aktivierung weiter. Danach werden nur die bestätigten Agent-Tools freigeschaltet – auch nach erneutem Öffnen dieser Seite.": "Rules are saved. We keep checking activation while ongoing work finishes. Only the confirmed agent tools will then be enabled, including after reopening this page.",
+    "Die Regeln sind gespeichert. Der Tool-Schritt ist noch unbestätigt und wird nicht blind wiederholt. Lade bei Bedarf den aktuellen Stand und prüfe den gewünschten Zugang erneut.": "Rules are saved. The tool step is unconfirmed and will not be repeated blindly. If needed, load the current state and review the intended access again.",
+    "Der Vorgang konnte nicht beendet werden. Prüfe Verbindung und aktuellen Stand.": "The operation could not be closed. Check the connection and current state.",
     "Regeln gespeichert. Zugang noch nicht vollständig aktiv.": "Rules saved. Access is not fully active yet.",
     "Prüfe die Zugriffe und Rückfragen. Benötigte Microsoft-Graph-Tools werden für berechtigte Agenten zusammen mit den Microsoft-Graph-Regeln freigeschaltet.": "Review access and approvals. Required Microsoft Graph tools are enabled for the edited agent grants as part of saving the rules.",
     "{agent}: zusätzliche Microsoft-Graph-Tools · {tools}": "{agent}: additional Microsoft Graph tools · {tools}",
@@ -272,6 +275,9 @@ const catalogs: Record<string, Record<string, string>> = {
     "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Status check interrupted. Check the connection; this page will retry."
   },
   "de": {
+    "Die Regeln sind gespeichert. Wir warten auf laufende Arbeit und prüfen die Aktivierung weiter. Danach werden nur die bestätigten Agent-Tools freigeschaltet – auch nach erneutem Öffnen dieser Seite.": "Die Regeln sind gespeichert. Wir warten auf laufende Arbeit und prüfen die Aktivierung weiter. Danach werden nur die bestätigten Agent-Tools freigeschaltet – auch nach erneutem Öffnen dieser Seite.",
+    "Die Regeln sind gespeichert. Der Tool-Schritt ist noch unbestätigt und wird nicht blind wiederholt. Lade bei Bedarf den aktuellen Stand und prüfe den gewünschten Zugang erneut.": "Die Regeln sind gespeichert. Der Tool-Schritt ist noch unbestätigt und wird nicht blind wiederholt. Lade bei Bedarf den aktuellen Stand und prüfe den gewünschten Zugang erneut.",
+    "Der Vorgang konnte nicht beendet werden. Prüfe Verbindung und aktuellen Stand.": "Der Vorgang konnte nicht beendet werden. Prüfe Verbindung und aktuellen Stand.",
     "Regeln gespeichert. Zugang noch nicht vollständig aktiv.": "Regeln gespeichert. Zugang noch nicht vollständig aktiv.",
     "Prüfe die Zugriffe und Rückfragen. Benötigte Microsoft-Graph-Tools werden für berechtigte Agenten zusammen mit den Microsoft-Graph-Regeln freigeschaltet.": "Prüfe die Zugriffe und Rückfragen. Benötigte Microsoft-Graph-Tools werden für berechtigte Agenten zusammen mit den Microsoft-Graph-Regeln freigeschaltet.",
     "{agent}: zusätzliche Microsoft-Graph-Tools · {tools}": "{agent}: zusätzliche Microsoft-Graph-Tools · {tools}",

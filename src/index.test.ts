@@ -58,8 +58,9 @@ describe("microsoft-graph plugin contract", () => {
     expect(() => entry.register(api as any)).not.toThrow();
     expect(registerTool).toHaveBeenCalled();
     expect(registerCli).toHaveBeenCalledTimes(1);
-    expect(registerGatewayMethod).toHaveBeenCalledTimes(12);
+    expect(registerGatewayMethod).toHaveBeenCalledTimes(13);
     expect(registerGatewayMethod.mock.calls.map(([method, _handler, options]) => [method, options.scope])).toEqual([
+      ["microsoft-graph.configuration.activation", "operator.admin"],
       ["microsoft-graph.configuration.applicationStatus", "operator.admin"],
       ["microsoft-graph.configuration.validate", "operator.admin"],
       ["microsoft-graph.configuration.resolveFolder", "operator.admin"],
