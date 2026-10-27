@@ -32,7 +32,7 @@ function parseRecord(v: unknown): ActivationIntent | null {
   if (r.version !== 1 || typeof r.id !== "string" || !/^[a-f0-9-]{36}$/.test(r.id) || !Number.isSafeInteger(r.createdAt)
     || ![r.targetHash, r.ownerHash, r.sourceHash, r.beforeToolsHash].every(x => typeof x === "string" && /^[a-f0-9]{64}$/.test(x))
     || !["prepared", "issued", "complete", "cancelled"].includes(r.state) || !r.required || typeof r.required !== "object" || Array.isArray(r.required)
-    || Object.entries(r.required).some(([id, names]) => !/^[a-zA-Z0-9_-]{1,128}$/.test(id) || !Array.isArray(names) || names.length > 32 || names.some(n => typeof n !== "string" || !/^(onedrive_[a-z_]+|outlook_(calendar|mail|contacts)_(read|write)|microsoft_todo_(read|write))$/.test(n)))) throw Error("invalid_activation_record");
+    || Object.entries(r.required).some(([id, names]) => !/^[a-zA-Z0-9_-]{1,128}$/.test(id) || !Array.isArray(names) || names.length > 32 || names.some(n => typeof n !== "string" || !/^(onedrive_[a-z_]+|outlook_(calendar|mail|contacts)_(read|write)|microsoft_todo_(read|write)|microsoft_graph_capabilities)$/.test(n)))) throw Error("invalid_activation_record");
   if (r.expected && (typeof r.expected !== "object" || Array.isArray(r.expected) || Object.entries(r.expected).some(([id, e]) => !Object.hasOwn(r.required, id) || !e || !["allow", "alsoAllow"].includes(e.key) || !Array.isArray(e.value) || e.value.some(n => typeof n !== "string")))) throw Error("invalid_activation_record");
   return r;
 }

@@ -1,10 +1,14 @@
 type Permission = "read" | "write" | "delete";
 type Root = {
+  agents_instructions?: "trusted";
   permissions: Partial<Record<Permission, boolean>>;
   agents: Record<string, { permissions: Partial<Record<Permission, boolean>> }>;
 };
 type AgentTools = { allow?: string[]; alsoAllow?: string[]; deny?: string[] };
 type AgentEntry = { tools?: AgentTools };
+
+const discoveryTool = "microsoft_graph_capabilities";
+const instructionsTool = "onedrive_agents_instructions";
 
 const toolsByPermission: Record<Permission, readonly string[]> = {
   read: ["onedrive_search", "onedrive_list", "onedrive_read", "onedrive_download"],
@@ -27,6 +31,8 @@ export function requiredOneDriveTools(roots: Root[]): Record<string, string[]> {
       if (!root.permissions[permission] || !grant.permissions[permission]) continue;
       const tools = required.get(agentId) ?? new Set<string>();
       for (const name of toolsByPermission[permission]) tools.add(name);
+      tools.add(discoveryTool);
+      if (permission === "read" && root.agents_instructions === "trusted") tools.add(instructionsTool);
       required.set(agentId, tools);
     }
   }
@@ -77,6 +83,7 @@ export function planChangedToolExposure(before: AccessPolicy, after: AccessPolic
       const names = required[agent] ?? [];
       if (grant.operations.includes("read")) names.push(`${prefixes[service]}_read`);
       if (grant.operations.some(operation => operation !== "read")) names.push(`${prefixes[service]}_write`);
+      if (grant.operations.length) names.push(discoveryTool);
       if (names.length) required[agent] = [...new Set(names)];
     }
   }
@@ -91,7 +98,7 @@ export function planSelectedServiceToolExposure(policy: AccessPolicy, service: "
 }
 
 const servicePrefixes = { calendar: "outlook_calendar", mail: "outlook_mail", contacts: "outlook_contacts", todo: "microsoft_todo" } as const;
-const ownedTools = new Set([...Object.values(toolsByPermission).flat(), ...Object.values(servicePrefixes).flatMap(prefix => [`${prefix}_read`, `${prefix}_write`])]);
+const ownedTools = new Set([discoveryTool, instructionsTool, ...Object.values(toolsByPermission).flat(), ...Object.values(servicePrefixes).flatMap(prefix => [`${prefix}_read`, `${prefix}_write`])]);
 export function requiredPolicyTools(policy: AccessPolicy): Record<string, string[]> {
   const required = requiredOneDriveTools(policy.services.onedrive.allowed_roots);
   for (const service of ["calendar", "mail", "contacts", "todo"] as const) {
@@ -99,6 +106,7 @@ export function requiredPolicyTools(policy: AccessPolicy): Record<string, string
       const names = new Set(required[agent] ?? []);
       if (grant.operations.includes("read")) names.add(`${servicePrefixes[service]}_read`);
       if (grant.operations.some(operation => operation !== "read")) names.add(`${servicePrefixes[service]}_write`);
+      if (grant.operations.length) names.add(discoveryTool);
       required[agent] = [...names];
     }
   }

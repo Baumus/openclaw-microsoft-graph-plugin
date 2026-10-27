@@ -26,7 +26,7 @@ describe("durable exact-target activation journal", () => {
     expect((await h.journal().status())?.id).toBe(intent.id);
     await expect(h.journal().claim(intent.id, hash(h.before))).rejects.toThrow("activation_conflict");
     const claimed=await h.journal().claim(intent.id, hash(h.after));
-    expect(claimed.baseHash).toBe("after"); expect(claimed.patch).toEqual({ selected: { tools: { alsoAllow: ["outlook_mail_read", "outlook_calendar_read"] } } });
+    expect(claimed.baseHash).toBe("after"); expect(claimed.patch).toEqual({ selected: { tools: { alsoAllow: ["outlook_mail_read", "outlook_calendar_read", "microsoft_graph_capabilities"] } } });
     await expect(h.journal().claim(intent.id, hash(h.after))).rejects.toThrow("activation_not_claimable");
     expect(h.entries.unrelated!.tools.alsoAllow).toEqual([]); expect(h.entries.selected!.tools.deny).toEqual(["outlook_mail_write"]);
     const raw=await readFile(h.file,"utf8"); expect(raw).not.toMatch(/resource-private|private-plugins-path|credential|baseline|policy/);
@@ -89,7 +89,7 @@ describe("Gateway public CAS revisions", () => {
     const intent = await journal().prepare("opaque:before", h.before, h.after); h.persist();
     const claim = await journal().claim(intent.id, hash(h.after));
     expect(claim.baseHash).toBe("opaque:after");
-    expect(claim.patch).toEqual({selected:{tools:{alsoAllow:["outlook_mail_read","outlook_calendar_read"]}}});
+    expect(claim.patch).toEqual({selected:{tools:{alsoAllow:["outlook_mail_read","outlook_calendar_read","microsoft_graph_capabilities"]}}});
   });
 });
 
@@ -97,7 +97,7 @@ describe("durable saved-policy reconciliation claims", () => {
   it("claims all repairable drift once, recovers after a fresh instance and completes exact persistence", async () => {
     const h=await setup(); h.persist();
     const claimed=await h.journal().reconcile("after",hash(h.after)); expect(claimed).not.toBeNull();
-    expect(claimed!.patch.selected.tools.alsoAllow).toEqual(["outlook_calendar_read"]);
+    expect(claimed!.patch.selected.tools.alsoAllow).toEqual(["outlook_calendar_read","microsoft_graph_capabilities"]);
     expect(claimed!.record.state).toBe("issued"); expect((await h.journal().status())?.expected).toEqual(claimed!.expected);
     await expect(h.journal().reconcile("after",hash(h.after))).rejects.toThrow("activation_pending");
     await expect(h.journal().complete(claimed!.record.id,hash(h.after))).rejects.toThrow();

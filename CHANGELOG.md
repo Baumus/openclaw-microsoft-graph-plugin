@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## 3.19.1 - 2026-10-27
+
+- Make Microsoft Graph capability discovery part of every saved agent grant and existing deny-aware tool reconciliation. Include the folder-instruction helper only for trusted read-authorized roots; prune obsolete exact helper opt-ins without weakening restrictive allowlists.
+- Require exact caller-discovered OneDrive root labels in tool descriptions and schemas. Capability responses identify only authorized folders by configured root path; never expose foreign roots, drive/item IDs, or credentials.
+- Guide local access denials through caller capability discovery before policy review, without guessing labels, retrying unchanged, widening rights, or misdiagnosing Microsoft consent. Report trusted-instruction read prerequisites for write-only callers. No new Graph scope or host-version requirement.
+
 ## 3.19.0 - 2026-10-27
 
 - Replace the ambiguous incomplete-access warning with the selected agent plus exact missing, surplus and explicitly denied tools for every affected agent. Distinguish an idle mismatch, saving tools, awaiting activation and completed repair.

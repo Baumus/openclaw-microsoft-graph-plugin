@@ -20,7 +20,7 @@ try {
     let finishClaim; const waitClaim=new Promise(resolve=>{finishClaim=resolve;});
     let finishPatch; const waitPatch=new Promise(resolve=>{finishPatch=resolve;});
     const calls=[]; const entries={main:{tools:{alsoAllow:["read","outlook_mail_write"],deny:[]}}};
-    const expected={main:{key:"alsoAllow",value:["read","outlook_mail_read"]}};
+    const expected={main:{key:"alsoAllow",value:["read","outlook_mail_read","microsoft_graph_capabilities"]}};
     const host={locale:"de",connection:{connected:true,canAdmin:true},agents:{rows:[{id:"main",name:"Synthetic agent"}]},subscribe:fn=>{listener=fn;return()=>{};},request:async(method,params)=>{
       calls.push({method,params});
       if(method==="config.get")return {hash:revision,configRevisionHash:revision,appliedConfigHash:applied?revision:"older",parsed:{plugins:{$include:"synthetic-plugins.json"}},config:{agents:{entries:structuredClone(entries)},plugins:{entries:{"microsoft-graph":{enabled:true,config:{credentialVaultKey:"synthetic",policy}}}}}};
@@ -42,9 +42,9 @@ try {
       throw Error(`Unexpected RPC ${method}`);
     },ui:{registerPage:p=>{pageDefinition=p;return()=>{};},registerNavigation:()=>()=>{}}};
     GraphFixture.default.activate(host); pageDefinition.mount(document.querySelector("#fixture"),{host,signal:new AbortController().signal});
-    window.fixture={calls,restrictive:()=>{entries.retired={tools:{allow:["outlook_calendar_read"]}};host.agents.rows.push({id:"retired",name:"Retired agent"});revision="r4";listener();},releaseClaim:()=>finishClaim(),releasePatch:()=>finishPatch(),deny:()=>{entries.main.tools.alsoAllow=["read"];entries.main.tools.deny=["outlook_mail_*"];revision="r3";listener();}};
+    window.fixture={calls,restrictive:()=>{entries.retired={tools:{allow:["outlook_calendar_read"]}};host.agents.rows.push({id:"retired",name:"Retired agent"});revision="r4";listener();},releaseClaim:()=>finishClaim(),releasePatch:()=>finishPatch(),deny:()=>{entries.main.tools.alsoAllow=["read","microsoft_graph_capabilities"];entries.main.tools.deny=["outlook_mail_*"];revision="r3";listener();}};
   },{policy,policyHash});
-  await page.getByText("Synthetic agent (main): fehlende Tools: outlook_mail_read",{exact:true}).waitFor();
+  await page.getByText("Synthetic agent (main): fehlende Tools: outlook_mail_read, microsoft_graph_capabilities",{exact:true}).waitFor();
   assert.ok(await page.getByText("Synthetic agent (main): überzählige Tools: outlook_mail_write",{exact:true}).count());
   await page.screenshot({path:path.join(output,"drift-detected.png"),fullPage:true});
   await page.evaluate(()=>window.fixture.releaseClaim());

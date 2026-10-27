@@ -13,7 +13,7 @@ function harness(mode: Mode = "active", pluginsInclude = false, oneDriveGrant = 
   let saved = clone(initial); let active = hash(saved); let revision = "r1"; let globalApplied = false;
   if (oneDriveGrant) saved.services.onedrive.allowed_roots = [{ label: "synthetic", path: "/Synthetic", drive_id: "synthetic-drive", item_id: "synthetic-item", include_descendants: true, permissions: { read: true, write: false, delete: false }, agents: { studio: { permissions: { read: true, write: false, delete: false } } } }] as never;
   active = hash(saved);
-  const agentEntries: Record<string, { tools: { alsoAllow: string[] } }> = { main: { tools: { alsoAllow: ["outlook_mail_read"] } }, studio: { tools: { alsoAllow: [] } } };
+  const agentEntries: Record<string, { tools: { alsoAllow: string[] } }> = { main: { tools: { alsoAllow: ["outlook_mail_read", "microsoft_graph_capabilities"] } }, studio: { tools: { alsoAllow: [] } } };
   let page: { mount(container: HTMLElement, context: unknown): { dispose(): void } };
   let listener = () => {};
   const patch = deferred<unknown>(); const reload = deferred<unknown>();
@@ -104,7 +104,7 @@ describe("policy save and application lifecycle", () => {
     const h=view("active", true, true); await h.settle(); await calendarDraft(h); h.click("Speichern und anwenden"); await h.settle();
     await vi.advanceTimersByTimeAsync(1000); await h.settle();
     const writes=h.calls.filter(c=>c.method==="config.patch"); expect(writes).toHaveLength(2);
-    expect(JSON.parse(writes[1]!.params.raw as string)).toEqual({ agents: { entries: { main: { tools: { alsoAllow: ["outlook_mail_read", "outlook_calendar_read", "outlook_calendar_write"] } } } } });
+    expect(JSON.parse(writes[1]!.params.raw as string)).toEqual({ agents: { entries: { main: { tools: { alsoAllow: ["outlook_mail_read", "microsoft_graph_capabilities", "outlook_calendar_read", "outlook_calendar_write"] } } } } });
     const policy=JSON.parse(writes[0]!.params.raw as string); expect(policy.agents).toBeUndefined();
     expect(policy.plugins.entries["microsoft-graph"].config.policy.services.calendar.agents.main.operations).toEqual(["read", "create", "update", "respond", "attach", "delete"]);
     expect(writes[1]!.params.baseHash).toBe("r1-next");
@@ -206,7 +206,7 @@ describe("policy save and application lifecycle", () => {
     const writes=h.calls.filter(c=>c.method==="config.patch"); expect(writes).toHaveLength(2);
     const repair=JSON.parse(writes[1]!.params.raw as string);
     expect(repair.plugins).toBeUndefined(); expect(Object.keys(repair.agents.entries)).toEqual(["main"]);
-    expect(repair.agents.entries.main.tools.alsoAllow).toEqual(["outlook_mail_read", "outlook_calendar_read", "outlook_calendar_write"]);
+    expect(repair.agents.entries.main.tools.alsoAllow).toEqual(["outlook_mail_read", "microsoft_graph_capabilities", "outlook_calendar_read", "outlook_calendar_write"]);
     expect(h.container.textContent).toContain("Microsoft-Regeln aktiv. Agent-Tools weichen ab.");
   });
   it("recovers a known rejected tool stage through reload and explicit selected-service repair", async () => {
@@ -298,7 +298,7 @@ describe("automatic saved-policy tool healing", () => {
     const writes=h.calls.filter(c=>c.method==="config.patch"); expect(writes).toHaveLength(1);
     expect(writes[0]!.params.baseHash).toBe("r1");
     const raw=JSON.parse(writes[0]!.params.raw as string);
-    expect(raw.plugins).toBeUndefined(); expect(raw.agents.entries.studio.tools.alsoAllow).toEqual(["onedrive_search","onedrive_list","onedrive_read","onedrive_download"]);
+    expect(raw.plugins).toBeUndefined(); expect(raw.agents.entries.studio.tools.alsoAllow).toEqual(["onedrive_search","onedrive_list","onedrive_read","onedrive_download","microsoft_graph_capabilities"]);
     expect(h.container.textContent).toContain("Gespeichert und aktiv");
     h.hardReload(); await h.settle(); await vi.advanceTimersByTimeAsync(90000);
     expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1); expect(h.calls.some(c=>c.method==="plugins.reload")).toBe(false);
@@ -308,7 +308,7 @@ describe("automatic saved-policy tool healing", () => {
     h.agentEntries.main!.tools.alsoAllow=[]; (h.agentEntries.main!.tools as any).deny=["outlook_mail_*"];
     h.enableHealing(); h.hardReload(); await h.settle();
     expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1);
-    expect(h.agentEntries.main!.tools.alsoAllow).toEqual([]);
+    expect(h.agentEntries.main!.tools.alsoAllow).toEqual(["microsoft_graph_capabilities"]);
     expect(h.container.textContent).toContain("Main (main): durch Deny-Regeln gesperrt: outlook_mail_read");
     expect(h.container.textContent).toContain("Ausgewählter Agent: main");
     expect(h.container.textContent).toContain("Kein Speichervorgang läuft");
@@ -318,7 +318,7 @@ describe("automatic saved-policy tool healing", () => {
     const h=view("active",false,true,true); await h.settle();
     h.agentEntries.main!.tools.alsoAllow=["read","outlook_mail_write"]; h.changeRevision();
     h.click("Status prüfen"); await h.settle();
-    expect(h.agentEntries.main!.tools.alsoAllow).toEqual(["read","outlook_mail_read"]);
+    expect(h.agentEntries.main!.tools.alsoAllow).toEqual(["read","outlook_mail_read","microsoft_graph_capabilities"]);
     const writes=h.calls.filter(c=>c.method==="config.patch"); expect(writes).toHaveLength(2); expect(writes[1]!.params.baseHash).toBe("unrelated");
     expect(h.container.textContent).toContain("Gespeichert und aktiv");
   });
