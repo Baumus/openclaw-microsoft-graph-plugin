@@ -69,3 +69,9 @@ Discovered instruction content has a one-hour absolute freshness limit, independ
 ## Build and packaging
 
 `src/index.ts` is bundled to `dist/index.js` for Node 24 and newer supported host runtimes. Runtime dependencies remain external and are declared in `dependencies`, including exact-pinned `@openclaw/fs-safe` 0.21.1. `openclaw plugins build --check` verifies generated manifest/package metadata without rewriting it. The npm `files` allowlist ships only runtime code, static metadata, consumer documentation, the icon, synthetic JSON5 policy objects, and the bounded JSON helper.
+
+### Recoverable UI activation
+
+The configuration UI uses a bounded server-side activation intent for include-split saves. Policy writes remain native `config.patch`; policy activation is proven by the generation-bound policy hash. Only then does an admin-scoped RPC atomically claim the exact reviewed tool additions against the current policy/source/tool baseline, before the UI issues the second native CAS write. This intent survives UI module/page and Gateway plugin-generation replacement without browser storage. Polling remains paced while a durable operation is pending, including after the initial one-minute fast observation window. No automatic duplicate plugin reload or interrupted admitted work is introduced.
+
+The intent is not a generalized workflow queue or permission reconciler: one operation, one authenticated owner, a 24-hour lifetime, exact changed targets, and one tool dispatch. A lost claim/write response is reconciled from persisted config; it cannot replay a revoked grant. Explicit cancellation and fresh access review recover unresolved outcomes. See `OAUTH_ACCESS_MATRIX.md` for authority and storage boundaries.

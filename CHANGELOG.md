@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## 3.18.4 - 2026-10-27
+
+- Resume reviewed include-split saves after a fresh browser, UI module or plugin generation: an administrator-bound, 24-hour server intent retains only hashes and exact tool targets, never credentials or policy drafts.
+- Continue paced activation checks beyond the initial drain timeout. Wait for the exact saved policy to become active before enabling the reviewed tools; do not force ongoing work to stop or issue duplicate reloads.
+- Claim the tool step once with fresh config CAS and unchanged target-agent tool policy. Preserve denies and unrelated agents; reject stale, expired, different-owner and changed-source intents. Ambiguous tool dispatches are reconciled, never blindly replayed.
+- Distinguish saved/waiting, pending tools and fully active access, with explicit cancellation/current-state review when a dispatch cannot be confirmed.
+
 ## 3.18.3
 
 - Preserve `$include` ownership when saving service grants: save the exact policy, verify its active generation, then enable only the edited agents' required optional tools with a fresh revision. Ambiguous replies are reconciled without duplicate writes or forced reloads.

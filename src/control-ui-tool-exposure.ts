@@ -37,7 +37,7 @@ export function planOneDriveToolExposure(roots: Root[], entries: Record<string, 
   return planToolExposure(requiredOneDriveTools(roots), entries, globalDeny);
 }
 
-function planToolExposure(required: Record<string, string[]>, entries: Record<string, AgentEntry> | undefined, globalDeny: string[] = []) {
+export function planToolExposure(required: Record<string, string[]>, entries: Record<string, AgentEntry> | undefined, globalDeny: string[] = []) {
   const patch: Record<string, { tools: Partial<AgentTools> }> = {};
   const expected: Record<string, { key: "allow" | "alsoAllow"; value: string[] }> = {};
   for (const [agentId, names] of Object.entries(required)) {

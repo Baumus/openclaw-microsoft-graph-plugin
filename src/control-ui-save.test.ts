@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "./control-ui.js";
+import { planChangedToolExposure, planToolExposure } from "./control-ui-tool-exposure.js";
 import { canonicalPolicy } from "./config-policy-identity.js";
 const initial = { version: 2, rules: { default: "deny" }, services: { onedrive: { allowed_roots: [] }, calendar: { agents: {} }, mail: { agents: { main: { operations: ["read"] } } }, todo: { agents: {} } } };
 const clone = <T>(v: T): T => structuredClone(v);
@@ -17,12 +18,29 @@ function harness(mode: Mode = "active", pluginsInclude = false, oneDriveGrant = 
   let listener = () => {};
   const patch = deferred<unknown>(); const reload = deferred<unknown>();
   const calls: { method: string; params: Record<string, unknown> }[] = [];
+  let intent: any = null; let loseClaimReply = false;
   let getOverride: (() => Promise<unknown>) | undefined;
   const snapshot = () => ({ hash: revision, configRevisionHash: "unrelated-new", appliedConfigHash: globalApplied ? "unrelated-new" : "unrelated-old", parsed: pluginsInclude ? { plugins: { $include: "plugins.json" } } : undefined, config: { agents: { entries: clone(agentEntries) }, plugins: { entries: { "microsoft-graph": { enabled: true, config: { credentialVaultKey: "synthetic-secret-ref", policy: clone(saved) } } } } } });
   let host = { locale: "de", connection: { connected: true, canAdmin: true }, agents: { rows: [{ id: "main", name: "Main" }, { id: "studio", name: "Studio" }] },
     subscribe: (fn: () => void) => { listener = fn; return () => { listener = () => {}; }; },
     request: async (method: string, params: Record<string, unknown>) => {
       calls.push({ method, params });
+      if (method === "microsoft-graph.configuration.activation") {
+        if (params.action === "prepare") {
+          const plan = planChangedToolExposure(params.baseline as any, params.target as any, agentEntries);
+          const required = Object.fromEntries(Object.entries(plan.expected).map(([id, e]) => [id, e.value.filter(n => !agentEntries[id]!.tools.alsoAllow.includes(n))]));
+          intent = { id: "synthetic-intent", targetHash: hash(params.target), required, state: "prepared" }; return clone(intent);
+        }
+        if (params.action === "status") return intent && intent.state !== "complete" && intent.targetHash === hash(saved) ? clone(intent) : null;
+        if (params.action === "claim") {
+          if (!intent || intent.state !== "prepared" || intent.id !== params.id || active !== intent.targetHash) throw Error("intent_conflict");
+          const plan = planToolExposure(intent.required, agentEntries); intent.state="issued"; intent.expected=plan.expected;
+          if (loseClaimReply) throw Error("lost_claim_reply");
+          return { record: clone(intent), ...plan, baseHash: revision };
+        }
+        if (params.action === "cancel") { intent=null; return { cancelled:true }; }
+        if (params.action === "complete") { intent.state="complete"; return { complete:true }; }
+      }
       if (method === "config.get") return getOverride ? getOverride() : snapshot();
       if (method === "microsoft-graph.configuration.applicationStatus") return { activePolicyHash: active, activeVersion: "3.12.1" };
       if (method === "microsoft-graph.configuration.validate") return { valid: true, requiredScopes: (params.policy as any)?.services?.contacts?.agents?.main ? ["Mail.Read", "Contacts.ReadWrite"] : ["Mail.Read"], policyHash: hash(params.policy) };
@@ -52,7 +70,7 @@ function harness(mode: Mode = "active", pluginsInclude = false, oneDriveGrant = 
   const settle = async () => { for (let i=0;i<100;i++) await Promise.resolve(); };
   const click = (text: string) => { const node = [...container.querySelectorAll("button")].find(b => b.textContent === text); expect(node, text + "\n" + container.textContent).toBeTruthy(); node!.click(); };
   const edit = async () => { click("3  Freigaben"); const input = container.querySelector<HTMLInputElement>(".mg-body input[type=checkbox]")!; input.checked=false; input.dispatchEvent(new Event("change", { bubbles: true })); click("4  Prüfen"); await settle(); const confirm = container.querySelector<HTMLInputElement>(".mg-body input[type=checkbox]")!; confirm.checked=true; confirm.dispatchEvent(new Event("change", { bubbles: true })); };
-  return { host, calls, container, settle, click, edit, patch, reload, snapshot, setInactive: () => { active=hash(initial); }, setMode: (next: Mode) => { mode=next; }, hardReload: () => { mounted.dispose(); controller.abort(); host={...host}; mount(); }, setGet: (fn?: () => Promise<unknown>) => { getOverride=fn; }, notify: () => listener(), setActive: () => { active=hash(saved); globalApplied=true; }, changeRevision: () => { revision="unrelated"; }, persistTarget: () => { saved.rules = { ...saved.rules, warningApprovalsByService: { onedrive: false } } as never; revision="late"; }, restoreBaseline: () => { saved = clone(initial); revision="rollback"; }, changeSaved: () => { saved.services.mail.agents.main.operations.push("draft"); revision="external"; }, remount: () => { mounted.dispose(); controller.abort(); mount(); }, dispose: () => { mounted.dispose(); controller.abort(); if (typeof stop === "function") stop(); container.remove(); } };
+  return { loseClaim: () => { loseClaimReply=true; }, clearIntent: () => { intent=null; }, host, calls, container, settle, click, edit, patch, reload, snapshot, setInactive: () => { active=hash(initial); }, setMode: (next: Mode) => { mode=next; }, hardReload: () => { mounted.dispose(); controller.abort(); host={...host}; mount(); }, setGet: (fn?: () => Promise<unknown>) => { getOverride=fn; }, notify: () => listener(), setActive: () => { active=hash(saved); globalApplied=true; }, changeRevision: () => { revision="unrelated"; }, persistTarget: () => { saved.rules = { ...saved.rules, warningApprovalsByService: { onedrive: false } } as never; revision="late"; }, restoreBaseline: () => { saved = clone(initial); revision="rollback"; }, changeSaved: () => { saved.services.mail.agents.main.operations.push("draft"); revision="external"; }, remount: () => { mounted.dispose(); controller.abort(); mount(); }, dispose: () => { mounted.dispose(); controller.abort(); if (typeof stop === "function") stop(); container.remove(); } };
 }
 const cleanup: (() => void)[] = [];
 function view(mode?: Mode, pluginsInclude = false, oneDriveGrant = false) { const h=harness(mode, pluginsInclude, oneDriveGrant); cleanup.push(h.dispose); return h; }
@@ -128,10 +146,41 @@ describe("policy save and application lifecycle", () => {
     expect(h.container.textContent).not.toContain("Gespeichert und aktiv");
     expect(h.snapshot().config.plugins.entries["microsoft-graph"].config.policy.services.calendar.agents).toHaveProperty("main");
   });
+  it("automatically resumes only the original selected tools after a fresh host beyond the drain budget", async () => {
+    const h=view("persist-hang", true, true); await h.settle(); await calendarDraft(h); h.click("Speichern und anwenden"); await h.settle();
+    await vi.advanceTimersByTimeAsync(75000); await h.settle();
+    expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1);
+    h.hardReload(); await h.settle();
+    expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1);
+    h.setMode("active"); h.setActive();
+    await vi.advanceTimersByTimeAsync(90000); await h.settle();
+    const writes=h.calls.filter(c=>c.method==="config.patch"); expect(writes).toHaveLength(2);
+    expect(Object.keys(JSON.parse(writes[1]!.params.raw as string).agents.entries)).toEqual(["main"]);
+    expect(h.container.textContent).toContain("Gespeichert und aktiv");
+    expect(h.calls.filter(c=>c.method==="plugins.reload")).toHaveLength(0);
+    h.hardReload(); await h.settle(); await vi.advanceTimersByTimeAsync(20000);
+    expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(2);
+  });
+  it("keeps observing late activation without host notifications after the old polling budget", async () => {
+    const h=view("persist-hang", true); await h.settle(); await calendarDraft(h); h.click("Speichern und anwenden"); await h.settle();
+    await vi.advanceTimersByTimeAsync(90000); h.setActive(); h.setMode("active");
+    await vi.advanceTimersByTimeAsync(16000); await h.settle();
+    expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(2);
+    expect(h.container.textContent).toContain("Gespeichert und aktiv");
+  });
+  it("does not replay a claimed dispatch after a lost reply and fresh host", async () => {
+    const h=view("persist-hang", true); await h.settle(); await calendarDraft(h); h.click("Speichern und anwenden"); await h.settle();
+    h.loseClaim(); h.setActive(); await vi.advanceTimersByTimeAsync(2000); await h.settle();
+    h.hardReload(); await h.settle(); await vi.advanceTimersByTimeAsync(90000); await h.settle();
+    expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1);
+    expect(h.container.textContent).toContain("nicht blind wiederholt");
+    expect(h.container.textContent).toContain("Aktuellen Stand laden");
+    expect(h.container.textContent).not.toContain("Gespeichert und aktiv");
+  });
   it("recovers missing selected calendar tools after hard refresh without rewriting policy or backfilling peers", async () => {
     const h=view("persist-hang", true, true); await h.settle(); await calendarDraft(h); h.click("Speichern und anwenden"); await h.settle();
     expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1);
-    h.setActive(); h.hardReload(); await h.settle(); expect(h.container.textContent).not.toContain("Gespeichert und aktiv"); expect(h.container.textContent).toContain("Zugang noch nicht vollständig aktiv"); h.click("2  Dienste"); await h.settle();
+    h.clearIntent(); h.setActive(); h.hardReload(); await h.settle(); expect(h.container.textContent).not.toContain("Gespeichert und aktiv"); expect(h.container.textContent).toContain("Zugang noch nicht vollständig aktiv"); h.click("2  Dienste"); await h.settle();
     expect(h.container.textContent).toContain("Benötigte Agent-Tools fehlen noch");
     h.setMode("active"); h.click("Agent-Tools aktivieren"); await h.settle();
     const writes=h.calls.filter(c=>c.method==="config.patch"); expect(writes).toHaveLength(2);
@@ -151,7 +200,7 @@ describe("policy save and application lifecycle", () => {
   });
   it("does not repair selected tools until the exact saved policy is active", async () => {
     const h=view("persist-hang", true); await h.settle(); await calendarDraft(h); h.click("Speichern und anwenden"); await h.settle();
-    h.setActive(); h.hardReload(); await h.settle(); h.click("2  Dienste"); await h.settle();
+    h.clearIntent(); h.setActive(); h.hardReload(); await h.settle(); h.click("2  Dienste"); await h.settle();
     h.setInactive(); h.click("Agent-Tools aktivieren"); await h.settle();
     expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1);
     expect(h.container.textContent).toContain("Agent-Tools konnten nicht aktiviert werden");

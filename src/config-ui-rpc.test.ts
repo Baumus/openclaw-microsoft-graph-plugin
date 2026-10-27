@@ -53,3 +53,17 @@ describe("running Graph generation status", () => {
     }
   });
 });
+
+
+describe("activation RPC authority boundary", () => {
+  it("requires a host-authenticated identity and rejects wire-supplied identity without provider access", async () => {
+    const registerGatewayMethod=vi.fn();
+    registerConfigurationUiMethods({registerGatewayMethod}, { policy }, () => "/not-used-no-identity");
+    expect(registerGatewayMethod).toHaveBeenCalledWith("microsoft-graph.configuration.activation",expect.any(Function),{scope:"operator.admin"});
+    const handler=registerGatewayMethod.mock.calls.find(c=>c[0]==="microsoft-graph.configuration.activation")![1];
+    for (const params of [{action:"status"},{action:"prepare",baseHash:"x",baseline:policy,target:policy},{action:"status",authenticatedUserId:"forged"}]) {
+      const respond=vi.fn(); await handler({params,respond});
+      expect(respond).toHaveBeenCalledWith(false,undefined,expect.objectContaining({code:"INVALID_REQUEST"}));
+    }
+  });
+});
