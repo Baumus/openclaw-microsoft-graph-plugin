@@ -8,15 +8,18 @@ const clone = <T>(v: T): T => structuredClone(v);
 const hash = (v: unknown) => createHash("sha256").update(canonicalPolicy(v)).digest("hex");
 function deferred<T>() { let resolve!: (v: T) => void; let reject!: (v: unknown) => void; const promise = new Promise<T>((r,j) => { resolve=r; reject=j; }); return { promise, resolve, reject }; }
 type Mode = "active" | "pending" | "persist-reject" | "reject" | "hang" | "persist-hang" | "unavailable";
-function harness(mode: Mode = "active", pluginsInclude = false) {
+function harness(mode: Mode = "active", pluginsInclude = false, oneDriveGrant = false) {
   let saved = clone(initial); let active = hash(saved); let revision = "r1";
+  if (oneDriveGrant) saved.services.onedrive.allowed_roots = [{ label: "synthetic", path: "/Synthetic", drive_id: "synthetic-drive", item_id: "synthetic-item", include_descendants: true, permissions: { read: true, write: false, delete: false }, agents: { studio: { permissions: { read: true, write: false, delete: false } } } }] as never;
+  active = hash(saved);
+  const agentEntries: Record<string, { tools: { alsoAllow: string[] } }> = { main: { tools: { alsoAllow: ["outlook_mail_read"] } }, studio: { tools: { alsoAllow: ["outlook_mail_read"] } } };
   let page: { mount(container: HTMLElement, context: unknown): { dispose(): void } };
   let listener = () => {};
   const patch = deferred<unknown>(); const reload = deferred<unknown>();
   const calls: { method: string; params: Record<string, unknown> }[] = [];
   let getOverride: (() => Promise<unknown>) | undefined;
-  const snapshot = () => ({ hash: revision, configRevisionHash: "unrelated-new", appliedConfigHash: "unrelated-old", parsed: pluginsInclude ? { plugins: { $include: "plugins.json" } } : undefined, config: { plugins: { entries: { "microsoft-graph": { enabled: true, config: { credentialVaultKey: "synthetic-secret-ref", policy: clone(saved) } } } } } });
-  const host = { locale: "de", connection: { connected: true, canAdmin: true }, agents: { rows: [{ id: "main", name: "Main" }] },
+  const snapshot = () => ({ hash: revision, configRevisionHash: "unrelated-new", appliedConfigHash: "unrelated-old", parsed: pluginsInclude ? { plugins: { $include: "plugins.json" } } : undefined, config: { agents: { entries: clone(agentEntries) }, plugins: { entries: { "microsoft-graph": { enabled: true, config: { credentialVaultKey: "synthetic-secret-ref", policy: clone(saved) } } } } } });
+  const host = { locale: "de", connection: { connected: true, canAdmin: true }, agents: { rows: [{ id: "main", name: "Main" }, { id: "studio", name: "Studio" }] },
     subscribe: (fn: () => void) => { listener = fn; return () => { listener = () => {}; }; },
     request: async (method: string, params: Record<string, unknown>) => {
       calls.push({ method, params });
@@ -27,7 +30,7 @@ function harness(mode: Mode = "active", pluginsInclude = false) {
       if (method === "microsoft-graph.updateStatus") return { updateAvailable: false };
       if (method === "config.patch") {
         const raw = JSON.parse(params.raw as string); const changes = raw.plugins.entries["microsoft-graph"].config.policy;
-        if (mode !== "reject" && mode !== "hang" && mode !== "unavailable") { saved = { ...saved, rules: { ...saved.rules, ...changes.rules } }; revision = "r2"; }
+        if (mode !== "reject" && mode !== "hang" && mode !== "unavailable") { saved = { ...saved, rules: { ...saved.rules, ...changes.rules } }; for (const [id, entry] of Object.entries(raw.agents?.entries ?? {}) as [string, { tools: { alsoAllow: string[] } }][]) agentEntries[id]!.tools.alsoAllow = entry.tools.alsoAllow; revision = "r2"; }
         if (mode === "active") active = hash(saved);
         if (mode === "reject") throw { code: "INVALID_REQUEST" };
         if (mode === "persist-reject" || mode === "unavailable") throw { code: "UNAVAILABLE" };
@@ -47,10 +50,18 @@ function harness(mode: Mode = "active", pluginsInclude = false) {
   return { host, calls, container, settle, click, edit, patch, reload, snapshot, setGet: (fn?: () => Promise<unknown>) => { getOverride=fn; }, notify: () => listener(), setActive: () => { active=hash(saved); }, changeSaved: () => { saved.services.mail.agents.main.operations.push("draft"); revision="external"; }, remount: () => { mounted.dispose(); controller.abort(); mount(); }, dispose: () => { mounted.dispose(); controller.abort(); if (typeof stop === "function") stop(); container.remove(); } };
 }
 const cleanup: (() => void)[] = [];
-function view(mode?: Mode, pluginsInclude = false) { const h=harness(mode, pluginsInclude); cleanup.push(h.dispose); return h; }
+function view(mode?: Mode, pluginsInclude = false, oneDriveGrant = false) { const h=harness(mode, pluginsInclude, oneDriveGrant); cleanup.push(h.dispose); return h; }
 beforeEach(() => { localStorage.clear(); vi.useFakeTimers(); });
 afterEach(() => { for (const fn of cleanup.splice(0)) fn(); vi.useRealTimers(); });
 describe("policy save and application lifecycle", () => {
+  it("atomically opts an authorized OneDrive reader into optional tools", async () => {
+    const h=view("active", false, true); await h.settle(); await h.edit(); h.click("Speichern und anwenden"); await h.settle();
+    const writes = h.calls.filter(c=>c.method==="config.patch"); expect(writes).toHaveLength(1);
+    const patch = JSON.parse(writes[0]!.params.raw as string);
+    expect(patch.agents.entries.studio.tools.alsoAllow).toEqual(["outlook_mail_read", "onedrive_search", "onedrive_list", "onedrive_read", "onedrive_download"]);
+    expect(writes[0]!.params.replacePaths).toContain("agents.entries.studio.tools.alsoAllow");
+    expect(h.container.textContent).toContain("Gespeichert und aktiv");
+  });
   it("permits a new scope grant to save before reauthorization while the old credential remains", async () => {
     const h=view(); await h.settle(); h.click("2  Dienste");
     const contacts = [...h.container.querySelectorAll("fieldset")].find(fieldset => fieldset.querySelector("legend")?.textContent === "Kontakte")!;

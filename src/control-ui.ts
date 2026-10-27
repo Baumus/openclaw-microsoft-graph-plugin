@@ -4,6 +4,7 @@ import { localize, format, setLocale, isRtl } from "./control-ui-i18n.js";
 import { isMicrosoftDeviceVerificationUri } from "./device-verification.js";
 import { canonicalPolicy } from "./config-policy-identity.js";
 import { isConnectionEstablished } from "./control-ui-status.js";
+import { oneDriveToolExposureSaved, planOneDriveToolExposure } from "./control-ui-tool-exposure.js";
 import { validClientId, validTenant } from "./app-identifiers.js";
 
 type Grant = { operations: string[]; resources?: string[] };
@@ -15,9 +16,9 @@ type UpdateStatus = { updateAvailable: boolean; latestVersion?: string };
 type CalendarCatalog = { defaultCalendarId: string; calendars: Array<{ id: string; name: string }> };
 type DeviceStatus = { state: "pending" | "created" | "failed"; error?: string; scopes?: string[] };
 type CredentialReply<T> = { ok: true; value: T } | { ok: false; error: string };
-type ConfigSnapshot = { hash: string; config: { plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; parsed?: { plugins?: { $include?: unknown; entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; configRevisionHash?: string; appliedConfigHash?: string };
+type ConfigSnapshot = { hash: string; config: { tools?: { deny?: string[] }; agents?: { entries?: Record<string, { tools?: { allow?: string[]; alsoAllow?: string[]; deny?: string[] } }> }; plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; parsed?: { plugins?: { $include?: unknown; entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; configRevisionHash?: string; appliedConfigHash?: string };
 type SavePhase = "idle" | "validating" | "saving" | "applying" | "pending" | "unknown" | "failed" | "conflict" | "applied";
-type SaveOperation = { target: Policy; baseline: Policy; targetHash?: string; phase: SavePhase; issued: boolean; settled: boolean; epoch: number; reloadAttempted?: boolean; reloadPending?: boolean; applicationFailed?: boolean; rejectedBeforeWrite?: boolean };
+type SaveOperation = { target: Policy; baseline: Policy; toolExposure?: ReturnType<typeof planOneDriveToolExposure>["expected"]; targetHash?: string; phase: SavePhase; issued: boolean; settled: boolean; epoch: number; reloadAttempted?: boolean; reloadPending?: boolean; applicationFailed?: boolean; rejectedBeforeWrite?: boolean };
 // Private drafts live only in authenticated host memory, never browser storage.
 const operationsByHost = new WeakMap<ControlUiHost, SaveOperation>();
 const contextByHost = new WeakMap<ControlUiHost, { step: number; selectedAgent: string; credential?: CredentialStatus["credential"] }>();
@@ -259,7 +260,7 @@ class ConfigurationPage {
       if (this.disposed || this.signal.aborted || epoch !== this.statusEpoch) return;
       const expected = this.operation?.target ?? this.initial;
       const saved = snap.config?.plugins?.entries?.[id]?.config?.policy;
-      if (canonicalPolicy(saved) !== canonicalPolicy(expected)) {
+      if (canonicalPolicy(saved) !== canonicalPolicy(expected) || !oneDriveToolExposureSaved(snap.config?.agents?.entries, this.operation?.toolExposure ?? {})) {
         if (this.operation?.issued && !this.operation.settled && canonicalPolicy(saved) === canonicalPolicy(this.operation.baseline)) {
           this.operation.phase = "saving";
         } else {
@@ -867,7 +868,11 @@ class ConfigurationPage {
     }
   }
   private renderReview(body: HTMLElement) {
-    append(body, el("h2", "", "Änderungen prüfen"), el("p", "", "Prüfe die Zugriffe und Rückfragen. Nur diese Microsoft-Graph-Regeln werden geändert."));
+    append(body, el("h2", "", "Änderungen prüfen"), el("p", "", "Prüfe die Zugriffe und Rückfragen. Benötigte OneDrive-Tools werden für berechtigte Agenten zusammen mit den Microsoft-Graph-Regeln freigeschaltet."));
+    try {
+      const exposure = planOneDriveToolExposure(this.policy.services.onedrive.allowed_roots, this.snapshot?.config?.agents?.entries, this.snapshot?.config?.tools?.deny);
+      for (const [agentId, entry] of Object.entries(exposure.expected)) append(body, el("p", "mg-status", format("{agent}: zusätzliche OneDrive-Tools · {tools}", { agent: agentId, tools: entry.value.filter(name => !this.snapshot?.config?.agents?.entries?.[agentId]?.tools?.[entry.key]?.includes(name)).join(", ") })));
+    } catch { append(body, el("p", "mg-warning", "OneDrive-Tool-Freigabe ist mit der aktuellen Agent-Policy nicht vereinbar. Speichern wird verhindert.")); }
     append(body, el("p", "mg-status", policySummary(this.policy).join(" · ")));
     for (const agentId of new Set([...Object.keys(this.initial?.services.calendar.agents ?? {}), ...Object.keys(this.policy.services.calendar.agents)])) {
       const before = this.initial?.services.calendar.agents[agentId]?.resources ?? (this.initial?.services.calendar.agents[agentId] ? ["me"] : []);
@@ -909,9 +914,15 @@ class ConfigurationPage {
       if (this.disposed || this.signal.aborted || !this.authorized) { operation.phase = "failed"; return; }
       if (fresh.hash !== this.snapshot.hash || canonicalPolicy(fresh.config?.plugins?.entries?.[id]?.config?.policy) !== canonicalPolicy(operation.baseline)) { this.error = "Configuration changed since this draft loaded. Reload and reapply your changes."; operation.phase = "conflict"; return; }
       if (authoredPolicySource(fresh) !== this.includeName) { this.error = "Die Konfigurationsquelle wurde geändert. Bitte neu laden."; operation.phase = "conflict"; return; }
+      const exposure = planOneDriveToolExposure(operation.target.services.onedrive.allowed_roots, fresh.config?.agents?.entries, fresh.config?.tools?.deny);
+      operation.toolExposure = exposure.expected;
       const replacements: string[] = [];
       const patchPolicy = collectDiff(operation.baseline, operation.target, "plugins.entries.microsoft-graph.config.policy", replacements);
-      const raw = JSON.stringify({ plugins: { entries: { [id]: { config: { policy: patchPolicy } } } } });
+      for (const [agentId, entry] of Object.entries(exposure.expected)) {
+        const before = fresh.config?.agents?.entries?.[agentId]?.tools?.[entry.key];
+        if (Array.isArray(before)) replacements.push(`agents.entries.${agentId}.tools.${entry.key}`);
+      }
+      const raw = JSON.stringify({ plugins: { entries: { [id]: { config: { policy: patchPolicy } } } }, ...(Object.keys(exposure.patch).length ? { agents: { entries: exposure.patch } } : {}) });
       operation.phase = "saving"; operation.issued = true; this.render();
       // Observe persistence independently: Core may drain admitted work before
       // replying to config.patch. Timeout is never evidence that no write occurred.
@@ -929,8 +940,8 @@ class ConfigurationPage {
       // automatic plugins.reload can contend with that drain and time out.
       // Leave an exact-target, manually initiated retry available if needed.
       this.render();
-    } catch {
-      if (!operation.issued) { operation.phase = "failed"; this.error = "Policy validation failed. Check root labels, paths, IDs, and grant resources."; }
+    } catch (error) {
+      if (!operation.issued) { operation.phase = "failed"; this.error = error instanceof Error && /^(missing_agent_entry|unsupported_agent_id|conflicting_tool_policy|denied_tool):/.test(error.message) ? "OneDrive-Tool-Freigabe kann wegen der Agent-Tool-Policy nicht sicher gespeichert werden. Prüfe Agent-Eintrag und Deny-Regeln." : "Policy validation failed. Check root labels, paths, IDs, and grant resources."; }
       else { operation.phase = "unknown"; this.busy = false; await this.checkApplication(); }
     } finally {
       this.busy = false; this.render();
