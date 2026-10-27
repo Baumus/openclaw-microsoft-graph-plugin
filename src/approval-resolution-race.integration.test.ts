@@ -130,4 +130,52 @@ describe("native host fire-and-forget approval resolution", () => {
     expect((await c.tool.execute(retry.event.toolCallId, retry.event.params)).details.error).toBe("credential_vault_unavailable");
   });
 
+  it.each(["deny", "cancelled", "session-end"])("cannot resurrect a delayed allow after newer %s", async (decision) => {
+    const c = candidate();
+    const { event, gate } = await c.fresh();
+    c.delay();
+    const stale = Promise.resolve(gate.requireApproval.onResolution("allow-once")).catch(() => undefined);
+    if (decision === "session-end") {
+      // Replacing the pending entry must not hide the older binding from session cleanup.
+      const newer = Promise.resolve(gate.requireApproval.onResolution("allow-once"));
+      c.end();
+      await newer.catch(() => undefined);
+    } else await gate.requireApproval.onResolution(decision);
+    c.release();
+    await stale;
+    expect((await c.tool.execute(event.toolCallId, event.params)).details.error).toBe("approval_context_invalid_or_changed");
+  });
+
+  it.each(["before-execution", "after-execution"])("keeps newer allow single-use when the superseded lookup finishes %s", async (order) => {
+    const c = candidate();
+    const { event, gate } = await c.fresh();
+    c.delay();
+    const stale = Promise.resolve(gate.requireApproval.onResolution("allow-once")).catch(() => undefined);
+    await gate.requireApproval.onResolution("allow-once");
+    if (order === "before-execution") { c.release(); await stale; }
+    expect((await c.tool.execute(event.toolCallId, event.params)).details.error).toBe("credential_vault_unavailable");
+    if (order === "after-execution") { c.release(); await stale; }
+    expect((await c.tool.execute(event.toolCallId, event.params)).details.error).toBe("approval_context_invalid_or_changed");
+  });
+
+  it("expires a hung binding without AbortSignal, releases capacity and rejects its late completion", async () => {
+    vi.useFakeTimers();
+    const c = candidate();
+    const { event, gate } = await c.fresh();
+    c.delay();
+    const stale = Promise.resolve(gate.requireApproval.onResolution("allow-once")).catch(() => undefined);
+    const execution = c.tool.execute(event.toolCallId, event.params);
+    const pending = (globalThis as Record<symbol, unknown>)[Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-resolutions")] as Map<string, unknown>;
+    try {
+      expect(pending.has(event.toolCallId)).toBe(true);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(pending.has(event.toolCallId)).toBe(false);
+      expect((await execution).details.error).toBe("approval_context_invalid_or_changed");
+    } finally { c.release(); await stale; vi.useRealTimers(); }
+    expect((await c.tool.execute(event.toolCallId, event.params)).details.error).toBe("approval_context_invalid_or_changed");
+    const retry = await c.fresh();
+    void Promise.resolve(retry.gate.requireApproval.onResolution("allow-once"));
+    expect((await c.tool.execute(retry.event.toolCallId, retry.event.params)).details.error).toBe("credential_vault_unavailable");
+  });
+
 });

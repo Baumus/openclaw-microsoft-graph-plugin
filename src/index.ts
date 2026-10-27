@@ -169,13 +169,24 @@ const nativeApprovalResolutions: Map<string, PendingApprovalResolution> = ((glob
 
 function trackApprovalResolution(toolCallId: string, sessionId: string | undefined, resolve: (isCurrent: () => boolean) => Promise<void>): Promise<void> {
   if (!nativeApprovalResolutions.has(toolCallId) && nativeApprovalResolutions.size >= MAX_NATIVE_APPROVAL_SNAPSHOTS) throw new Error("approval_context_capacity_exceeded");
+  // A later decision replaces this exact call's binding; the old asynchronous
+  // continuation must never recreate or discard the newer decision's snapshot.
+  nativeApprovalResolutions.get(toolCallId)?.cancel();
   const entry: PendingApprovalResolution = { sessionId, cancelled: false, settled: Promise.resolve(), cancel: () => undefined };
-  const cancelled = new Promise<void>((finish) => { entry.cancel = () => { entry.cancelled = true; finish(); }; });
-  const resolution = resolve(() => !entry.cancelled);
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  const cancelled = new Promise<void>((finish) => {
+    entry.cancel = () => { entry.cancelled = true; clearTimeout(deadline); finish(); };
+  });
+  nativeApprovalResolutions.set(toolCallId, entry);
+  const resolution = resolve(() => !entry.cancelled && nativeApprovalResolutions.get(toolCallId) === entry);
+  // Session-store reads must not hold execution or capacity indefinitely, even
+  // when the host does not supply an AbortSignal. Late reads cannot authorize.
+  deadline = setTimeout(entry.cancel, 30_000);
+  deadline.unref?.();
   // Binding failure still reaches consume() and the normal fail-closed result.
   entry.settled = Promise.race([resolution.then(() => undefined, () => undefined), cancelled]);
-  nativeApprovalResolutions.set(toolCallId, entry);
   void entry.settled.then(() => {
+    clearTimeout(deadline);
     if (nativeApprovalResolutions.get(toolCallId) === entry) nativeApprovalResolutions.delete(toolCallId);
   });
   return resolution;
@@ -3276,8 +3287,10 @@ export async function beforeMicrosoftGraphToolCall(
           if (decision === "allow-once") {
             try { await bindExecutionSnapshot(isCurrent); }
             catch {
-              approvalSnapshots.discard(event.toolCallId);
-              await cleanupBoundLease();
+              if (isCurrent()) {
+                approvalSnapshots.discard(event.toolCallId);
+                await cleanupBoundLease();
+              }
               throw new Error("approval_context_invalid_or_changed");
             }
           }
@@ -3328,8 +3341,10 @@ export async function beforeMicrosoftGraphToolCall(
           if (decision === "allow-once" || decision === "allow-always") {
             try { await bindExecutionSnapshot(isCurrent); }
             catch {
-              approvalSnapshots.discard(event.toolCallId);
-              await cleanupBoundLease();
+              if (isCurrent()) {
+                approvalSnapshots.discard(event.toolCallId);
+                await cleanupBoundLease();
+              }
               throw new Error("approval_context_invalid_or_changed");
             }
             if (decision === "allow-always") warningApprovalTrustStore.grant(scope);
