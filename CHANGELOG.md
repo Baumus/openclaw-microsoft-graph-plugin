@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented here.
 
+## 3.19.1 - 2026-10-27
+
+- Make Microsoft Graph capability discovery part of every saved agent grant and existing deny-aware tool reconciliation. Include the folder-instruction helper only for trusted read-authorized roots; prune obsolete exact helper opt-ins without weakening restrictive allowlists.
+- Require exact caller-discovered OneDrive root labels in tool descriptions and schemas. Capability responses identify only authorized folders by configured root path; never expose foreign roots, drive/item IDs, or credentials.
+- Guide local access denials through caller capability discovery before policy review, without guessing labels, retrying unchanged, widening rights, or misdiagnosing Microsoft consent. Report trusted-instruction read prerequisites for write-only callers. No new Graph scope or host-version requirement.
+
+## 3.19.0 - 2026-10-27
+
+- Replace the ambiguous incomplete-access warning with the selected agent plus exact missing, surplus and explicitly denied tools for every affected agent. Distinguish an idle mismatch, saving tools, awaiting activation and completed repair.
+- Automatically reconcile Microsoft Graph tool opt-ins when an administrator opens the Control UI or checks status, after the exact saved Microsoft policy is confirmed active. Synchronize all saved service/OneDrive grants; remove only obsolete exact Graph tool names, preserving unrelated tools, wildcard/group grants, global policy and explicit denies. No background daemon or provider request is added.
+- Preserve restrictive Core allowlist semantics: never remove the final exact Graph tool from `tools.allow`, because Core interprets an empty allowlist as unrestricted. Explain the blocked repair and require an explicit agent-policy decision instead; empty additive `alsoAllow` remains safe.
+- Claim each repair durably for the authenticated administrator before dispatching one native revision-checked, include-preserving config patch. Fresh pages recover uncertain tool stages without replay, concurrent saves fail closed, blocked agents do not prevent eligible peer repairs, and no duplicate reload or forced drain is introduced.
+
+## 3.18.5 - 2026-10-27
+
+- Fix native Outlook deletion and other write approvals racing execution when OpenClaw notifies the asynchronous approval callback without awaiting it. Execution now joins the exact call's pending approval binding before consuming its single-use snapshot.
+- Preserve fail-closed target, caller, session-generation and decision checks. Abort, session-end, a newer decision or a 30-second binding deadline cancels pending work without resurrecting approval; superseded callbacks cannot discard the newer snapshot, and concurrent execution cannot reuse an approval. No policy, permission, confirmation or compatibility-floor changes.
+
+## 3.18.4 - 2026-10-27
+
+- Resume reviewed include-split saves after a fresh browser, UI module or plugin generation: an administrator-bound, 24-hour server intent retains only hashes and exact tool targets, never credentials or policy drafts.
+- Continue paced activation checks beyond the initial drain timeout. Wait for the exact saved policy to become active before enabling the reviewed tools; do not force ongoing work to stop or issue duplicate reloads.
+- Claim the tool step once with fresh config CAS and unchanged target-agent tool policy. Preserve denies and unrelated agents; reject stale, expired, different-owner and changed-source intents. Ambiguous tool dispatches are reconciled, never blindly replayed.
+- Distinguish saved/waiting, pending tools and fully active access, with explicit cancellation/current-state review when a dispatch cannot be confirmed.
+
 ## 3.18.3
 
 - Preserve `$include` ownership when saving service grants: save the exact policy, verify its active generation, then enable only the edited agents' required optional tools with a fresh revision. Ambiguous replies are reconciled without duplicate writes or forced reloads.

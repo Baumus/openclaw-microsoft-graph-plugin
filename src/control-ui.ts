@@ -1,10 +1,11 @@
 import { defineControlUiPlugin, type ControlUiHost } from "openclaw/plugin-sdk/control-ui";
+import type { ActivationIntent } from "./config-activation.js";
 import styles from "./control-ui.css" with { type: "text" };
 import { localize, format, setLocale, isRtl } from "./control-ui-i18n.js";
 import { isMicrosoftDeviceVerificationUri } from "./device-verification.js";
 import { canonicalPolicy } from "./config-policy-identity.js";
 import { isConnectionEstablished } from "./control-ui-status.js";
-import { oneDriveToolExposureSaved, planChangedToolExposure, planSelectedServiceToolExposure } from "./control-ui-tool-exposure.js";
+import { oneDriveToolExposureSaved, planChangedToolExposure, planSelectedServiceToolExposure, planPolicyToolReconciliation } from "./control-ui-tool-exposure.js";
 import { validClientId, validTenant } from "./app-identifiers.js";
 
 type Grant = { operations: string[]; resources?: string[] };
@@ -18,7 +19,7 @@ type DeviceStatus = { state: "pending" | "created" | "failed"; error?: string; s
 type CredentialReply<T> = { ok: true; value: T } | { ok: false; error: string };
 type ConfigSnapshot = { hash: string; config: { tools?: { deny?: string[] }; agents?: { entries?: Record<string, { tools?: { allow?: string[]; alsoAllow?: string[]; deny?: string[] } }> }; plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; parsed?: { plugins?: { $include?: unknown; entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; configRevisionHash?: string; appliedConfigHash?: string };
 type SavePhase = "idle" | "validating" | "saving" | "applying" | "pending" | "unknown" | "failed" | "conflict" | "applied";
-type SaveOperation = { target: Policy; baseline: Policy; toolExposure?: ReturnType<typeof planChangedToolExposure>["expected"]; targetHash?: string; phase: SavePhase; issued: boolean; settled: boolean; epoch: number; reloadAttempted?: boolean; reloadPending?: boolean; applicationFailed?: boolean; rejectedBeforeWrite?: boolean; persistenceConfirmed?: boolean; stage?: "tools" | "policy"; splitWrite?: boolean; policyPrepared?: boolean; toolApplicationConfirmed?: boolean };
+type SaveOperation = { intent?: ActivationIntent; target: Policy; baseline: Policy; toolExposure?: ReturnType<typeof planChangedToolExposure>["expected"]; targetHash?: string; phase: SavePhase; issued: boolean; settled: boolean; epoch: number; reloadAttempted?: boolean; reloadPending?: boolean; applicationFailed?: boolean; rejectedBeforeWrite?: boolean; persistenceConfirmed?: boolean; stage?: "tools" | "policy"; splitWrite?: boolean; policyPrepared?: boolean; toolApplicationConfirmed?: boolean };
 // Private drafts live only in authenticated host memory, never browser storage.
 const operationsByHost = new WeakMap<ControlUiHost, SaveOperation>();
 const contextByHost = new WeakMap<ControlUiHost, { step: number; selectedAgent: string; credential?: CredentialStatus["credential"] }>();
@@ -164,6 +165,9 @@ class ConfigurationPage {
     finally { if (!this.disposed) this.render(); }
   }
   private get locked() { return this.busy || !!this.operation && !["idle", "failed", "applied"].includes(this.operation.phase); }
+  private reconciliationAttempt?: string;
+  private reconciliationSupported = false;
+  private reconciliationPaused = false;
   private error = "";
   private success = "";
   private statusError = "";
@@ -171,6 +175,7 @@ class ConfigurationPage {
   private disposed = false;
   private statusTimer?: ReturnType<typeof setTimeout>;
   private statusChecksRemaining = 0;
+  private intentDiscoveryPending = false;
   private authTimer?: ReturnType<typeof setTimeout>;
   private credential?: CredentialStatus["credential"];
   private updateStatus?: UpdateStatus;
@@ -250,18 +255,19 @@ class ConfigurationPage {
   }
   private stopStatusChecks() { if (this.statusTimer) clearTimeout(this.statusTimer); this.statusTimer = undefined; this.statusChecksRemaining = 0; }
   private scheduleStatusCheck() {
-    if (this.disposed || this.signal.aborted || this.statusChecksRemaining <= 0 || this.statusTimer) return;
+    if (this.disposed || this.signal.aborted || this.statusChecksRemaining <= 0 && !this.intentDiscoveryPending && (!this.operation?.intent || ["applied", "failed", "conflict"].includes(this.operation.phase)) || this.statusTimer) return;
     // The first read can confirm a committed write while config.patch is still
     // waiting for runtime drain. Later reads stay paced to avoid RPC churn.
-    const delay = this.statusChecksRemaining === 12 ? 1000 : 5000;
+    const delay = this.statusChecksRemaining === 12 ? 1000 : this.statusChecksRemaining > 0 ? 5000 : 15000;
     this.statusTimer = setTimeout(() => { this.statusTimer = undefined; void this.checkApplication(); }, delay);
   }
   private async readActivePolicy() {
     try {
-      const reply = await this.read<{ activePolicyHash: string | null }>("microsoft-graph.configuration.applicationStatus");
+      const reply = await this.read<{ activePolicyHash: string | null; toolReconciliation?: string }>("microsoft-graph.configuration.applicationStatus");
+      this.reconciliationSupported = reply.toolReconciliation === "control-ui-cas-v1";
       return { hash: typeof reply.activePolicyHash === "string" && /^[a-f0-9]{64}$/.test(reply.activePolicyHash) ? reply.activePolicyHash : undefined, available: true };
     }
-    catch { return { hash: undefined, available: false }; }
+    catch { this.reconciliationSupported = false; return { hash: undefined, available: false }; }
   }
   private async checkApplication() {
     if (!this.authorized || !this.snapshot || !this.initial || this.disposed || this.signal.aborted || this.statusInFlight) return;
@@ -273,6 +279,8 @@ class ConfigurationPage {
         this.read<ConfigSnapshot>("config.get"),
         this.readActivePolicy(),
       ]);
+      if (this.disposed || this.signal.aborted || epoch !== this.statusEpoch) return;
+      if (this.intentDiscoveryPending && active.available && !this.dirty) await this.discoverIntent();
       if (this.disposed || this.signal.aborted || epoch !== this.statusEpoch) return;
       if (this.operation?.splitWrite && this.operation.stage === "policy" && this.operation.issued) {
         const operation = this.operation;
@@ -288,12 +296,15 @@ class ConfigurationPage {
           try {
             // Publish the intended (possibly narrower) policy before exposing
             // tools. Replan against the current roster without changing others.
-            const exposure = planChangedToolExposure(operation.baseline, operation.target, snap.config.agents?.entries, snap.config.tools?.deny);
+            const claimed = operation.intent ? await this.read<{ record: ActivationIntent; patch: ReturnType<typeof planChangedToolExposure>["patch"]; expected: NonNullable<SaveOperation["toolExposure"]>; baseHash: string }>("microsoft-graph.configuration.activation", { action: "claim", id: operation.intent.id }) : undefined;
+            if (this.disposed || this.signal.aborted || !this.authorized) return;
+            const exposure = claimed ?? planChangedToolExposure(operation.baseline, operation.target, snap.config.agents?.entries, snap.config.tools?.deny);
+            if (claimed) operation.intent = claimed.record;
             operation.toolExposure = exposure.expected;
             if (Object.keys(exposure.patch).length) {
               const replacements = Object.entries(exposure.expected).filter(([agent, entry]) => Array.isArray(snap.config.agents?.entries?.[agent]?.tools?.[entry.key])).map(([agent, entry]) => `agents.entries.${agent}.tools.${entry.key}`);
               operation.stage = "tools";
-              this.dispatchWrite(operation, snap.hash, { agents: { entries: exposure.patch } }, replacements);
+              this.dispatchWrite(operation, claimed?.baseHash ?? snap.hash, { agents: { entries: exposure.patch } }, replacements);
               return;
             }
           } catch { operation.phase = "failed"; this.error = "Microsoft-Graph-Tool-Freigabe ist mit der aktuellen Agent-Policy nicht vereinbar. Speichern wird verhindert."; this.stopStatusChecks(); return; }
@@ -301,7 +312,7 @@ class ConfigurationPage {
       }
       const expected = this.operation?.target ?? this.initial;
       const saved = snap.config?.plugins?.entries?.[id]?.config?.policy;
-      if (canonicalPolicy(saved) !== canonicalPolicy(expected) || !oneDriveToolExposureSaved(snap.config?.agents?.entries, this.operation?.toolExposure ?? {})) {
+      if (canonicalPolicy(saved) !== canonicalPolicy(expected) || !oneDriveToolExposureSaved(snap.config?.agents?.entries, this.operation?.phase === "applied" ? {} : this.operation?.toolExposure ?? {})) {
         if (this.operation?.issued && !this.operation.rejectedBeforeWrite && !this.operation.persistenceConfirmed && (this.operation.stage === "tools" || !this.operation.policyPrepared) && canonicalPolicy(saved) === canonicalPolicy(this.operation.stage === "tools" ? this.operation.target : this.operation.baseline)) {
           // A transport failure is not an external edit or proof of rollback.
           // Keep observing the exact target for the bounded reconciliation window.
@@ -321,7 +332,12 @@ class ConfigurationPage {
         const toolsApplied = !this.operation?.splitWrite || this.operation.stage !== "tools" || this.operation.toolApplicationConfirmed
           || !!snap.configRevisionHash && snap.configRevisionHash === snap.appliedConfigHash;
         if (this.operation) { this.operation.persistenceConfirmed = true; this.initial = clone(expected); this.savedPolicyHash = this.operation.targetHash; this.operation.phase = this.applicationStatus === "applied" && toolsApplied ? "applied" : this.operation.reloadPending || this.statusChecksRemaining > 0 ? "applying" : "pending"; }
-        if (this.applicationStatus === "applied" && toolsApplied) { this.stopStatusChecks(); if (!previouslyApplied) await this.refreshCredential(); }
+        if (this.applicationStatus === "applied" && toolsApplied && !this.intentDiscoveryPending) { this.stopStatusChecks();
+          if (this.operation?.intent?.state === "issued") {
+            try { await this.read("microsoft-graph.configuration.activation", { action: "complete", id: this.operation.intent.id }); this.operation.intent.state = "complete"; }
+            catch { /* Issued journals never replay; completion is safe to reconcile later. */ }
+          } if (!previouslyApplied) await this.refreshCredential();
+          await this.reconcileSavedTools(); }
       }
     } catch {
       if (epoch === this.statusEpoch && !this.disposed) { this.statusError = "Verbindung unterbrochen. Der Status wird nach Wiederverbindung geprüft."; if (this.operation && !["applied", "applying", "pending"].includes(this.operation.phase)) this.operation.phase = "unknown"; }
@@ -332,11 +348,31 @@ class ConfigurationPage {
         if (this.statusChecksRemaining > 0) { this.statusChecksRemaining--; this.scheduleStatusCheck(); }
         if (this.operation && this.statusChecksRemaining === 0 && this.operation.phase === "applying") this.operation.phase = "pending";
         if (this.operation && this.statusChecksRemaining === 0 && this.operation.phase === "saving") this.operation.phase = "unknown";
+        if (this.intentDiscoveryPending || this.operation?.intent && ["pending", "applying", "unknown"].includes(this.operation.phase)) this.scheduleStatusCheck();
         this.render();
       }
     }
   }
   private watchApplication() { this.stopStatusChecks(); if (this.applicationStatus !== "applied" || this.operation?.issued && !["applied", "failed", "conflict"].includes(this.operation.phase)) { this.statusChecksRemaining = 12; this.scheduleStatusCheck(); } }
+  private async discoverIntent() {
+    const epoch = this.statusEpoch;
+    this.intentDiscoveryPending = true;
+    try {
+      const [intent, baseline] = await Promise.all([
+        this.read<ActivationIntent | null>("microsoft-graph.configuration.activation", { action: "status" }),
+        this.read<{ policyHash?: string }>("microsoft-graph.configuration.validate", { policy: this.initial }),
+      ]);
+      if (this.disposed || this.signal.aborted || !this.authorized || this.dirty || epoch !== this.statusEpoch) return;
+      this.intentDiscoveryPending = false;
+      this.savedPolicyHash = baseline.policyHash;
+      if (intent && intent.targetHash === this.savedPolicyHash && ["prepared", "issued"].includes(intent.state)) {
+        this.operation = { intent, target: clone(this.initial!), baseline: clone(this.initial!), targetHash: intent.targetHash,
+          toolExposure: intent.expected, phase: "pending", issued: true, settled: true, epoch: this.statusEpoch,
+          splitWrite: true, policyPrepared: true, stage: intent.state === "prepared" ? "policy" : "tools" };
+        operationsByHost.set(this.host, this.operation);
+      }
+    } catch { /* Runtime may be draining: null is not proof that no intent exists. */ }
+  }
   private async load() {
     if (!this.authorized || this.busy) return;
     this.busy = true; this.error = ""; this.render();
@@ -363,12 +399,14 @@ class ConfigurationPage {
       this.initialScopes = baseline?.requiredScopes ?? []; this.scopes = this.initialScopes; this.savedPolicyHash = baseline?.policyHash;
       this.activePolicyHash = active.hash; this.activeProofAvailable = active.available;
       this.wasConnected = this.authorized;
+      if (!this.operation) await this.discoverIntent();
       if (!this.operation && this.applicationStatus === "pending") {
         this.operation = { target: clone(this.initial), baseline: clone(this.initial), targetHash: this.savedPolicyHash, phase: "pending", issued: true, settled: true, epoch: this.statusEpoch };
         operationsByHost.set(this.host, this.operation);
       }
+      if (!this.operation) await this.reconcileSavedTools();
       if (this.operation) { this.statusChecksRemaining = 12; void this.checkApplication(); }
-      else this.watchApplication();
+      else { this.watchApplication(); if (this.intentDiscoveryPending) this.scheduleStatusCheck(); }
     } catch { this.error = "Configuration could not be loaded. Check administrator access and Gateway connection."; }
     finally { this.busy = false; this.render(); }
   }
@@ -457,12 +495,33 @@ class ConfigurationPage {
     const check = button(this.operation?.phase === "unknown" ? "Speicherstatus prüfen" : "Status prüfen", () => { void this.checkApplication(); });
     check.dataset.safeStatus = "true"; check.disabled = this.statusInFlight || !this.authorized; append(parent, check);
   }
-  private get selectedServiceToolsMissing() {
-    if (!this.initial || !this.selectedAgent || !this.snapshot) return false;
-    return (["calendar", "mail", "contacts", "todo"] as const).some(service => {
-      try { return Object.keys(planSelectedServiceToolExposure(this.initial!, service, this.selectedAgent, this.snapshot!.config.agents?.entries, this.snapshot!.config.tools?.deny).patch).length > 0; }
-      catch { return true; }
-    });
+  private get toolDrift() {
+    return this.initial && this.snapshot ? planPolicyToolReconciliation(this.initial, this.snapshot.config.agents?.entries, this.snapshot.config.tools?.deny).drift : {};
+  }
+  private get selectedServiceToolsMissing() { return Object.keys(this.toolDrift).length > 0; }
+  private async reconcileSavedTools() {
+    if (!this.reconciliationSupported || !this.authorized || this.disposed || this.signal.aborted || this.dirty || !this.initial || !this.snapshot || this.intentDiscoveryPending
+      || this.applicationStatus !== "applied" || !this.activeProofAvailable || this.activePolicyHash !== this.savedPolicyHash
+      || this.operation && this.operation.phase !== "applied") return;
+    const plan = planPolicyToolReconciliation(this.initial, this.snapshot.config.agents?.entries, this.snapshot.config.tools?.deny);
+    if (!Object.keys(plan.patch).length) return;
+    // Bind a single attempt to the complete observed config revision. A lost
+    // reply is observed, never retried, and another tab must win the same CAS.
+    const attempt = this.snapshot.hash;
+    if (this.reconciliationAttempt === attempt) return;
+    this.reconciliationAttempt = attempt; this.reconciliationPaused = false;
+    const epoch = this.statusEpoch;
+    let claimed: { record: ActivationIntent; patch: typeof plan.patch; expected: typeof plan.expected; baseHash: string } | null;
+    try { claimed = await this.read("microsoft-graph.configuration.activation", { action: "reconcile", baseHash: attempt }); }
+    catch { this.reconciliationPaused = true; this.intentDiscoveryPending = true; this.scheduleStatusCheck(); return; } // A lost claim may already be durable. Discover, never replay.
+    if (!claimed || epoch !== this.statusEpoch || !this.authorized || this.disposed || this.signal.aborted || this.dirty) return;
+    this.stopStatusChecks(); this.statusEpoch++;
+    const target = clone(this.initial);
+    const operation: SaveOperation = { intent: claimed.record, target, baseline: clone(target), targetHash: this.savedPolicyHash, toolExposure: claimed.expected,
+      phase: "saving", issued: false, settled: false, epoch: this.statusEpoch, splitWrite: true, policyPrepared: true, stage: "tools" };
+    this.operation = operation; operationsByHost.set(this.host, operation);
+    const replacements = Object.entries(claimed.expected).filter(([agent, entry]) => Array.isArray(this.snapshot!.config.agents?.entries?.[agent]?.tools?.[entry.key])).map(([agent, entry]) => `agents.entries.${agent}.tools.${entry.key}`);
+    this.dispatchWrite(operation, claimed.baseHash, { agents: { entries: claimed.patch } }, replacements);
   }
   private renderSaveStatus(main: HTMLElement) {
     const phase = this.operation?.phase;
@@ -478,14 +537,34 @@ class ConfigurationPage {
     else if (phase === "unknown") { title = "Speichern noch nicht bestätigt"; detail = this.statusChecksRemaining > 0 ? "Bitte warte. Wir bestätigen zuerst, dass deine Änderungen gespeichert sind." : "Prüfung pausiert. Prüfe zuerst den Speicherstatus; wir speichern nicht erneut. Dein Entwurf bleibt in dieser Ansicht erhalten."; }
     else if (phase === "failed") { title = "Nicht gespeichert. Dein Entwurf ist noch da."; detail = "Korrigiere die Ursache und versuche es erneut."; }
     else if (phase === "conflict") { title = "Die Regeln wurden inzwischen anderswo geändert."; detail = "Dein Entwurf bleibt erhalten. Lade den aktuellen Stand neu, bevor du weitere Änderungen speicherst."; }
+    if (this.operation?.intent?.state === "prepared" && ["applying", "pending"].includes(phase ?? "")) detail = "Die Regeln sind gespeichert. Wir warten auf laufende Arbeit und prüfen die Aktivierung weiter. Danach werden nur die bestätigten Agent-Tools freigeschaltet – auch nach erneutem Öffnen dieser Seite.";
     if (this.operation?.stage === "tools" && ["saving", "unknown"].includes(phase ?? "")) detail = "Die Microsoft-Regeln sind gespeichert. Die benötigten Agent-Tools werden noch angewendet; der Zugang ist noch nicht bestätigt.";
+    if (phase === "unknown" && this.operation?.intent?.state === "issued") detail = "Die Regeln sind gespeichert. Der Tool-Schritt ist noch unbestätigt und wird nicht blind wiederholt. Lade bei Bedarf den aktuellen Stand und prüfe den gewünschten Zugang erneut.";
     if (this.operation?.policyPrepared && ["failed", "conflict"].includes(phase ?? "")) { title = "Regeln gespeichert. Zugang noch nicht vollständig aktiv."; detail = "Die Microsoft-Regeln sind gespeichert, aber die Agent-Tools konnten nicht freigeschaltet werden. Der Zugang ist noch nicht vollständig aktiv."; }
-    if (missingTools && (!phase || phase === "applied")) { title = "Regeln gespeichert. Zugang noch nicht vollständig aktiv."; detail = "Für den ausgewählten Agenten fehlen Tools. Öffne Dienste und aktiviere die Tools für den gewünschten gespeicherten Zugang."; }
+    if (missingTools && (!phase || phase === "applied")) {
+      title = this.applicationStatus === "applied" ? "Microsoft-Regeln aktiv. Agent-Tools weichen ab." : "Regeln gespeichert. Agent-Tools weichen ab; Aktivierung nicht bestätigt.";
+      detail = this.reconciliationSupported && this.applicationStatus === "applied"
+        ? "Kein Speichervorgang läuft. Fehlende und überzählige Microsoft-Graph-Tools werden automatisch mit den gespeicherten Regeln abgeglichen. Explizite Sperren bleiben bestehen."
+        : "Kein Speichervorgang läuft. Der automatische Tool-Abgleich ist noch nicht verfügbar oder die gespeicherten Regeln sind noch nicht nachweisbar aktiv. Prüfe den Status; explizite Sperren bleiben bestehen.";
+    }
     append(status, el("strong", "", title), el("p", "mg-status-detail", detail));
+    if (missingTools) {
+      if (this.reconciliationPaused) append(status, el("p", "mg-warning", "Automatischer Tool-Abgleich pausiert. Prüfe den Status, laufende Einrichtungsvorgänge und die Agent-Konfiguration. Ein unbestätigter Tool-Schritt wird nicht wiederholt."));
+      append(status, el("p", "mg-hint", format("Ausgewählter Agent: {agent}", { agent: this.selectedAgent })));
+      for (const [agent, issue] of Object.entries(this.toolDrift)) {
+        const name = this.host.agents.rows.find(row => row.id === agent)?.name;
+        const label = name ? `${name} (${agent})` : agent;
+        if (issue.missing.length) append(status, el("p", "mg-status-detail", format("{agent}: fehlende Tools: {tools}", { agent: label, tools: issue.missing.join(", ") })));
+        if (issue.stale.length) append(status, el("p", "mg-status-detail", format("{agent}: überzählige Tools: {tools}", { agent: label, tools: issue.stale.join(", ") })));
+        if (issue.blocked.length) append(status, el("p", "mg-status-detail", format("{agent}: durch Deny-Regeln gesperrt: {tools}", { agent: label, tools: issue.blocked.join(", ") })));
+        if (issue.reason === "empty_allow_would_broaden_access") append(status, el("p", "mg-warning", format("{agent}: Die letzte restriktive Tool-Freigabe bleibt erhalten. Eine leere Allow-Liste würde andere Tools freigeben. Lege zuerst die gewünschte Agent-Tool-Policy fest; die Microsoft-Zugriffsregeln bleiben unverändert.", { agent: label })));
+        else if (issue.reason) append(status, el("p", "mg-status-detail", format("{agent}: automatische Reparatur nicht möglich ({reason}). Agent-Konfiguration prüfen.", { agent: label, reason: issue.reason })));
+      }
+    }
     if (this.operation?.applicationFailed && ["pending", "applying"].includes(phase ?? "")) append(status, el("p", "mg-status-detail", "Die automatische Anwendung konnte nicht abgeschlossen werden. Deine Regeln sind gespeichert; laufende Arbeit wird nicht abgebrochen."));
     if (this.operation?.reloadPending) append(status, el("p", "mg-status-detail", "Anwendung wurde angefordert. Wir prüfen, wann die gespeicherten Regeln aktiv sind."));
     if (this.statusError) append(status, el("p", "mg-status-detail", this.statusError));
-    if (!phase || ["pending", "unknown", "conflict"].includes(phase)) this.appendStatusButton(status);
+    if (!phase || ["applied", "pending", "unknown", "conflict"].includes(phase)) this.appendStatusButton(status);
     if (["pending", "applying"].includes(phase ?? "") && this.operation?.settled && !this.operation.reloadPending) {
       const apply = button("Gespeicherte Regeln anwenden", () => { void this.applySavedPolicy(); }); apply.dataset.safeStatus = "true"; apply.disabled = this.statusInFlight || this.busy; append(status, apply);
       append(status, el("p", "mg-hint", "Dabei werden nur die gespeicherten Regeln übernommen, nicht erneut gespeichert. Laufende Arbeit wird nicht abgebrochen."));
@@ -493,8 +572,23 @@ class ConfigurationPage {
     if (phase === "pending") {
       const overview = button("Übersicht anzeigen", () => { this.step = 0; this.render(); }); overview.dataset.safeStatus = "true"; append(status, overview);
     }
-    if (phase === "conflict" || phase === "failed" && this.operation?.policyPrepared) { const reload = button("Aktuellen Stand laden", () => { if (window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { operationsByHost.delete(this.host); this.operation = undefined; this.statusEpoch++; void this.load(); } }); reload.dataset.safeStatus = "true"; reload.disabled = this.busy || this.statusInFlight; append(status, reload); }
+    if (phase === "conflict" || phase === "failed" && this.operation?.policyPrepared || phase === "unknown" && this.operation?.intent?.state === "issued") {
+      const reload = button("Aktuellen Stand laden", () => { if (window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) void this.abandonOperation(); });
+      reload.dataset.safeStatus = "true"; reload.disabled = this.busy || this.statusInFlight; append(status, reload);
+    }
     append(main, status);
+  }
+  private async abandonOperation() {
+    const operation = this.operation;
+    if (!this.authorized || !operation) return;
+    this.busy = true;
+    try {
+      if (operation.intent) await this.read("microsoft-graph.configuration.activation", { action: "cancel", id: operation.intent.id });
+      if (this.disposed || !this.authorized || this.operation !== operation) return;
+      operationsByHost.delete(this.host); this.operation = undefined; this.statusEpoch++; this.stopStatusChecks();
+      this.busy = false; await this.load();
+    } catch { this.error = "Der Vorgang konnte nicht beendet werden. Prüfe Verbindung und aktuellen Stand."; }
+    finally { this.busy = false; this.render(); }
   }
   private renderSetup(main: HTMLElement) {
     const configured = this.snapshot?.config?.plugins?.entries?.[id]?.config?.credentialVaultKey !== undefined;
@@ -1032,6 +1126,10 @@ class ConfigurationPage {
       const exposure = planChangedToolExposure(operation.baseline, operation.target, fresh.config?.agents?.entries, fresh.config?.tools?.deny);
       operation.toolExposure = exposure.expected;
       operation.splitWrite = !!this.includeName && Object.keys(exposure.patch).length > 0;
+      if (operation.splitWrite) {
+        operation.intent = await this.read<ActivationIntent>("microsoft-graph.configuration.activation", { action: "prepare", baseHash: fresh.hash, baseline: operation.baseline, target: operation.target });
+        if (this.disposed || this.signal.aborted || !this.authorized) { operation.phase = "failed"; return; }
+      }
       // A mixed root/include write is unsupported. Persist the exact policy
       // first so narrowing existing permissions cannot expose the old grant.
       this.dispatchPolicyWrite(operation, fresh, operation.splitWrite ? undefined : exposure.patch);

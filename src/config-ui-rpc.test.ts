@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { registerConfigurationUiMethods } from "./config-ui-rpc.js";
+import { activationOwner, registerConfigurationUiMethods } from "./config-ui-rpc.js";
 
 const policy = { version: 2, rules: { default: "deny" }, services: { onedrive: { allowed_roots: [] }, calendar: { agents: { main: { operations: ["read"], resources: ["me"] } } }, mail: { agents: {} }, todo: { agents: {} } } };
 describe("configuration UI validation RPC", () => {
@@ -35,7 +35,7 @@ describe("running Graph generation status", () => {
     expect(api.registerGatewayMethod).toHaveBeenCalledWith("microsoft-graph.configuration.applicationStatus", expect.any(Function), { scope: "operator.admin" });
     const respond = vi.fn(); handlers.get("microsoft-graph.configuration.applicationStatus")!({ params: {}, respond });
     const captured = respond.mock.calls[0][1];
-    expect(captured).toEqual({ activeVersion: "3.12.1", activePolicyHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(captured).toEqual({ toolReconciliation: "control-ui-cas-v1", activeVersion: "3.12.1", activePolicyHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
     api.version = "future"; config.policy.services.calendar.agents.main.operations = [];
     respond.mockClear(); handlers.get("microsoft-graph.configuration.applicationStatus")!({ params: {}, respond });
     expect(respond).toHaveBeenCalledWith(true, captured);
@@ -49,7 +49,42 @@ describe("running Graph generation status", () => {
     for (const policy of [undefined, { rules: { default: "allow" } }]) {
       const registerGatewayMethod=vi.fn(); registerConfigurationUiMethods({ registerGatewayMethod }, { policy });
       const handler=registerGatewayMethod.mock.calls.find(c=>c[0]==="microsoft-graph.configuration.applicationStatus")![1]; const respond=vi.fn(); handler({ params: {}, respond });
-      expect(respond).toHaveBeenCalledWith(true, { activePolicyHash: null, activeVersion: null });
+      expect(respond).toHaveBeenCalledWith(true, { activePolicyHash: null, activeVersion: null, toolReconciliation: "control-ui-cas-v1" });
     }
+  });
+});
+
+
+describe("activation RPC authority boundary", () => {
+  it("requires a host-authenticated identity and rejects wire-supplied identity without provider access", async () => {
+    const registerGatewayMethod=vi.fn();
+    registerConfigurationUiMethods({registerGatewayMethod}, { policy }, () => "/not-used-no-identity");
+    expect(registerGatewayMethod).toHaveBeenCalledWith("microsoft-graph.configuration.activation",expect.any(Function),{scope:"operator.admin"});
+    const handler=registerGatewayMethod.mock.calls.find(c=>c[0]==="microsoft-graph.configuration.activation")![1];
+    for (const params of [{action:"status"},{action:"reconcile",baseHash:"opaque:revision"},{action:"prepare",baseHash:"x",baseline:policy,target:policy},{action:"status",authenticatedUserId:"forged"}]) {
+      const respond=vi.fn(); await handler({params,respond});
+      expect(respond).toHaveBeenCalledWith(false,undefined,expect.objectContaining({code:"INVALID_REQUEST"}));
+    }
+  });
+});
+
+describe("host-verified durable activation owner", () => {
+  it("uses verified device identity across connections, never the shared client class", () => {
+    const first = { connect: { device: { id: "a".repeat(64) } }, pairedClientId: "openclaw-control-ui" };
+    const other = { connect: { device: { id: "b".repeat(64) } }, pairedClientId: "openclaw-control-ui" };
+    expect(activationOwner(first)).toBe("device:" + "a".repeat(64));
+    expect(activationOwner(structuredClone(first))).toBe(activationOwner(first));
+    expect(activationOwner(other)).not.toBe(activationOwner(first));
+    expect(activationOwner({ pairedClientId: "openclaw-control-ui" } as typeof first)).toBe("");
+    expect(activationOwner({connect:{device:{id:"forged-device"}}})).toBe("");
+    expect(activationOwner({authenticatedUserId:"operator", ...first})).toBe("user:operator");
+  });
+  it("ignores wire identity even on a valid authenticated device request", async () => {
+    const registerGatewayMethod = vi.fn();
+    registerConfigurationUiMethods({registerGatewayMethod}, {policy}, () => "/not-used-forged-identity");
+    const handler = registerGatewayMethod.mock.calls.find(c => c[0] === "microsoft-graph.configuration.activation")![1];
+    const respond = vi.fn();
+    await handler({client:{connect:{device:{id:"a".repeat(64)}}}, params:{action:"status",client:{connect:{device:{id:"b".repeat(64)}}}},respond});
+    expect(respond).toHaveBeenCalledWith(false,undefined,expect.objectContaining({code:"INVALID_REQUEST"}));
   });
 });

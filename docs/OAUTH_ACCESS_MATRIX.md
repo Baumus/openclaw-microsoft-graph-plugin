@@ -55,3 +55,41 @@ Unknown or missing read actions fail closed before provider access. Unknown or m
 Microsoft tenant administrators remain responsible for consent policy, conditional access, token revocation, account lifecycle, and reviewing the effective delegated permissions.
 
 Existing vault credentials do not gain newly configured Contacts scopes automatically. After the policy is saved and applied, credential status reports missing scopes and the Control UI offers **Renew Microsoft permissions**, using the existing vault app/tenant without manual identifiers or commands. The Gateway requests all scopes required by the active policy and atomically replaces a valid, binding-matched vault only after Microsoft returns the complete grant. A failed or denied reauthorization retains the prior credential; actions requiring missing scopes fail closed in the meantime. Initial sign-in remains create-only.
+
+## Configuration activation recovery (3.18.4)
+
+| RPC action | Authority | Data / effect |
+| --- | --- | --- |
+| `configuration.activation`: `prepare` | `operator.admin`, authenticated user or paired device | Validates the native saved baseline and fresh config CAS; writes one bounded intent, not config or provider data |
+| `status` | Same admin identity and Gateway state directory | Returns only that identity's matching saved-policy intent, never a policy draft or credential |
+| `claim` | Same admin; exact saved **and generation-active** policy, authored source, target-agent tool baseline and global deny | Atomically marks one tool dispatch issued; returns the exact reviewed tool additions and fresh native CAS |
+| `complete` / `cancel` | Same admin identity and intent ID | Closes the journal; completion additionally verifies saved tool target and active policy. Cancellation changes no grants |
+
+Method prefix: `microsoft-graph.`. Identity comes from the Gateway's authenticated user or signature-verified `client.connect.device.id`, never RPC parameters or the shared `pairedClientId` client class. Without a stable authenticated identity, durable preparation fails closed before policy is written. A different administrator cannot resume or replace an unfinished intent. Expiry is 24 hours; expired, cancelled or completed intents never dispatch tools. A fresh explicit review is required afterward.
+
+The single intent lives in `<stateDir>/plugin-data/microsoft-graph/activation/pending.json` (directory `0700`, file `0600`), atomically published under a fail-closed filesystem lock. It contains hashes, opaque operation ID, timestamp and exact added tool names only: no policy/resource draft, credential, include path or user identifier. Existing grants, global and per-agent denies remain unchanged by journal operations. Config writes still use native `config.patch` and fresh CAS, with the included policy applied before root agent-tool exposure.
+
+A fresh browser or plugin generation automatically resumes a prepared intent after exact policy activation. An issued but unconfirmed dispatch is **not** automatically repeated: the UI reads back persistence/activation, or offers cancellation and a new explicit review. This is intentional unknown-outcome handling, not a claim of automatic completion for an ambiguous dispatch. Closing the browser does not authorize a background daemon: continuation resumes when the same administrator reopens the page. No provider calls, tokens or live grant changes are needed to test recovery.
+
+## Control UI tool self-healing boundary (3.19.0)
+
+| Concern | Authority / permitted effect |
+| --- | --- |
+| Trigger | Authenticated `operator.admin` Control UI load/status check or completed save; no daemon/provider call |
+| Desired permissions | Validated saved policy, matching the running plugin policy fingerprint |
+| Repairable surface | Exact Microsoft Graph-owned names in existing agent `allow` or `alsoAllow`; union across every saved service/root |
+| Preserved authority | Global/agent deny, wildcard/group grants, unrelated names, service/resource restrictions and native approval gates |
+| Blocked state | Missing/conflicting agent configuration, final restrictive allow entry, denied tool, changed CAS revision/source, inactive policy or pending claim |
+| Concurrency / recovery | Private locked administrator-bound journal claims exact targets before one native CAS; fresh pages observe issued claims without replay |
+| Persistence / activation | Native config acknowledgement or applied config revision is required before tool activation is confirmed; no extra reload/restart |
+
+Synthetic planner, journal, UI race and Chromium fixtures use no credentials or provider data. Journals contain only hashes, agent IDs and tool names, not policies/resources or credentials. Existing secure atomic-file permissions and lock checks remain unchanged. No backup/restore artifact is required: tests mutate only disposable fixture files, and the released feature uses the host's revision-checked configuration writer and existing current-state recovery UI. No new AI retrieval/output path, credential scope or Graph permission is introduced.
+
+
+## Caller discovery contract (3.19.1)
+
+`microsoft_graph_capabilities` is a local, credential-free policy projection. Every saved effective Microsoft grant includes its tool opt-in; existing installations receive the same deny-aware administrator Control UI reconciliation as operation tools. The activation journal admits the helper name. Removal prunes only exact owned helper names and never empties a restrictive allowlist. Explicit denies, wildcard/operator grants, and unchanged-peer boundaries remain authoritative.
+
+OneDrive tools and schemas direct the caller to discover first and use the exact returned `rootLabel`, not an inferred agent ID, title, or path. The additive `rootPath` field is returned only after intersecting root and caller permissions; no foreign-agent roots/grants or drive/item IDs are projected. It identifies a configured folder, not a provider connectivity check. Local access denials keep a generic code and safe discovery guidance rather than disclosing whether a foreign root exists. Absent or ambiguous access requires operator review, not guessed-label retries or automatic consent repair.
+
+`onedrive_agents_instructions` is included only for trusted roots with effective read permission. Trusted writes/deletes still require independently authorized instruction reads; capability discovery explains the unmet read prerequisite for write-only callers without granting it. No runtime agent can use discovery to change policy, impersonate another caller, or bypass native approvals.

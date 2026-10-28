@@ -41,7 +41,16 @@ describe("native approval snapshot store across module instances", () => {
     const hooks: Record<string, (event: unknown, context: unknown) => Promise<any>> = {};
     const factories: Array<(context: unknown) => any> = [];
     const config = { enabled: true, policy: graphPolicyFixture() };
+    let delayLookup = false;
+    let finishLookup: (() => void) | undefined;
     const api = {
+      runtime: { agent: { session: { getSessionEntryAsync: async () => {
+        if (delayLookup) {
+          delayLookup = false;
+          await new Promise<void>((resolve) => { finishLookup = resolve; });
+        }
+        return { sessionId: "cross-module-approval" };
+      } } } },
       pluginConfig: config,
       on: (name: string, handler: (event: unknown, context: unknown) => Promise<any>) => { hooks[name] = handler; },
       registerTool: (factory: (context: unknown) => any) => factories.push(factory),
@@ -49,18 +58,23 @@ describe("native approval snapshot store across module instances", () => {
     };
     hookModule.default.register({ ...api, registerTool: vi.fn() });
     toolModule.default.register({ ...api, on: vi.fn() });
-    const context = { agentId: "main", sessionId: "cross-module-approval" };
+    const context = { agentId: "main", sessionKey: "agent:main:main", sessionId: "cross-module-approval" };
     const tool = factories.map((factory) => factory(context)).find((candidate) => candidate.name === "outlook_mail_write");
     expect(tool).toBeDefined();
     const params = { action: "mark_read", messageId: "message-1", isRead: true };
     const callId = "cross-module-approval-call";
     const approval = await hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: callId, params }, context);
     expect(approval.requireApproval).toMatchObject({ severity: "warning" });
-    await approval.requireApproval.onResolution("allow-once");
+    delayLookup = true;
+    // Match the native host: start notification, then execution without awaiting it.
+    const resolution = approval.requireApproval.onResolution("allow-once");
+    const execution = tool.execute(callId, params);
+    finishLookup!();
+    await resolution;
 
     // A different module's tool consumes the hook's snapshot, then reaches the credential gate.
     // No Microsoft request is possible without the intentionally absent test vault key.
-    expect((await tool.execute(callId, params)).details).toMatchObject({ ok: false, error: "credential_vault_unavailable" });
+    expect((await execution).details).toMatchObject({ ok: false, error: "credential_vault_unavailable" });
     expect((await tool.execute(callId, params)).details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
   });
 
