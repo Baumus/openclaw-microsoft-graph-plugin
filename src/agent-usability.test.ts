@@ -148,6 +148,18 @@ describe("agent-facing Microsoft Graph contracts", () => {
     expect(lifecycleResult("outlook_calendar_write", { ok: false, action: "multiwrite", outcome: "partial", operations: [{ applied: true }, { applied: false, status: 400 }] })).toMatchObject({ phase: "partial", mutationApplied: true, retrySafety: "readback_before_retry" });
   });
 
+  it("keeps refresh deferral and accepted-fax readback guidance distinct after integration", () => {
+    for (const error of ["credential_refresh_retry_later", "credential_refresh_temporarily_unavailable"]) {
+      const deferred = lifecycleResult("outlook_contacts_write", { ok: false, error }) as Record<string, unknown>;
+      expect(deferred).toMatchObject({ phase: "failed", mutationApplied: false });
+      expect(String(deferred.nextAction)).toContain("no Graph request was sent");
+      expect(String(deferred.nextAction).toLowerCase()).toContain("do not automatically replay data writes");
+    }
+    const accepted = lifecycleResult("outlook_contacts_write", { ok: true, action: "update", outcome: "applied_with_warning", appliedButUnverified: true, verification: "failed" }) as Record<string, unknown>;
+    expect(accepted).toMatchObject({ phase: "partial", mutationApplied: true, retrySafety: "readback_before_retry" });
+    expect(String(accepted.nextAction)).toContain("do not repeat the completed write");
+  });
+
   it("exposes only effective caller grants and prerequisites without credentials or foreign grants", async () => {
     const policy = graphPolicyFixture();
     policy.services.mail.agents.foreign = { operations: ["send"], resources: ["private-mailbox"] };
