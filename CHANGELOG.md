@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## 3.20.0
+
+- Add `outlook_mail_write.add_message_attachment`: attach an existing own-mailbox message's unchanged Graph MIME as an `.eml` file to an existing draft, including reply-all drafts, without sending. One source per call, under 3 MiB, with optional leaf `.eml` filename.
+- Require independent Mail `read` and `update` policy grants, `Mail.ReadWrite`, native approval bound to both IDs, and explicit draft checks before reading and attaching. Keep MIME and provider-echoed bytes out of results and logs; preserve unknown-outcome handling without POST retries.
+
+
 ## 3.19.1 - 2026-10-27
 
 - Make Microsoft Graph capability discovery part of every saved agent grant and existing deny-aware tool reconciliation. Include the folder-instruction helper only for trusted read-authorized roots; prune obsolete exact helper opt-ins without weakening restrictive allowlists.

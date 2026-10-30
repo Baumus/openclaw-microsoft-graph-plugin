@@ -653,7 +653,7 @@ const ACTION_SCHEMA_GUIDANCE: Readonly<Record<string, string>> = {
   outlook_calendar_read: "list_calendars: no ID; list_events/search_events: optional exact calendarId from list_calendars and bounded dates; get_event/list_attachments: eventId plus calendarId when non-default; download_attachment: also attachmentId; get_schedule: startDateTime, endDateTime, schedules. Continue list pages; narrow client-filtered searches.",
   outlook_calendar_write: "create: subject/startDateTime/endDateTime; update: eventId plus changed fields; multiwrite: operations with unique operationId and create/update payloads; respond: eventId and response; attach: eventId and private media; delete: eventId. calendarId must be an exact authorized ID. Native approval is separate from deprecated chat fields.",
   outlook_mail_read: "list_folders: no ID or parentFolderId; list/search_messages: folder/folderId or mailbox-wide; get_message/list_attachments: messageId; download_attachment: messageId and attachmentId. Folder and message IDs come from preceding read actions; follow continuation.",
-  outlook_mail_write: "reply_draft: answer one unambiguously identified original message using its messageId and content; reply_all_draft: only when all recipients are intended; create_draft: only for a new, independent message with subject and body. If the original message is ambiguous or missing, ask the user; do not fall back to create_draft. update_draft/update_properties: messageId and changed fields; forward_draft: messageId and content; copy/move: messageId and exactly one destination or destinationFolderId; mark_read: messageId and isRead; add_attachment: messageId and private media. For an inline image, place <img src=\"cid:IMAGE_ID\"> at the desired position in bodyHtml, then add_attachment with the same inlineContentId=IMAGE_ID and an image MIME type; send_draft/delete: messageId. Native approval remains sole authority.",
+  outlook_mail_write: "reply_draft: answer one unambiguously identified original message using its messageId and content; reply_all_draft: only when all recipients are intended; create_draft: only for a new, independent message with subject and body. If the original message is ambiguous or missing, ask the user; do not fall back to create_draft. update_draft/update_properties: messageId and changed fields; forward_draft: messageId and content; copy/move: messageId and exactly one destination or destinationFolderId; mark_read: messageId and isRead; add_attachment: messageId and private media. add_message_attachment: existing draft messageId, original sourceMessageId, optional .eml attachmentName; attaches original MIME under 3 MiB, requires read and update access, never sends. For an inline image, place <img src=\"cid:IMAGE_ID\"> at the desired position in bodyHtml, then add_attachment with the same inlineContentId=IMAGE_ID and an image MIME type; send_draft/delete: messageId. Native approval remains sole authority.",
   outlook_contacts_read: "list_contacts: optional limit/continuation; search_contacts: search plus optional limit, capped client-side scan; get_contact: exact contactId. Search may be incomplete; never treat a truncated search as proof of absence.",
   outlook_contacts_write: "create: at least one name or email field; update: exact contactId and at least one changed field; delete: exact contactId. Search and disambiguate before changing an existing contact. Native approval remains sole authority.",
   microsoft_todo_read: "list_lists: no ID; search_lists: search; list/search_tasks: listId from list_lists; get_task/child lists: listId and taskId; get_attachment: also attachmentId. Follow continuation where offered; narrow capped search.",
@@ -1106,7 +1106,7 @@ const mailReadSchema = Type.Object({
   bodyContentType: Type.Optional(Type.Union([Type.Literal("html"), Type.Literal("text")], { default: "html" })), limit, continuation,
 }, { additionalProperties: false });
 const mailWriteSchema = Type.Object({
-  action: Type.Union([Type.Literal("create_draft"), Type.Literal("update_draft"), Type.Literal("update_properties"), Type.Literal("reply_draft"), Type.Literal("reply_all_draft"), Type.Literal("forward_draft"), Type.Literal("copy"), Type.Literal("add_attachment"), Type.Literal("move"), Type.Literal("mark_read"), Type.Literal("send_draft"), Type.Literal("delete")]),
+  action: Type.Union([Type.Literal("create_draft"), Type.Literal("update_draft"), Type.Literal("update_properties"), Type.Literal("reply_draft"), Type.Literal("reply_all_draft"), Type.Literal("forward_draft"), Type.Literal("copy"), Type.Literal("add_attachment"), Type.Literal("add_message_attachment"), Type.Literal("move"), Type.Literal("mark_read"), Type.Literal("send_draft"), Type.Literal("delete")]),
   chatConfirmed,
   chatConfirmationToken,
   messageId: Type.Optional(resourceId), subject: Type.Optional(Type.String({ maxLength: 998 })), bodyHtml, bodyText, to: emailList, cc: emailList, bcc: emailList, replyTo: emailList,
@@ -1117,6 +1117,7 @@ const mailWriteSchema = Type.Object({
   internetMessageId: Type.Optional(Type.String({ minLength: 3, maxLength: 998, pattern: "^<[^<>\\r\\n]+>$" })),
   internetMessageHeaders: Type.Optional(Type.Array(Type.Object({ name: Type.String({ minLength: 3, maxLength: 128, pattern: "^[xX]-[A-Za-z0-9-]+$" }), value: Type.String({ maxLength: 998 }) }, { additionalProperties: false }), { maxItems: 50 })),
   ...attachmentInputFields(OUTLOOK_ATTACHMENT_MAX_BYTES),
+  sourceMessageId: Type.Optional(Type.String({ minLength: 1, maxLength: 512, description: "For add_message_attachment only: original own-mailbox message ID from outlook_mail_read. Its complete MIME is attached as .eml to the existing draft in messageId (under 3 MiB)." })),
   inlineContentId: Type.Optional(Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$", description: "For add_attachment only: embed an image in HTML mail at the matching <img src=\"cid:ID\"> position. The image must be PNG, JPEG, or GIF." })),
 }, { additionalProperties: false });
 const contactFields = {
@@ -1232,6 +1233,7 @@ export const WRITE_ACTION_FIELDS = {
     forward_draft: ["action", "messageId", "bodyHtml", "bodyText", "to", "cc", "bcc"],
     copy: ["action", "messageId", "destination", "destinationFolderId"],
     add_attachment: ["action", "messageId", "attachmentName", "attachmentContentType", "attachmentMediaUri", "inlineContentId"],
+    add_message_attachment: ["action", "messageId", "sourceMessageId", "attachmentName"],
     move: ["action", "messageId", "destination", "destinationFolderId"],
     mark_read: ["action", "messageId", "isRead"],
     send_draft: ["action", "messageId"],
@@ -1496,6 +1498,8 @@ export function mutationApprovalText(toolName: string, rawParams: unknown): { ti
   } else if (toolName === "outlook_mail_write") {
     if (action === "create_draft" || action === "forward_draft") {
       target = `${action === "create_draft" ? "new draft" : "forward draft"}; recipient count ${recipientCount(params)}`;
+    } else if (action === "add_message_attachment") {
+      target = `original message "${approvalDisplayValue(params.sourceMessageId, "unspecified source")}" to draft "${approvalDisplayValue(params.messageId, "unspecified draft")}", filename "${approvalDisplayValue(params.attachmentName ?? "original-message.eml", "original-message.eml")}"`;
     } else if (action === "send_draft") {
       target = "stored draft message; recipients come from the draft; recipient count is unavailable in this call";
     } else {
@@ -1507,6 +1511,7 @@ export function mutationApprovalText(toolName: string, rawParams: unknown): { ti
       : action === "delete" ? "Deletes a mailbox message; recovery is provider-dependent."
         : action.includes("draft") ? "Creates or changes a draft that may contain recipient-visible content."
           : action === "move" || action === "copy" ? "Changes mailbox organization by moving or copying a message."
+            : action === "add_message_attachment" ? "Reads the complete selected original message, including its embedded attachments, and attaches it as .eml to the selected existing draft; does not send."
             : action === "add_attachment" ? "Adds file content to a remote draft."
               : "Changes remote mailbox state or message properties.";
   } else if (toolName === "outlook_contacts_write") {
@@ -1583,7 +1588,7 @@ const APPROVAL_INVENTORY_CALLS: ApprovalInventoryCall[] = [
   ...["update", "multiwrite", "respond", "attach", "delete"].map((action) => ({ tool: "outlook_calendar_write", action, params: { action } })),
   { tool: "outlook_calendar_write", condition: "unknown_or_missing_action", params: {} },
   ...["create_draft", "update_draft"].map((action) => ({ tool: "outlook_mail_write", action, params: { action } })),
-  ...["reply_draft", "reply_all_draft", "forward_draft", "copy", "add_attachment", "move", "mark_read", "update_properties", "send_draft", "delete"].map((action) => ({ tool: "outlook_mail_write", action, params: { action } })),
+  ...["reply_draft", "reply_all_draft", "forward_draft", "copy", "add_attachment", "add_message_attachment", "move", "mark_read", "update_properties", "send_draft", "delete"].map((action) => ({ tool: "outlook_mail_write", action, params: { action } })),
   { tool: "outlook_mail_write", condition: "unknown_or_missing_action", params: {} },
   ...["create", "update", "delete"].map((action) => ({ tool: "outlook_contacts_write", action, params: { action } })),
   { tool: "outlook_contacts_write", condition: "unknown_or_missing_action", params: {} },
@@ -1759,7 +1764,7 @@ const plugin = defineToolPlugin({
       tool({ name: "outlook_calendar_read", label: "Outlook Calendar Read", optional: true, description: "Bounded default or explicitly authorized calendar reads, selected stable event fields, event search, free/busy, attachment metadata, and direct file downloads.", parameters: calendarReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_read", calendarReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarRead(config, toolContext.agentId, params, signal)) }),
       tool({ name: "outlook_calendar_write", label: "Outlook Calendar Write", optional: true, description: "Create, update, or non-atomically multiwrite stable Microsoft Graph v1.0 event settings, respond, attach private media up to 150 MB, or delete. Multiwrite is capped at 100 operations, ordered, and chunked into Graph batches of 20. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: calendarWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_write", calendarWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "outlook_mail_read", label: "Outlook Mail Read", optional: true, description: "Bounded own-mailbox message reads, KQL/filter search, selected stable message fields, attachment metadata, and direct file downloads.", parameters: mailReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_read", mailReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "outlook_mail_write", label: "Outlook Mail Write", optional: true, description: "Own-mailbox draft fields, reply/reply-all/forward drafts, copy/move, private-media attachments up to 150 MB, send, and delete. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: mailWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_write", mailWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
+      tool({ name: "outlook_mail_write", label: "Outlook Mail Write", optional: true, description: "Own-mailbox draft fields, reply/reply-all/forward drafts, copy/move, private-media attachments up to 150 MB, original-message .eml attachments under 3 MiB to existing drafts, send, and delete. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: mailWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_write", mailWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "outlook_contacts_read", label: "Outlook Contacts Read", optional: true, description: TOOL_GUIDANCE.outlook_contacts_read, parameters: contactsReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_contacts_read", contactsReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => contactsRead(config, toolContext.agentId, params, signal)) }),
       tool({ name: "outlook_contacts_write", label: "Outlook Contacts Write", optional: true, description: TOOL_GUIDANCE.outlook_contacts_write, parameters: contactsWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_contacts_write", contactsWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => contactsWrite(config, toolContext.agentId, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "microsoft_todo_read", label: "Microsoft To Do Read", optional: true, description: "Bounded own-account list/task reads and client-side search, including checklist, linked-resource, and attachment collections.", parameters: todoReadSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_read", todoReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoRead(config, toolContext.agentId, params, signal)) }),
@@ -2852,6 +2857,12 @@ function planMailWrite(p: any) {
   const destinationPlan = p.action === "move" || p.action === "copy"
     ? ((p.destination === undefined) === (p.destinationFolderId === undefined) ? (() => { throw new Error("invalid_destination"); })() : { destinationId: p.destinationFolderId ?? p.destination })
     : undefined;
+  if (p.action === "add_message_attachment") {
+    safeId(p.sourceMessageId);
+    if (p.sourceMessageId === p.messageId) throw new Error("invalid_message_attachment_source");
+    const name = p.attachmentName ?? "original-message.eml";
+    if (typeof name !== "string" || !/^[^\\/\u0000-\u001f\u007f]{1,508}\.eml$/i.test(name) || name === ".eml") throw new Error("invalid_attachment_name");
+  }
   if (p.action === "mark_read" && typeof p.isRead !== "boolean") throw new Error("invalid_read_state");
   return { operation, scope, replyForwardPlan, id, messagePlan, destinationPlan };
 }
@@ -2874,6 +2885,23 @@ async function mailWrite(config: RuntimeConfig, agentId: string | undefined, wor
     if (p.action === "copy") {
       return { ok: true, action: p.action, item: await graphRequest(token, mailMessageActionPath(p.messageId, "copy"), { method: "POST", body: destinationPlan, signal: bounded }) };
     }
+    if (p.action === "add_message_attachment") {
+      // Prove the target is still a draft before reading the original's content.
+      const target = await graphRequest(token, `/me/messages/${id}?$select=id,isDraft`, { signal: bounded });
+      if (target?.id !== p.messageId || target?.isDraft !== true) throw new Error("invalid_mail_draft_target");
+      const mime = Buffer.from(await graphRequest(token, `/me/messages/${safeId(p.sourceMessageId)}/$value`, {
+        response: "bytes", maxBytes: DIRECT_ATTACHMENT_MAX_BYTES - 1, headers: { accept: "message/rfc822" }, signal: bounded,
+      }));
+      if (!mime.length) throw new Error("invalid_provider_response");
+      const plan = attachmentWritePlan({ attachmentName: p.attachmentName ?? "original-message.eml", attachmentContentType: "message/rfc822" }, "#microsoft.graph.fileAttachment", DIRECT_ATTACHMENT_MAX_BYTES - 1, mime);
+      // Recheck after the read: never deliberately append to an already-sent message.
+      const current = await graphRequest(token, `/me/messages/${id}?$select=id,isDraft`, { signal: bounded });
+      if (current?.id !== p.messageId || current?.isDraft !== true) throw new Error("invalid_mail_draft_target");
+      const item = await graphRequest(token, mailMessageActionPath(p.messageId, "attachments"), {
+        method: "POST", body: plan.directPayload, maxBytes: base64JsonResponseLimit(DIRECT_ATTACHMENT_MAX_BYTES - 1), signal: bounded,
+      });
+      return { ok: true, action: p.action, upload_mode: "direct", attachment: boundedAttachmentSummary(item, plan) };
+    }
     if (p.action === "add_attachment") {
       const attachmentPath = mailMessageActionPath(p.messageId, "attachments");
       if (attachmentPlan!.mode === "direct") {
@@ -2891,6 +2919,8 @@ async function mailWrite(config: RuntimeConfig, agentId: string | undefined, wor
     throw new Error("unsupported_action");
   }, "me", undefined, p.action === "add_attachment" ? async () => {
     attachmentPlan = await prepareAttachmentWritePlan(p, workspaceDir, "#microsoft.graph.fileAttachment", OUTLOOK_ATTACHMENT_MAX_BYTES);
+  } : p.action === "add_message_attachment" ? () => {
+    authorizeOperation(validatePolicy(config.policy), agentId, "mail", "read");
   } : undefined);
 }
 
@@ -3203,6 +3233,7 @@ export async function beforeMicrosoftGraphToolCall(
     } else if (event.toolName === "outlook_mail_write") {
       const plan = planMailWrite(params);
       authorizeOperation(validatePolicy(runtimeConfig.policy), ctx.agentId, "mail", plan.operation);
+      if (params.action === "add_message_attachment") authorizeOperation(validatePolicy(runtimeConfig.policy), ctx.agentId, "mail", "read");
     } else if (event.toolName === "outlook_contacts_write") {
       const plan = planContactWrite(params);
       authorizeOperation(validatePolicy(runtimeConfig.policy), ctx.agentId, "contacts", plan.operation);

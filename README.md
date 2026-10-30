@@ -322,6 +322,18 @@ Apply requires `RESTORE MICROSOFT GRAPH CREDENTIAL`. A `complete` receipt means 
 - Unknown actions, malformed resources, missing grants, missing credentials, unsafe files, and unsupported filesystem conditions fail closed.
 - Process-local access-token, continuation, instruction, and warning allow-always trust is lost on restart. Retry from a fresh read/status check rather than assuming an interrupted mutation failed.
 
+## Attach original Outlook emails to an existing draft
+
+Use `outlook_mail_write` with `add_message_attachment`. Resolve the original IDs using `outlook_mail_read`, and use an existing draft ID (including the ID returned by `reply_all_draft`):
+
+```json
+{ "action": "add_message_attachment", "messageId": "<existing-draft-id>", "sourceMessageId": "<original-message-id>", "attachmentName": "original-message.eml" }
+```
+
+The plugin reads the original message's complete Microsoft Graph MIME (`/$value`) and attaches those unchanged bytes as a `message/rfc822` `.eml` file. Headers, body and embedded attachments are retained as supplied by Graph; the message is not reconstructed from selected fields. `attachmentName` is optional (default `original-message.eml`) and must be a leaf `.eml` name. This action requires **both Mail `read` and `update` policy access**, delegated `Mail.ReadWrite`, and the normal native warning approval. Both IDs and the optional filename are bound to the approved call. It validates that the target is still a draft before reading and again before attaching; it never sends mail or edits recipients/body.
+
+One original is attached per call. MIME must be **smaller than 3 MiB (3,145,728 bytes)**, the direct Graph attachment limit; oversized messages fail without creating an attachment. Large-message upload sessions are not part of this action (existing private-media `add_attachment` retains its larger-file support). Call separately with distinct names for multiple originals. A failure after an attachment POST can have an unknown outcome: inspect `list_attachments` on the draft before retrying to avoid duplicates. Concurrent edits/sends by another client cannot be locked atomically; review the completed draft before sending. MIME bytes are never returned in model-facing results or logged.
+
 ## Place images within an Outlook mail body
 
 Use an HTML draft and a matching CID attachment. Put `<img src="cid:chart-1" alt="Chart">` at the precise position in `bodyHtml` where the image should appear, then add the private image to that draft with `inlineContentId: "chart-1"`:
