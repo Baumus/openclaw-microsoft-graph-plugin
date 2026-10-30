@@ -513,11 +513,14 @@ export async function uploadAttachmentSession(
   signal?: AbortSignal,
   fetchFn: typeof fetch = fetch,
   requestTimeoutMs = 30000,
+  onStage?: (stage: "upload_session_create" | "upload_session_validation" | "upload_chunk" | "upload_final_response") => void,
 ) {
   const content = decodeBase64Strict(contentBase64, "invalid_attachment");
   if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1000 || requestTimeoutMs > 30000) throw new Error("invalid_request_timeout");
   const stepSignal = () => signal ? AbortSignal.any([signal, AbortSignal.timeout(requestTimeoutMs)]) : AbortSignal.timeout(requestTimeoutMs);
+  onStage?.("upload_session_create");
   const session = await graphRequest(token, createSessionPath, { method: "POST", body: createSessionBody, signal: stepSignal() }, fetchFn);
+  onStage?.("upload_session_validation");
   const baseUploadUrl = canonicalAttachmentUploadUrl(session?.uploadUrl, kind);
   if (uploadSessionNextOffset(session) !== 0) throw new Error("invalid_provider_response");
   const target = new URL(baseUploadUrl);
@@ -526,6 +529,7 @@ export async function uploadAttachmentSession(
   let chunks = 0;
   try {
     for (let start = 0; start < content.byteLength; start += ATTACHMENT_UPLOAD_CHUNK_BYTES) {
+      onStage?.("upload_chunk");
       signal?.throwIfAborted();
       const endExclusive = Math.min(content.byteLength, start + ATTACHMENT_UPLOAD_CHUNK_BYTES);
       const end = endExclusive - 1;
@@ -550,6 +554,7 @@ export async function uploadAttachmentSession(
       chunks += 1;
       const final = endExclusive === content.byteLength;
       if (final) {
+        onStage?.("upload_final_response");
         if (response.status !== 201) throw new Error("invalid_provider_response");
         await readBytes(response, MAX_JSON_BYTES);
       } else {

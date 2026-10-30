@@ -275,7 +275,7 @@ export function lifecycleResult(toolName: string, value: unknown): unknown {
   const code = typeof record.error === "string" ? record.error : ok ? incomplete ? "partial_results" : "ok" : "operation_failed";
   const credentialFailure = code.startsWith("credential_") || code === "authentication_failed";
   const providerAuthorizationFailure = code === "provider_error_401" || code === "provider_error_403";
-  const uncertain = mutation && !ok && !credentialFailure && (code === "invalid_provider_response" || !/^(invalid_|unsupported_|access_denied|connector_disabled|trusted_|approval_context_|instruction_|onedrive_agents_instructions_required|workspace_|exactly_one_)/.test(code));
+  const uncertain = mutation && !ok && record.writeAttempted !== false && !credentialFailure && (code === "invalid_provider_response" || !/^(invalid_|unsupported_|access_denied|connector_disabled|trusted_|approval_context_|instruction_|onedrive_agents_instructions_required|workspace_|exactly_one_)/.test(code));
   const operations = Array.isArray(record.operations) ? record.operations as Array<Record<string, unknown>> : undefined;
   const mutationApplied = !mutation ? false : operations ? operations.some((entry) => entry.applied === true) ? true : operations.some((entry) => entry.status === 0) ? "unknown" : false : ok ? true : uncertain ? "unknown" : false;
   const nextAction = !ok && record.action === "multiwrite" ? "Inspect each operation and read back uncertain targets before retrying only unapplied operations." : !ok ? code === "credential_scope_missing" ? "Ask the operator to inspect credential status in the Control UI and follow its guided reauthorization; do not retry unchanged." : code === "credential_reauthorization_required" || code === "credential_refresh_outcome_uncertain" ? "Credential refresh is blocked. Ask the operator to inspect credential status and arrange reviewed recovery; do not retry unchanged." : code === "authentication_failed" ? "Ask the operator to inspect credential status, account, and tenant before considering reauthorization; do not retry unchanged." : providerAuthorizationFailure ? `${uncertain ? "Read back the exact target before retrying; the remote outcome is unknown. " : ""}Ask the operator to check policy, Microsoft consent, account, and tenant; use guided Control UI reauthorization only if consent is missing.` : uncertain ? "Read back the exact target before retrying; the remote outcome is unknown." : code === "access_denied" ? "Call microsoft_graph_capabilities with {} to discover this caller's effective roots/actions. Use only an exact returned rootLabel, never an agent ID, folder name, or path inferred as a label. Local access_denied does not prove Microsoft consent failure or a UI contradiction. If the required root/action is absent or discovery is unavailable, ask the operator to review access; do not guess labels, widen rights, or retry unchanged." : code.startsWith("approval_context_") ? "Request a new exact call and native approval; the previous approval cannot be reused." : code === "workspace_file_unavailable" ? "Use an existing regular file relative to this agent workspace; links and host-absolute paths are not accepted." : code === "workspace_file_changed" ? "Finish writing the file, then make a fresh call; no OneDrive write was attempted." : code === "workspace_context_unavailable" ? "This tool needs a trusted agent workspace context; ask the OpenClaw operator to check the tool route." : code === "exactly_one_source_required" ? "Pass exactly one of sourceWorkspacePath or sourceMediaUri." : "Correct the request or prerequisite, then make a fresh call." : incomplete && record.action === "multiwrite" ? "Inspect per-operation outcomes and read back unverified targets before retrying." : record.cleanupWarning === STAGING_CLEANUP_DEFERRED ? "The action result is preserved; staged-file cleanup is queued for retry. Do not repeat a completed write." : incomplete ? record.continuation ? "Repeat the same criteria with continuation for the next page." : "Narrow the query or time range; completeness is not proven." : mutation && toolName === "outlook_mail_write" && record.action === "send_draft" ? "Graph accepted the send request; delivery is not proven. Inspect Sent Items before any retry." : "No further action required.";
@@ -696,6 +696,8 @@ export function concrete(name: string, parameters: any, agentId: string | undefi
       const started = Date.now();
       let value: unknown;
       let failure: string | undefined;
+      let diagnosticStep: string | undefined;
+      let writeAttempted: boolean | undefined;
       try {
         const semantic = semanticParams(params);
         const oneDriveRoot = approvalConfig ? () => authorizeOneDriveMutationPreflight(approvalConfig, agentId, name, semantic) : undefined;
@@ -706,17 +708,20 @@ export function concrete(name: string, parameters: any, agentId: string | undefi
         value = await execute(semantic, signal);
       } catch (error) {
         failure = errorCode(error);
+        const diagnostic = error as { diagnosticStep?: unknown; writeAttempted?: unknown };
+        if (typeof diagnostic?.diagnosticStep === "string" && /^(draft_precheck|source_mime_read|draft_recheck|direct_attachment_post|upload_session_create|upload_session_validation|upload_chunk|upload_final_response)$/.test(diagnostic.diagnosticStep)) diagnosticStep = diagnostic.diagnosticStep;
+        if (typeof diagnostic?.writeAttempted === "boolean") writeAttempted = diagnostic.writeAttempted;
       }
       let cleanupDeferred = false;
       try { await workspaceStagingStore.cleanup(_id, name, sessionId); }
       catch { cleanupDeferred = true; logger.warn(STAGING_CLEANUP_DEFERRED); }
-      const response = failure ? { ok: false, error: failure } : value;
+      const response = failure ? { ok: false, error: failure, ...(diagnosticStep ? { diagnosticStep } : {}), ...(writeAttempted === undefined ? {} : { writeAttempted }) } : value;
       const record = response && typeof response === "object" && !Array.isArray(response) ? response as Record<string, unknown> : undefined;
       const outcome = cleanupDeferred && record
         ? { ...record, cleanupWarning: STAGING_CLEANUP_DEFERRED, ...(record.ok !== false && !record.outcome ? { outcome: "applied_with_warning" } : {}) }
         : response;
       logger.info(JSON.stringify({ event: "microsoft_graph", tool: name, agent_id: agentId ?? null, ok: !failure && record?.ok !== false,
-        ...(failure ? { error: failure } : {}), ...(cleanupDeferred ? { cleanup: "deferred" } : {}), duration_ms: Date.now() - started }));
+        ...(failure ? { error: failure } : {}), ...(diagnosticStep ? { diagnostic_step: diagnosticStep } : {}), ...(writeAttempted === undefined ? {} : { write_attempted: writeAttempted }), ...(cleanupDeferred ? { cleanup: "deferred" } : {}), duration_ms: Date.now() - started }));
       return result(outcome, name);
     } };
 }
@@ -2886,19 +2891,26 @@ async function mailWrite(config: RuntimeConfig, agentId: string | undefined, wor
       return { ok: true, action: p.action, item: await graphRequest(token, mailMessageActionPath(p.messageId, "copy"), { method: "POST", body: destinationPlan, signal: bounded }) };
     }
     if (p.action === "add_message_attachment") {
+      let diagnosticStep = "draft_precheck";
+      let writeAttempted = false;
+      try {
       // Prove the target is still a draft before reading the original's content.
       const target = await graphRequest(token, `/me/messages/${id}?$select=id,isDraft`, { signal: bounded });
       if (target?.id !== p.messageId || target?.isDraft !== true) throw new Error("invalid_mail_draft_target");
+      diagnosticStep = "source_mime_read";
       const mime = Buffer.from(await graphRequest(token, `/me/messages/${safeId(p.sourceMessageId)}/$value`, {
         response: "bytes", maxBytes: OUTLOOK_ATTACHMENT_MAX_BYTES, headers: { accept: "message/rfc822" }, signal: bounded, requestTimeoutMs: config.requestTimeoutMs ?? 30000,
       }));
       if (!mime.length) throw new Error("invalid_provider_response");
       const plan = attachmentWritePlan({ attachmentName: p.attachmentName ?? "original-message.eml", attachmentContentType: "message/rfc822" }, "#microsoft.graph.fileAttachment", OUTLOOK_ATTACHMENT_MAX_BYTES, mime);
       // Recheck after the read: never deliberately append to an already-sent message.
+      diagnosticStep = "draft_recheck";
       const current = await graphRequest(token, `/me/messages/${id}?$select=id,isDraft`, { signal: bounded });
       if (current?.id !== p.messageId || current?.isDraft !== true) throw new Error("invalid_mail_draft_target");
       const attachmentPath = mailMessageActionPath(p.messageId, "attachments");
       if (plan.mode === "direct") {
+        diagnosticStep = "direct_attachment_post";
+        writeAttempted = true;
         const item = await graphRequest(token, attachmentPath, {
           method: "POST", body: plan.directPayload, maxBytes: base64JsonResponseLimit(DIRECT_ATTACHMENT_MAX_BYTES - 1), signal: bounded,
         });
@@ -2906,8 +2918,14 @@ async function mailWrite(config: RuntimeConfig, agentId: string | undefined, wor
       }
       const uploaded = await uploadAttachmentSession(token, `${attachmentPath}/createUploadSession`, {
         AttachmentItem: { attachmentType: "file", name: plan.name, size: plan.size, contentType: plan.contentType },
-      }, plan.content.toString("base64"), "outlook", bounded, fetch, config.requestTimeoutMs ?? 30000);
+      }, plan.content.toString("base64"), "outlook", bounded, fetch, config.requestTimeoutMs ?? 30000, (stage) => {
+        diagnosticStep = stage;
+        if (stage === "upload_session_create" || stage === "upload_chunk") writeAttempted = true;
+      });
       return { ok: true, action: p.action, ...uploaded, attachment: { name: plan.name, contentType: plan.contentType, size: plan.size } };
+      } catch (error) {
+        throw Object.assign(new Error(errorCode(error)), { diagnosticStep, writeAttempted });
+      }
     }
     if (p.action === "add_attachment") {
       const attachmentPath = mailMessageActionPath(p.messageId, "attachments");

@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## 3.20.1
+
+- Report the exact bounded stage of failed original-message `.eml` transfers without exposing MIME bytes, upload URLs, tokens, or provider bodies. Distinguish failures before any attachment write from uncertain upload-session outcomes, so agents know when draft readback is required before retrying.
+- Exercise an 11 MiB synthetic original MIME through the multi-chunk Outlook path, covering the size class of a mail with an 8.2 MiB video. The observed live provider response remains to be diagnosed after activation; this release does not claim to repair an unobserved provider-specific failure.
+
 ## 3.20.0
 
 - Add `outlook_mail_write.add_message_attachment`: attach an existing own-mailbox message's unchanged Graph MIME as an `.eml` file to an existing draft, including reply-all drafts, without sending. One source per call up to Microsoft Graph’s 150 MB attachment maximum, with automatic direct/upload-session transport and an optional leaf `.eml` filename.
