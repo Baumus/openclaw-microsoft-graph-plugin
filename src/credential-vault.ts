@@ -355,7 +355,11 @@ export async function refreshVaultCredential(params: { stateDir: string; key: un
       result = await params.exchange(current.credential, vaultRecordBinding(current));
       await params.testHooks?.afterExchange?.();
     } catch (error) {
-      if (error instanceof Error && error.message === "credential_refresh_temporarily_unavailable" && recovering) {
+      if (recovering) {
+        // Every failed recovery consumes the one durable attempt, including a
+        // definitive auth rejection. Never fall through to ordinary cleanup.
+        // If binding/lock/storage checks prevent this transition, the claimed
+        // in-flight marker still retains recoveryUsed: 1 and fails closed.
         await transitionMarker(params.stateDir, current, params.key, lock, params.testHooks, "quarantined", "exhausted");
         throw error;
       }

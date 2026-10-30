@@ -286,4 +286,49 @@ describe("single credential vault", () => {
     expect(exchange).toHaveBeenCalledTimes(1);
   }, 10_000);
 
+  it.each(["credential_reauthorization_required", "authentication_failed"])("cannot reset the consumed recovery budget after %s", async (failure) => {
+    const state = await stateDir(); const active = key(); await createVaultCredential(state, credential, active);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => { throw new Error("credential_refresh_outcome_uncertain"); } })).rejects.toThrow("credential_refresh_outcome_uncertain");
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
+    const recovery = vi.fn(async () => { throw new Error(failure); });
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: recovery })).rejects.toThrow(failure);
+    expect(recovery).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(await readFile(vaultQuarantinePath(state), "utf8"))).toMatchObject({ state: "quarantined", reason: "exhausted", recoveryUsed: 1 });
+    // Recreate the invocation with independent callbacks; disk state, not a
+    // process-local counter, must block any further exchange.
+    const independent = vi.fn(async () => ({ accessToken: "must-not-dispatch" }));
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: independent })).rejects.toThrow("credential_reauthorization_required");
+    expect(independent).not.toHaveBeenCalled();
+    expect(await inspectVaultCredential(state, active)).toMatchObject({ result: "quarantined", generation: 1 });
+  });
+
+  it.each(["credential_reauthorization_required", "authentication_failed"])("retains the consumed claim when %s recovery observes a changed vault", async (failure) => {
+    const state = await stateDir(); const active = key(); await createVaultCredential(state, credential, active);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => { throw new Error("credential_refresh_outcome_uncertain"); } })).rejects.toThrow();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => {
+      await writeFile(vaultCredentialPath(state), serializeVaultEnvelope(encryptVaultCredential(2, { ...credential, refreshToken: "changed-during-recovery" }, active)), { mode: 0o600 });
+      throw new Error(failure);
+    } })).rejects.toThrow("credential_vault_write_failed");
+    expect(JSON.parse(await readFile(vaultQuarantinePath(state), "utf8"))).toMatchObject({ state: "in_flight", recoveryUsed: 1, generation: 1 });
+    const independent = vi.fn();
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: independent })).rejects.toThrow("credential_reauthorization_required");
+    expect(independent).not.toHaveBeenCalled();
+    expect((await readVaultCredential(state, active)).credential.refreshToken).toBe("changed-during-recovery");
+  });
+
+  it.each(["credential_reauthorization_required", "authentication_failed"])("retains the consumed claim when the lock is compromised during %s recovery", async (failure) => {
+    const state = await stateDir(); const active = key(); await createVaultCredential(state, credential, active);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => { throw new Error("credential_refresh_outcome_uncertain"); } })).rejects.toThrow();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => {
+      await writeFile(`${vaultCredentialPath(state)}.lock`, "synthetic-compromised-lock", { mode: 0o600 });
+      throw new Error(failure);
+    } })).rejects.toThrow("credential_vault_locked");
+    expect(JSON.parse(await readFile(vaultQuarantinePath(state), "utf8"))).toMatchObject({ state: "in_flight", recoveryUsed: 1 });
+    const independent = vi.fn();
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: independent })).rejects.toThrow("credential_vault_locked");
+    expect(independent).not.toHaveBeenCalled();
+  }, 10_000);
+
 });
