@@ -447,7 +447,7 @@
         "minimum": 30000,
         "maximum": 1800000,
         "default": 600000,
-        "description": "Whole-operation timeout for Outlook attachment metadata validation and binary download."
+        "description": "Whole-operation timeout for Outlook attachment downloads and original-message attachment transfers."
       },
       "oneDriveTransferTimeoutMs": {
         "type": "integer",

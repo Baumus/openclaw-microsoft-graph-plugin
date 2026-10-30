@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 
 ## 3.20.0
 
-- Add `outlook_mail_write.add_message_attachment`: attach an existing own-mailbox message's unchanged Graph MIME as an `.eml` file to an existing draft, including reply-all drafts, without sending. One source per call, under 3 MiB, with optional leaf `.eml` filename.
+- Add `outlook_mail_write.add_message_attachment`: attach an existing own-mailbox message's unchanged Graph MIME as an `.eml` file to an existing draft, including reply-all drafts, without sending. One source per call up to Microsoft Graph’s 150 MB attachment maximum, with automatic direct/upload-session transport and an optional leaf `.eml` filename.
 - Require independent Mail `read` and `update` policy grants, `Mail.ReadWrite`, native approval bound to both IDs, and explicit draft checks before reading and attaching. Keep MIME and provider-echoed bytes out of results and logs; preserve unknown-outcome handling without POST retries.
 
 
