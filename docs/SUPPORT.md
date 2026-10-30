@@ -12,6 +12,7 @@ Version 3.5.0 declares OpenClaw host and plugin API compatibility from `2026.9.6
 - Delegated user permissions only; no application permissions or service-principal daemon flow.
 - One signed-in account per policy/credential pair.
 - Fixed `/me` workload routes; no shared-mailbox impersonation.
+- Contact postal addresses and fax numbers are supported with explicit replacement/clear semantics; see [contact address and fax fields](CONTACT_ADDRESS_FAX.md). Fax is stored in fixed native Outlook MAPI properties, not voice-phone fields. A failed post-write readback preserves the mutation receipt; read the exact contact before any retry.
 - Contacts tools cover only the signed-in user's default `/me/contacts` collection, not contact folders, shared contacts, or the organization directory. Client-side contact search scans at most 500 records and can report incomplete results.
 - Existing credential-vault records are not automatically re-consented for new Contacts scopes. After saving and applying policy, use **Renew Microsoft permissions** in the Control UI. It reuses the existing app/tenant; no terminal commands or new app registration are required. Initial sign-in still refuses to overwrite a nonempty vault.
 - No arbitrary Graph URL or raw payload tool.

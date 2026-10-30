@@ -63,6 +63,8 @@ Downloading transfers untrusted bytes; it does not parse, render, execute, or gr
 
 This simpler shared-credential model has an explicit tradeoff: compromise of the credential, vault key, or a plugin bypass can expose the union of Microsoft delegated scopes granted to that credential. The policy and write-approval gates constrain normal plugin behavior; they are not provider-side credential isolation.
 
+Contacts tools include business/home/other postal addresses and Outlook-compatible business/home/primary fax numbers. Address writes require all five components (or `null` to clear); omit fields to preserve them. See [contact address and fax semantics](docs/CONTACT_ADDRESS_FAX.md).
+
 Contacts access is optional and denied for existing policies until an administrator grants it. Read requires delegated `Contacts.Read`; create, update, and delete require `Contacts.ReadWrite`. Existing vault credentials do not gain newly requested scopes automatically. After saving and applying a new grant, the Control UI shows missing scopes and guides the administrator through renewal on Microsoft’s device page without entering identifiers or CLI commands. Affected operations fail closed until reauthorization succeeds; the old vault remains in place until the new grant is verified and atomically published.
 
 See [architecture](docs/ARCHITECTURE.md), [OAuth access matrix](docs/OAUTH_ACCESS_MATRIX.md), [vault design](docs/CREDENTIAL_VAULT_DESIGN.md), and [support](docs/SUPPORT.md).
