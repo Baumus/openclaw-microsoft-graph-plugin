@@ -322,6 +322,18 @@ Apply requires `RESTORE MICROSOFT GRAPH CREDENTIAL`. A `complete` receipt means 
 - Unknown actions, malformed resources, missing grants, missing credentials, unsafe files, and unsupported filesystem conditions fail closed.
 - Process-local access-token, continuation, instruction, and warning allow-always trust is lost on restart. Retry from a fresh read/status check rather than assuming an interrupted mutation failed.
 
+## Attach original Outlook emails to an existing draft
+
+Use `outlook_mail_write` with `add_message_attachment`. Resolve the original IDs using `outlook_mail_read`, and use an existing draft ID (including the ID returned by `reply_all_draft`):
+
+```json
+{ "action": "add_message_attachment", "messageId": "<existing-draft-id>", "sourceMessageId": "<original-message-id>", "attachmentName": "original-message.eml" }
+```
+
+The plugin reads the original message's complete Microsoft Graph MIME (`/$value`) and attaches those unchanged bytes as a `message/rfc822` `.eml` file. Headers, body and embedded attachments are retained as supplied by Graph; the message is not reconstructed from selected fields. `attachmentName` is optional (default `original-message.eml`) and must be a leaf `.eml` name. This action requires **both Mail `read` and `update` policy access**, delegated `Mail.ReadWrite`, and the normal native warning approval. Both IDs and the optional filename are bound to the approved call. It validates that the target is still a draft before reading and again before attaching; it never sends mail or edits recipients/body.
+
+One original is attached per call. MIME can be **up to Microsoft Graph’s 150 MB attachment maximum** (157,286,400 bytes). The plugin automatically uses a direct attachment below 3 MiB and a chunked upload session at or above 3 MiB; larger originals are rejected before any upload. Microsoft mailbox/message-size policies can impose a lower limit (the typical default message limit is 35 MB), which the plugin cannot override. `attachmentDownloadTimeoutMs` bounds the complete read-and-upload operation (default 10 minutes); each MIME read/upload request remains separately bounded (default 30 seconds, configurable through `requestTimeoutMs`). Include a sufficient outer tool `timeoutMs` for a large original. Call separately with distinct names for multiple originals. A failure after an attachment POST can have an unknown outcome: inspect `list_attachments` on the draft before retrying to avoid duplicates. Concurrent edits/sends by another client cannot be locked atomically; review the completed draft before sending. MIME bytes are never returned in model-facing results or logged.
+
 ## Place images within an Outlook mail body
 
 Use an HTML draft and a matching CID attachment. Put `<img src="cid:chart-1" alt="Chart">` at the precise position in `bodyHtml` where the image should appear, then add the private image to that draft with `inlineContentId: "chart-1"`:

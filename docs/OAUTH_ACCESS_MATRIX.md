@@ -28,6 +28,7 @@ This is not provider-side read/write isolation. A shared-credential compromise o
 | `outlook_mail_read`: all actions | `Mail.Read` | Mail `read` | none |
 | `outlook_mail_write`: `create_draft`, `update_draft`, `reply_draft`, `reply_all_draft`, `forward_draft` | `Mail.ReadWrite` | Mail `draft` | warning |
 | `outlook_mail_write`: `update_properties`, `copy`, `add_attachment` | `Mail.ReadWrite` | Mail `update` | warning |
+| `outlook_mail_write`: `add_message_attachment` (original MIME → existing draft) | `Mail.ReadWrite` | Mail `read` **and** `update` | warning |
 | `outlook_mail_write`: `move` | `Mail.ReadWrite` | Mail `move` | warning |
 | `outlook_mail_write`: `mark_read` | `Mail.ReadWrite` | Mail `mark` | warning |
 | `outlook_mail_write`: `send_draft` | `Mail.Send` | Mail `send` | critical |

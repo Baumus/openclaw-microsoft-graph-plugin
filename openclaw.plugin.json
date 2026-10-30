@@ -2,7 +2,7 @@
   "id": "microsoft-graph",
   "name": "Connect Microsoft 365 to OpenClaw",
   "description": "Bring Outlook mail, calendar, contacts, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.",
-  "version": "3.19.1",
+  "version": "3.20.0",
   "categories": [
     "productivity"
   ],
@@ -447,7 +447,7 @@
         "minimum": 30000,
         "maximum": 1800000,
         "default": 600000,
-        "description": "Whole-operation timeout for Outlook attachment metadata validation and binary download."
+        "description": "Whole-operation timeout for Outlook attachment downloads and original-message attachment transfers."
       },
       "oneDriveTransferTimeoutMs": {
         "type": "integer",
