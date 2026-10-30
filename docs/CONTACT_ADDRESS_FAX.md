@@ -11,7 +11,7 @@ The contact tools remain limited to the signed-in user's default `/me/contacts` 
 - Omit an entire address or fax field to leave it unchanged.
 - An address is a **complete replacement**, not a component patch. Supply all five string components; use `""` for unused parts. Read the existing address first when changing one component. This requirement follows Microsoft's structured-property update semantics and prevents accidental partial-address loss.
 - Pass `null` for an address to explicitly clear all five components.
-- Pass `""` for a fax field to explicitly clear its stored number. Fax fields otherwise accept strings up to 100 characters.
+- Pass `""` for a fax field to explicitly clear its stored number. Fax fields otherwise accept nonblank strings up to 100 characters; control characters and line breaks are rejected.
 - Nested unknown fields and incorrect types are rejected before credentials, provider access, or approval. Address limits are 1,024 characters for street, 64 for postal code, and 255 for the other components.
 
 For example, an address update can be requested as:
@@ -43,7 +43,7 @@ Microsoft Graph v1.0 does **not** define a native `faxNumber` contact field. The
 
 Fax values are not placed in voice-phone arrays or invented custom properties. Writes upsert only explicitly supplied IDs and do not send omitted fax IDs or unrelated extended properties. Reads expand the fixed allowlist and expose only normalized named fax fields, not raw extended-property collections. They use the existing delegated `Contacts.Read` / `Contacts.ReadWrite` permissions.
 
-Graph omits new extended properties from mutation responses. After a fax write, the plugin therefore reads the exact saved contact and returns provider values (`verification: "read_back"`), rather than echoing input as evidence. If readback fails after an accepted write, the result retains `mutationApplied: true` and reports `applied_with_warning`, `appliedButUnverified: true`, and `verification: "failed"`. Read the exact target before any retry; do not repeat the accepted write. A successful readback is evidence of the returned provider state, not a claim that every Outlook client displays the same fields. Real-account / Outlook-client roundtrip was not performed by the synthetic test suite.
+Graph omits new extended properties from mutation responses. After a fax write, the plugin therefore reads the exact saved contact and returns provider values (`verification: "read_back"`), rather than echoing input as evidence. A requested nonempty fax must be present and nonempty in the readback (provider formatting normalization is allowed); an explicitly cleared fax may be absent or empty. Missing requested values, duplicate IDs, malformed values, and a clear that remains nonempty are unverified. If readback fails after an accepted write, the result retains `mutationApplied: true` and reports `applied_with_warning`, `appliedButUnverified: true`, and `verification: "failed"`. Read the exact target before any retry; do not repeat the accepted write. A successful readback is evidence of the returned provider state, not a claim that every Outlook client displays the same fields. Real-account / Outlook-client roundtrip was not performed by the synthetic test suite.
 
 ## Authoritative references
 

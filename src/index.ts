@@ -1129,7 +1129,7 @@ const contactAddress = Type.Union([Type.Object({
   street: Type.String({ maxLength: 1024 }), city: Type.String({ maxLength: 255 }),
   state: Type.String({ maxLength: 255 }), postalCode: Type.String({ maxLength: 64 }), countryOrRegion: Type.String({ maxLength: 255 }),
 }, { additionalProperties: false }), Type.Null()], { description: "Full replacement postal address: supply all five string fields, using empty strings for unused components. Omit the whole address to preserve it; null explicitly clears all components. Read the existing address first when changing only one component." });
-const contactFax = Type.String({ maxLength: 100, description: "Outlook-compatible fax number (fixed MAPI property). Omit to preserve; empty string explicitly clears. Not a voice telephone number." });
+const contactFax = Type.String({ maxLength: 100, pattern: "^[^\\u0000-\\u001f\\u007f]*$", description: "Outlook-compatible fax number (fixed MAPI property). Omit to preserve; empty string explicitly clears. Not a voice telephone number." });
 const contactFields = {
   displayName: Type.Optional(Type.String({ maxLength: 255 })),
   givenName: Type.Optional(Type.String({ maxLength: 255 })),
@@ -3049,15 +3049,32 @@ const CONTACT_COLLECTION = "/me/contacts";
 const CONTACT_EXPAND = `singleValueExtendedProperties($filter=${Object.values(CONTACT_FAX_IDS).map((id) => `id eq '${id}'`).join(" or ")})`;
 const CONTACT_QUERY = `$select=${CONTACT_FIELDS.join(",")}&$expand=${encodeURIComponent(CONTACT_EXPAND)}`;
 
+function validContactFax(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 100 && !/[\u0000-\u001f\u007f]/.test(value) && (value === "" || value.trim().length > 0);
+}
+
+function contactFaxValues(entry: any): Map<string, string> {
+  if (!Array.isArray(entry?.singleValueExtendedProperties)) throw new Error("invalid_provider_response");
+  const allowed = new Set(Object.values(CONTACT_FAX_IDS).map((id) => id.toLowerCase()));
+  const values = new Map<string, string>();
+  for (const property of entry.singleValueExtendedProperties) {
+    const id = typeof property?.id === "string" ? property.id.toLowerCase() : "";
+    if (!allowed.has(id)) continue;
+    if (values.has(id) || !validContactFax(property.value)) throw new Error("invalid_provider_response");
+    values.set(id, property.value);
+  }
+  return values;
+}
+
 function sanitizeContact(entry: any, includeFax = true) {
   const item = sanitizeItem(entry, CONTACT_FIELDS);
   for (const name of CONTACT_ADDRESS_NAMES) {
     if (item[name] && typeof item[name] === "object" && !Array.isArray(item[name])) item[name] = Object.fromEntries(CONTACT_ADDRESS_FIELDS.filter((field) => typeof item[name][field] === "string").map((field) => [field, item[name][field]]));
     else if (item[name] !== undefined && item[name] !== null) delete item[name];
   }
-  for (const [field, id] of includeFax && Array.isArray(entry?.singleValueExtendedProperties) ? Object.entries(CONTACT_FAX_IDS) : []) {
-    const property = Array.isArray(entry?.singleValueExtendedProperties) ? entry.singleValueExtendedProperties.find((property: any) => typeof property?.id === "string" && property.id.toLowerCase() === id.toLowerCase()) : undefined;
-    item[field] = typeof property?.value === "string" ? property.value : "";
+  if (includeFax && Array.isArray(entry?.singleValueExtendedProperties)) {
+    const faxValues = contactFaxValues(entry);
+    for (const [field, id] of Object.entries(CONTACT_FAX_IDS)) item[field] = faxValues.get(id.toLowerCase()) ?? "";
   }
   return item;
 }
@@ -3104,14 +3121,14 @@ function planContactWrite(p: any) {
     body[name] = Object.fromEntries(CONTACT_ADDRESS_FIELDS.map((field) => [field, address === null ? "" : address[field]]));
   }
   const faxProperties = Object.entries(CONTACT_FAX_IDS).filter(([field]) => p[field] !== undefined).map(([field, propertyId]) => {
-    if (typeof p[field] !== "string" || p[field].length > 100) throw new Error("invalid_contact_fax");
+    if (!validContactFax(p[field])) throw new Error("invalid_contact_fax");
     return { id: propertyId, value: p[field] };
   });
   // PATCH upserts only these supplied property IDs; never replace unrelated MAPI properties.
   if (faxProperties.length) body.singleValueExtendedProperties = faxProperties;
   if (p.action === "create" && !["displayName", "givenName", "surname"].some((field) => typeof body[field] === "string" && body[field].trim()) && !(Array.isArray(body.emailAddresses) && body.emailAddresses.length > 0)) throw new Error("invalid_contact_payload");
   if (p.action === "update" && Object.keys(body).length === 0) throw new Error("invalid_contact_payload");
-  return { operation: p.action as "create" | "update" | "delete", id, body, readbackFax: faxProperties.length > 0 };
+  return { operation: p.action as "create" | "update" | "delete", id, body, faxProperties };
 }
 
 async function contactsWrite(config: RuntimeConfig, agentId: string | undefined, p: any, signal?: AbortSignal) {
@@ -3124,12 +3141,20 @@ async function contactsWrite(config: RuntimeConfig, agentId: string | undefined,
     const item = await graphRequest(token, plan.operation === "create" ? CONTACT_COLLECTION : `${CONTACT_COLLECTION}/${plan.id}`, { method: plan.operation === "create" ? "POST" : "PATCH", body: plan.body, signal: bounded });
     // Graph deliberately omits newly written extended properties from POST/PATCH responses.
     // Read the saved contact; never claim fax success by echoing the request payload.
-    if (plan.readbackFax) {
+    if (plan.faxProperties.length) {
       try {
         const targetId = plan.operation === "update" ? plan.id! : typeof item?.id === "string" ? safeId(item.id) : undefined;
         if (!targetId) throw new Error("invalid_provider_response");
         const saved = await graphRequest(token, `${CONTACT_COLLECTION}/${targetId}?${CONTACT_QUERY}`, { signal: bounded });
         if (typeof saved?.id !== "string" || safeId(saved.id) !== targetId || !Array.isArray(saved?.singleValueExtendedProperties)) throw new Error("invalid_provider_response");
+        const savedFax = contactFaxValues(saved);
+        for (const requested of plan.faxProperties) {
+          const actual = savedFax.get(requested.id.toLowerCase());
+          // Nonempty writes need positive provider evidence. Explicit clears may
+          // legitimately remove the property altogether. Never infer a saved
+          // number from an empty expansion or an unrelated property.
+          if (requested.value === "" ? actual !== undefined && actual !== "" : actual === undefined || actual === "") throw new Error("invalid_provider_response");
+        }
         return { ok: true, action: p.action, item: sanitizeContact(saved), verification: "read_back" };
       } catch {
         return { ok: true, action: p.action, item: sanitizeContact(item, false), outcome: "applied_with_warning", warning: "contact_readback_failed", appliedButUnverified: true, verification: "failed" };

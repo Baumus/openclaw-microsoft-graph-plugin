@@ -58,7 +58,7 @@ describe("Outlook contact postal addresses and fixed native fax properties", () 
     const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       if (init?.method === "POST" || init?.method === "PATCH") {
         const body = JSON.parse(String(init.body)); writes.push(body);
-        saved = { ...saved, ...body, singleValueExtendedProperties: [homeFax, unrelated, { id: businessFax.id, value: "+49 (30) 12345" }] };
+        saved = { ...saved, ...body, singleValueExtendedProperties: [homeFax, unrelated, { id: "String 0x3a24", value: "+49 (30) 12345" }] };
         return Response.json({ id: "A=B", displayName: "Ada", businessAddress: address }); // Graph omits extended properties here.
       }
       return Response.json(saved);
@@ -106,6 +106,34 @@ describe("Outlook contact postal addresses and fixed native fax properties", () 
     expect(result.item).not.toHaveProperty("homeFaxNumber");
   });
 
+  it.each([
+    [], [businessFax], [unrelated],
+    [{ ...homeFax, value: "" }], [{ ...homeFax, value: "   " }],
+    [{ ...homeFax, value: null }], [{ ...homeFax, value: 42 }],
+    [{ ...homeFax, value: "a".repeat(101) }], [{ ...homeFax, value: "+49\n30" }],
+    [homeFax, { ...homeFax, id: "String 0x3a25" }],
+  ].map(properties => ({ properties })))("requires nonempty requested fax evidence, rejecting missing, invalid or duplicated properties: %j", async ({ properties }) => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => Response.json(init?.method === "PATCH" ? { id: "contact" } : { id: "contact", singleValueExtendedProperties: properties }));
+    const result = await harness().execute("outlook_contacts_write", { action: "update", contactId: "contact", homeFaxNumber: homeFax.value });
+    expect(result).toMatchObject({ ok: true, mutationApplied: true, phase: "partial", appliedButUnverified: true, verification: "failed", outcome: "applied_with_warning", retrySafety: "readback_before_retry" });
+    expect(result.item).not.toHaveProperty("homeFaxNumber");
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
+  });
+
+  it.each([[], [{ ...homeFax, value: "" }], [unrelated]].map(properties => ({ properties })))("verifies explicit clear when the target property is absent or empty: %j", async ({ properties }) => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => Response.json(init?.method === "PATCH" ? { id: "contact" } : { id: "contact", singleValueExtendedProperties: properties }));
+    const result = await harness().execute("outlook_contacts_write", { action: "update", contactId: "contact", homeFaxNumber: "" });
+    expect(result).toMatchObject({ ok: true, mutationApplied: true, verification: "read_back", item: { homeFaxNumber: "" } });
+    expect(result).not.toHaveProperty("appliedButUnverified");
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
+  });
+
+  it("does not verify a clear when the saved fax is still nonempty", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => Response.json(init?.method === "PATCH" ? { id: "contact" } : { id: "contact", singleValueExtendedProperties: [homeFax] }));
+    const result = await harness().execute("outlook_contacts_write", { action: "update", contactId: "contact", homeFaxNumber: "" });
+    expect(result).toMatchObject({ ok: true, mutationApplied: true, appliedButUnverified: true, verification: "failed" });
+  });
+
   it("retains a successful mutation receipt when provider readback fails and never repeats the write", async () => {
     const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => init?.method === "PATCH" ? Response.json({ id: "contact", displayName: "Ada" }) : Response.json({ error: { code: "AccessDenied" } }, { status: 403 }));
     const result = await harness().execute("outlook_contacts_write", { action: "update", contactId: "contact", homeFaxNumber: homeFax.value });
@@ -120,7 +148,7 @@ describe("Outlook contact postal addresses and fixed native fax properties", () 
     { businessAddress: { ...address, unknown: "not-allowed" } },
     { homeAddress: [] }, { otherAddress: "not-an-object" }, { businessAddress: { ...address, city: 3 } },
     { businessAddress: { ...address, street: "a".repeat(1025) } }, { otherAddress: { ...address, postalCode: "a".repeat(65) } },
-    { businessFaxNumber: null }, { homeFaxNumber: [] }, { primaryFaxNumber: 5 }, { homeFaxNumber: "a".repeat(101) },
+    { businessFaxNumber: null }, { homeFaxNumber: [] }, { primaryFaxNumber: 5 }, { homeFaxNumber: "a".repeat(101) }, { businessFaxNumber: "+49\n30" }, { homeFaxNumber: "   " },
     { singleValueExtendedProperties: [unrelated] }, { faxNumber: "ambiguous" },
   ])("rejects malformed/unsupported fields before approval, credentials, or provider access: %j", async fields => {
     const fetch = vi.spyOn(globalThis, "fetch");
