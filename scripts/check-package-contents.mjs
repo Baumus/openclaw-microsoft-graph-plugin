@@ -17,6 +17,7 @@ const expected = [
   "dist/index.js",
   "docs/ARCHITECTURE.md",
   "docs/CREDENTIAL_VAULT_DESIGN.md",
+  "docs/CONTACT_ADDRESS_FAX.md",
   "docs/OAUTH_ACCESS_MATRIX.md",
   "docs/SUPPORT.md",
   "examples/microsoft-graph-policy.json5",

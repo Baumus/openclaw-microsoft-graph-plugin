@@ -205,7 +205,7 @@ describe("Gateway credential handling", () => {
     const fetchFn = vi.fn(async () => { throw new Error("synthetic_lost_response"); });
     const params = { config: { credentialVaultKey: read }, policy: vaultPolicy(), allowedScopes: ["Files.Read"], stateDir: state, requestTimeoutMs: 1000, fetchFn: fetchFn as typeof fetch };
     await expect(tokenForAuthorizedOperation(params)).rejects.toThrow("credential_refresh_outcome_uncertain");
-    await expect(tokenForAuthorizedOperation(params)).rejects.toThrow("credential_reauthorization_required");
+    await expect(tokenForAuthorizedOperation(params)).rejects.toThrow("credential_refresh_retry_later");
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
@@ -238,7 +238,7 @@ describe("Gateway credential handling", () => {
     await expect(tokenForAuthorizedOperation(params)).rejects.toThrow("credential_refresh_outcome_uncertain");
     expect((await lstat(vaultQuarantinePath(state))).mode & 0o777).toBe(0o600);
     expect(await inspectVaultCredential(state, read)).toMatchObject({ result: "quarantined" });
-    await expect(tokenForAuthorizedOperation(params)).rejects.toThrow("credential_reauthorization_required");
+    await expect(tokenForAuthorizedOperation(params)).rejects.toThrow("credential_refresh_retry_later");
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
@@ -255,17 +255,37 @@ describe("Gateway credential handling", () => {
     await expect(lstat(vaultQuarantinePath(state))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("quarantines an HTTP 503 vault response and blocks retry before OAuth dispatch", async () => {
-    const state = await temporaryState();
-    const read = vaultKey();
+  it.each([429, 500, 502, 503, 504])("does not quarantine or internally retry definitive transient HTTP %i", async (status) => {
+    const state = await temporaryState(); const read = vaultKey();
     await createVaultCredential(state, vaultCredential, read);
-    const fetchFn = vi.fn(async () => new Response(null, { status: 503 }));
-    const params = { config: { credentialVaultKey: read }, policy: vaultPolicy(), allowedScopes: ["Files.Read"], stateDir: state, requestTimeoutMs: 1000, fetchFn: fetchFn as typeof fetch };
-
-    await expect(tokenForAuthorizedOperation(params)).rejects.toThrow("credential_refresh_outcome_uncertain");
-    expect(await inspectVaultCredential(state, read)).toMatchObject({ result: "quarantined" });
-    await expect(tokenForAuthorizedOperation(params)).rejects.toThrow("credential_reauthorization_required");
+    const fetchFn = vi.fn(async () => new Response(null, { status }));
+    const params = { config: { credentialVaultKey: read }, policy: vaultPolicy(), allowedScopes: ["Files.Read"], stateDir: state, fetchFn: fetchFn as typeof fetch };
+    await expect(tokenForAuthorizedOperation(params)).rejects.toThrow("credential_refresh_temporarily_unavailable");
+    expect(await inspectVaultCredential(state, read)).toMatchObject({ result: "valid" });
     expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["invalid_grant", "interaction_required", "consent_required", "invalid_client"])("returns real OAuth %s as reauth, without blocking the existing consent flow", async (error) => {
+    const state = await temporaryState(); const read = vaultKey();
+    await createVaultCredential(state, vaultCredential, read);
+    const fetchFn = vi.fn(async () => new Response(JSON.stringify({ error, error_description: "must-not-echo" }), { status: 400 }));
+    await expect(tokenForAuthorizedOperation({ config: { credentialVaultKey: read }, policy: vaultPolicy(), allowedScopes: ["Files.Read"], stateDir: state, fetchFn: fetchFn as typeof fetch })).rejects.toThrow("credential_reauthorization_required");
+    expect(await inspectVaultCredential(state, read)).toMatchObject({ result: "valid" });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers a lost OAuth response once on a later call and admits only its durable token", async () => {
+    const state = await temporaryState(); const read = vaultKey(); await createVaultCredential(state, vaultCredential, read);
+    const fetchFn = vi.fn().mockRejectedValueOnce(new Error("lost-response")).mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "recovered-access", refresh_token: "recovered-refresh", expires_in: 3600 }), { status: 200 }));
+    const params = { config: { credentialVaultKey: read }, policy: vaultPolicy(), allowedScopes: ["Files.Read"], stateDir: state, fetchFn: fetchFn as typeof fetch };
+    await expect(tokenForAuthorizedOperation(params)).rejects.toThrow("credential_refresh_outcome_uncertain");
+    expect(accessTokenCacheStateForTests().entries).toBe(0);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
+    await expect(tokenForAuthorizedOperation(params)).resolves.toBe("recovered-access");
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(accessTokenCacheStateForTests().entries).toBe(1);
+    await expect(tokenForAuthorizedOperation(params)).resolves.toBe("recovered-access");
+    expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
   it("bounds OAuth exchange by request timeout and cleans up its timer", async () => {

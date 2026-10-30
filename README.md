@@ -58,10 +58,12 @@ Downloading transfers untrusted bytes; it does not parse, render, execute, or gr
 - One shared delegated OAuth credential serves every authorized read and write operation. The plugin requests only the operation-specific scope for each exchange.
 - One AES-256-GCM encrypted vault record, one fail-closed lock, and one authenticated quarantine marker protect the rotating refresh-token lifecycle.
 - Access-token caching is bounded and transactional: a token associated with a rotated refresh token is admitted only after durable vault replacement and verification.
-- Every refresh durably publishes authenticated `in_flight` state before OAuth dispatch; uncertainty transitions it to `quarantined`, and either state blocks another exchange until verified completion, explicit recovery, or reauthorization.
+- Every refresh durably publishes authenticated `in_flight` state before OAuth dispatch. New OAuth-only uncertainty may recover once on a later authorized operation after 60 seconds; its authenticated retry budget is consumed durably before dispatch. Crashes, legacy markers, exhausted recovery, uncertain local publication and changed vault bindings remain blocked for reviewed operator recovery. No data operation is replayed.
 - HTTP-200 OAuth responses require a 1–16 KiB RFC 6750 `b64token`/header-safe access token and a positive integer `expires_in` no greater than 86,400 seconds. Cache residency is capped at one hour with a 60-second skew.
 
 This simpler shared-credential model has an explicit tradeoff: compromise of the credential, vault key, or a plugin bypass can expose the union of Microsoft delegated scopes granted to that credential. The policy and write-approval gates constrain normal plugin behavior; they are not provider-side credential isolation.
+
+Contacts tools include business/home/other postal addresses and Outlook-compatible business/home/primary fax numbers. Address writes require all five components (or `null` to clear); omit fields to preserve them. See [contact address and fax semantics](docs/CONTACT_ADDRESS_FAX.md).
 
 Contacts access is optional and denied for existing policies until an administrator grants it. Read requires delegated `Contacts.Read`; create, update, and delete require `Contacts.ReadWrite`. Existing vault credentials do not gain newly requested scopes automatically. After saving and applying a new grant, the Control UI shows missing scopes and guides the administrator through renewal on Microsoft’s device page without entering identifiers or CLI commands. Affected operations fail closed until reauthorization succeeds; the old vault remains in place until the new grant is verified and atomically published.
 
@@ -292,17 +294,17 @@ OneDrive mutation authorization occurs before a warning approval request or appr
 - `missing`: no vault exists; use the browser sign-in above.
 - `valid` with nonempty `missingScopes`: the saved policy requires consent absent from the stored credential; use **Renew Microsoft permissions** in the Control UI. Do not delete the vault.
 - `valid`: the vault decrypts and has no authenticated refresh marker.
-- `quarantined`: a dispatched refresh has an uncertain outcome. Normal exchanges remain blocked.
+- `quarantined`: an authenticated refresh marker exists. A new explicitly OAuth-uncertain marker permits one bounded recovery on a later authorized operation after a 60-second cooldown; other markers remain blocked. Status itself does not attempt OAuth or clear state.
 - `unavailable`: the key, record, permissions, ownership, filesystem, or authenticated envelope could not be validated. Stop and investigate; do not overwrite the vault.
 
-For `quarantined`, the ordinary `reauthorize` command refuses to replace the vault. Arrange a separately reviewed recovery or replacement whenever Microsoft may have rotated the refresh token. Only if an operator has independently established that the current vault credential remains usable should they copy the current **sanitized binding** from `status` and run:
+For `quarantined`, the ordinary `reauthorize` command refuses to replace the vault. Automatic recovery is only for authenticated v3 OAuth-only uncertainty matching the exact current vault generation, key and digest. It never runs in the background or retries a Graph data request; failure exhausts its one durable attempt even across process restart. Microsoft documents that issuing a new token pair does not automatically revoke the previous refresh token ([refresh-token lifecycle](https://learn.microsoft.com/en-us/entra/identity-platform/refresh-tokens)); the recovery may still receive a real reauthorization error. Definitive `invalid_grant` / `interaction_required` responses on an ordinary fresh refresh require guided sign-in instead, and do not leave an OAuth marker blocking that flow. A failed claimed recovery never clears its consumed retry budget, even for a definitive authentication/reauthorization error; exhausted state requires reviewed operator recovery before guided sign-in. Legacy v1/v2 markers cannot distinguish an uncertain OAuth response from an uncertain local credential publication, so they are never cleared automatically. Arrange separately reviewed recovery or replacement for all remaining blocked states. Only if an operator has independently established that the current vault credential remains usable should they copy the current **sanitized binding** from `status` and run:
 
 ```text
 openclaw microsoft-graph credentials recover-refresh --expected-binding <binding> --dry-run
 openclaw microsoft-graph credentials recover-refresh --expected-binding <binding> --apply
 ```
 
-Apply requires the exact typed confirmation `RECOVER MICROSOFT GRAPH REFRESH`. The binding prevents recovery against a changed record. Do not blindly repeat a refresh or recovery after an uncertain result.
+Apply requires the exact typed confirmation `RECOVER MICROSOFT GRAPH REFRESH`. The binding prevents recovery against a changed record. Do not blindly repeat a refresh or recovery after an uncertain result. A package downgrade to 3.20.1 or earlier rejects v3 markers and fails closed: finish verified recovery first, or use separately reviewed operator recovery with the current package. Never delete or downgrade a marker to reset its retry budget.
 
 To create a verified emergency copy in a separate `pass` destination without changing vault operation:
 
