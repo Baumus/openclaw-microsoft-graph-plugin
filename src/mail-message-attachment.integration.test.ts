@@ -105,8 +105,10 @@ describe("attach original messages to existing Outlook drafts", () => {
   it("rejects empty MIME without writing", async () => {
     const bytes = Buffer.alloc(0);
     const fetchSpy = transport({ bytes });
-    expect((await registered().run()).details.ok).toBe(false);
+    const { run, logger } = registered();
+    expect((await run()).details).toMatchObject({ ok: false, error: "invalid_provider_response", diagnosticStep: "source_mime_read", writeAttempted: false, mutationApplied: false, retrySafety: "safe_after_correction" });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('"diagnostic_step":"source_mime_read"'));
   });
   it("supports the maximum direct MIME size", async () => {
     const fetchSpy = transport({ bytes: Buffer.alloc(DIRECT_ATTACHMENT_MAX_BYTES - 1, 65), echo: true });
@@ -170,7 +172,7 @@ describe("attach original messages to existing Outlook drafts", () => {
     expect((await registered().run()).details).toMatchObject({ ok: false, error: "provider_response_too_large" });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
-  it.each([DIRECT_ATTACHMENT_MAX_BYTES, 10 * 320 * 1024 + 37])("uploads %i original MIME bytes through a safe session without credential leakage", async (size) => {
+  it.each([DIRECT_ATTACHMENT_MAX_BYTES, 10 * 320 * 1024 + 37, 11 * 1024 * 1024 + 37])("uploads %i original MIME bytes through a safe session without credential leakage", async (size) => {
     const bytes = Buffer.alloc(size, 65);
     mime.copy(bytes);
     const fetchSpy = transport({ bytes });
@@ -221,6 +223,7 @@ describe("attach original messages to existing Outlook drafts", () => {
     });
     const response = await registered().run();
     expect(response.details).toMatchObject({ ok: false, mutationApplied: "unknown", retrySafety: "readback_before_retry" });
+    expect(response.details).toMatchObject({ diagnosticStep: failure === "unsafe-session" ? "upload_session_validation" : "upload_chunk", writeAttempted: true });
     expect(fetchSpy.mock.calls.filter(([input]) => String(input).includes("attacker.example.test"))).toHaveLength(0);
     expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
     expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(failure === "unsafe-session" ? 0 : 1);
