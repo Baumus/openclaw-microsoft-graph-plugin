@@ -1,15 +1,17 @@
+import { fork } from "node:child_process";
+import { build } from "esbuild";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, symlink, utimes, writeFile } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { acquireVaultLock, clearVaultQuarantine, createVaultCredential, decodeVaultKey, decryptVaultEnvelope, encryptVaultCredential, inspectVaultCredential, parseVaultCredential, parseVaultEnvelope, readVaultCredential, refreshVaultCredential, serializeVaultEnvelope, vaultCredentialPath, vaultQuarantinePath, vaultRecordBinding } from "./credential-vault.js";
 
 const temporary: string[] = [];
 const credential = { clientId: "synthetic-client", refreshToken: "synthetic-refresh", tenant: "synthetic-tenant", scopes: ["Files.Read", "Files.ReadWrite", "offline_access"] };
 const key = () => randomBytes(32).toString("base64url");
 async function stateDir() { const path = await mkdtemp(join(tmpdir(), "microsoft-graph-vault-test-")); temporary.push(path); return path; }
-afterEach(async () => { const { rm } = await import("node:fs/promises"); await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
+afterEach(async () => { vi.restoreAllMocks(); const { rm } = await import("node:fs/promises"); await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
 
 describe("single credential vault", () => {
   it("accepts only canonical 32-byte keys and authenticates the entire envelope", () => {
@@ -57,7 +59,7 @@ describe("single credential vault", () => {
     const state = await stateDir(); const active = key(); const current = await createVaultCredential(state, credential, active); let exchanges = 0;
     await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => { exchanges += 1; throw new Error("credential_refresh_outcome_uncertain"); } })).rejects.toThrow("credential_refresh_outcome_uncertain");
     expect((await lstat(vaultQuarantinePath(state))).mode & 0o777).toBe(0o600);
-    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => { exchanges += 1; return { accessToken: "no" }; } })).rejects.toThrow("credential_reauthorization_required"); expect(exchanges).toBe(1);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => { exchanges += 1; return { accessToken: "no" }; } })).rejects.toThrow("credential_refresh_retry_later"); expect(exchanges).toBe(1);
     const binding = vaultRecordBinding(current).binding; await clearVaultQuarantine(state, active, binding, true); await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => ({ accessToken: "recovered" }) })).resolves.toBe("recovered");
   });
 
@@ -108,4 +110,180 @@ describe("single credential vault", () => {
     const state = await stateDir(); const active = key(); await createVaultCredential(state, credential, active);
     expect(await inspectVaultCredential(state, active)).toMatchObject({ result: "valid", generation: 1, binding: expect.any(String) });
   });
+  it("durably consumes one recovery attempt across new calls and exhausts it on failure", async () => {
+    const state = await stateDir(); const active = key(); await createVaultCredential(state, credential, active);
+    const exchange = vi.fn(async () => { throw new Error("credential_refresh_outcome_uncertain"); });
+    const params = { stateDir: state, key: active, exchange };
+    await expect(refreshVaultCredential(params)).rejects.toThrow("credential_refresh_outcome_uncertain");
+    await expect(refreshVaultCredential(params)).rejects.toThrow("credential_refresh_retry_later");
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
+    await expect(refreshVaultCredential({ ...params })).rejects.toThrow("credential_refresh_outcome_uncertain");
+    expect(JSON.parse(await readFile(vaultQuarantinePath(state), "utf8"))).toMatchObject({ version: 3, reason: "exhausted", recoveryUsed: 1 });
+    await expect(refreshVaultCredential({ ...params })).rejects.toThrow("credential_reauthorization_required");
+    expect(exchange).toHaveBeenCalledTimes(2);
+  });
+
+  it("a definitive transient response during recovery cannot reset its durable budget", async () => {
+    const state = await stateDir(); const active = key(); await createVaultCredential(state, credential, active);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => { throw new Error("credential_refresh_outcome_uncertain"); } })).rejects.toThrow();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => { throw new Error("credential_refresh_temporarily_unavailable"); } })).rejects.toThrow("credential_refresh_temporarily_unavailable");
+    const exchange = vi.fn();
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange })).rejects.toThrow("credential_reauthorization_required");
+    expect(exchange).not.toHaveBeenCalled();
+  });
+
+  it.each([1, 2])("legacy v%i markers cannot prove OAuth-only uncertainty and remain operator-bound", async (version) => {
+    const state = await stateDir(); const active = key(); const current = await createVaultCredential(state, credential, active);
+    const base = { format: "openclaw-microsoft-graph-refresh-quarantine", version, generation: 1, keyId: current.envelope.keyId, vaultDigest: current.digest };
+    const payload = version === 1 ? { ...base, reason: "oauth_outcome_uncertain", createdAt: "2000-01-01T00:00:00Z" } : { ...base, state: "quarantined", createdAt: "2000-01-01T00:00:00Z", updatedAt: "2000-01-01T00:00:00Z" };
+    const mac = createHmac("sha256", Buffer.from(active, "base64url")).update(JSON.stringify(payload)).digest("base64url");
+    await writeFile(vaultQuarantinePath(state), JSON.stringify({ ...payload, mac }), { mode: 0o600 });
+    const exchange = vi.fn(); await expect(refreshVaultCredential({ stateDir: state, key: active, exchange })).rejects.toThrow("credential_reauthorization_required"); expect(exchange).not.toHaveBeenCalled();
+  });
+
+  it.each(["generation", "keyId", "vaultDigest", "mac"])("rejects changed %s before recovery dispatch", async (field) => {
+    const state = await stateDir(); const active = key(); await createVaultCredential(state, credential, active);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => { throw new Error("credential_refresh_outcome_uncertain"); } })).rejects.toThrow();
+    const { mac: _mac, ...payload } = JSON.parse(await readFile(vaultQuarantinePath(state), "utf8"));
+    if (field !== "mac") payload[field] = field === "generation" ? 2 : "changed";
+    const mac = createHmac("sha256", Buffer.from(active, "base64url")).update(JSON.stringify(payload)).digest("base64url");
+    await writeFile(vaultQuarantinePath(state), JSON.stringify({ ...payload, mac: field === "mac" ? "a".repeat(43) : mac }), { mode: 0o600 });
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
+    const exchange = vi.fn(); await expect(refreshVaultCredential({ stateDir: state, key: active, exchange })).rejects.toThrow(); expect(exchange).not.toHaveBeenCalled();
+  });
+
+  it("recovery handoff serializes concurrent callers, observes rotation, and cleans up after success", async () => {
+    const state = await stateDir(); const active = key(); await createVaultCredential(state, credential, active);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => { throw new Error("credential_refresh_outcome_uncertain"); } })).rejects.toThrow();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
+    let entered!: () => void; const started = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
+    const observed: string[] = [];
+    const first = refreshVaultCredential({ stateDir: state, key: active, exchange: async (current) => { observed.push(current.refreshToken); entered(); await gate; return { accessToken: "recovered", replacementRefreshToken: "rotated-after-recovery" }; } });
+    await started;
+    expect(JSON.parse(await readFile(vaultQuarantinePath(state), "utf8"))).toMatchObject({ state: "in_flight", recoveryUsed: 1 });
+    const second = refreshVaultCredential({ stateDir: state, key: active, exchange: async (current) => { observed.push(current.refreshToken); return { accessToken: "later" }; } });
+    release(); await expect(first).resolves.toBe("recovered"); await expect(second).resolves.toBe("later");
+    expect(observed).toEqual([credential.refreshToken, "rotated-after-recovery"]);
+    expect(await inspectVaultCredential(state, active)).toMatchObject({ result: "valid", generation: 2 });
+  });
+
+  it("a crash after recovery claim or failed claim publication cannot re-enable recovery", async () => {
+    const state = await stateDir(); const active = key(); await createVaultCredential(state, credential, active);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => { throw new Error("credential_refresh_outcome_uncertain"); } })).rejects.toThrow();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
+    const controller = new AbortController(); const exchange = vi.fn();
+    await expect(refreshVaultCredential({ stateDir: state, key: active, signal: controller.signal, exchange, testHooks: { beforeMarkerTransition: () => { controller.abort(); } } })).rejects.toMatchObject({ name: "AbortError" });
+    expect(exchange).not.toHaveBeenCalled();
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange })).rejects.toThrow("credential_reauthorization_required");
+    expect(JSON.parse(await readFile(vaultQuarantinePath(state), "utf8"))).toMatchObject({ state: "in_flight", recoveryUsed: 1 });
+  });
+
+  it("does not automatically recover uncertain vault publication, even after cooldown", async () => {
+    for (const afterPublication of [false, true]) {
+      const state = await stateDir(); const active = key(); await createVaultCredential(state, credential, active);
+      const fault = () => { throw new Error("synthetic-publication-fault"); };
+      const exchange = vi.fn(async () => ({ accessToken: "must-not-return", replacementRefreshToken: "new-secret" }));
+      await expect(refreshVaultCredential({ stateDir: state, key: active, exchange, testHooks: afterPublication ? { afterPublication: fault } : { beforePublication: fault } })).rejects.toThrow("credential_refresh_outcome_uncertain");
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
+      await expect(refreshVaultCredential({ stateDir: state, key: active, exchange })).rejects.toThrow("credential_reauthorization_required");
+      expect(exchange).toHaveBeenCalledTimes(1);
+      expect((await readVaultCredential(state, active)).credential.refreshToken).toBe(afterPublication ? "new-secret" : credential.refreshToken);
+    }
+  });
+
+  it("serializes recovery with an independent process and hands off only the durable generation", async () => {
+    const state = await stateDir(); const active = key(); await createVaultCredential(state, credential, active);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => { throw new Error("credential_refresh_outcome_uncertain"); } })).rejects.toThrow();
+    const now = Date.now() + 60_001; vi.spyOn(Date, "now").mockReturnValue(now);
+    const compiled = await build({ stdin: { contents: `
+      import { refreshVaultCredential } from "./src/credential-vault.ts";
+      process.once("message", async ({ stateDir, key, now }) => {
+        Date.now = () => now;
+        try {
+          const result = await refreshVaultCredential({ stateDir, key, exchange: async () => {
+            const gate = new Promise(resolve => process.once("message", resolve));
+            process.send({ ready: true }); await gate;
+            return { accessToken: "child-access", replacementRefreshToken: "child-rotated" };
+          } });
+          process.send({ result });
+        } catch { process.send({ failed: true }); }
+        process.disconnect();
+      });`, resolveDir: process.cwd() }, bundle: true, packages: "external", platform: "node", format: "esm", write: false });
+    // Keep the disposable bundle beneath this package so its owned dependencies resolve.
+    const directory = await mkdtemp(join(process.cwd(), "node_modules", ".vault-process-test-")); temporary.push(directory);
+    const entry = join(directory, "child.mjs"); await writeFile(entry, compiled.outputFiles[0]!.contents);
+    const child = fork(entry, [], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+    const exited = new Promise<number | null>((resolve) => child.once("exit", resolve));
+    const messages: unknown[] = [];
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.on("message", (message) => { messages.push(message); if ((message as { ready?: boolean }).ready) resolve(); if ((message as { failed?: boolean }).failed) reject(new Error("synthetic child failed")); });
+        child.once("error", reject); child.send({ stateDir: state, key: active, now });
+      });
+      let observed: string | undefined;
+      const next = refreshVaultCredential({ stateDir: state, key: active, exchange: async (current) => { observed = current.refreshToken; return { accessToken: "parent-access" }; } });
+      child.send({ release: true });
+      await expect(next).resolves.toBe("parent-access");
+      expect(await exited).toBe(0);
+      expect(messages).toContainEqual({ result: "child-access" });
+      expect(observed).toBe("child-rotated");
+      expect(await inspectVaultCredential(state, active)).toMatchObject({ result: "valid", generation: 2 });
+    } finally { if (child.exitCode === null) { child.kill(); await exited; } }
+  }, 10_000);
+
+  it("retains a consumed claim when recovery publication readback fails", async () => {
+    const state = await stateDir(); const active = key(); await createVaultCredential(state, credential, active);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => { throw new Error("credential_refresh_outcome_uncertain"); } })).rejects.toThrow();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
+    const exchange = vi.fn();
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange, testHooks: { afterMarkerPublication: () => { throw new Error("synthetic-readback-failure"); } } })).rejects.toThrow("credential_vault_write_failed");
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange })).rejects.toThrow("credential_reauthorization_required");
+    expect(exchange).not.toHaveBeenCalled();
+  });
+
+  it("checks the cooldown boundary without a timer or busy retry", async () => {
+    const state = await stateDir(); const active = key(); await createVaultCredential(state, credential, active);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => { throw new Error("credential_refresh_outcome_uncertain"); } })).rejects.toThrow();
+    const marker = JSON.parse(await readFile(vaultQuarantinePath(state), "utf8"));
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse(marker.updatedAt) + 59_999);
+    const exchange = vi.fn(async () => ({ accessToken: "after-boundary" }));
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange })).rejects.toThrow("credential_refresh_retry_later");
+    expect(exchange).not.toHaveBeenCalled(); clock.mockReturnValue(Date.parse(marker.updatedAt) + 60_000);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange })).resolves.toBe("after-boundary");
+    expect(exchange).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains fail-closed state when a known OAuth rejection observes a changed vault", async () => {
+    const state = await stateDir(); const active = key(); await createVaultCredential(state, credential, active);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => {
+      await writeFile(vaultCredentialPath(state), serializeVaultEnvelope(encryptVaultCredential(2, { ...credential, refreshToken: "changed" }, active)), { mode: 0o600 });
+      throw new Error("credential_reauthorization_required");
+    } })).rejects.toThrow("credential_vault_conflict");
+    expect(await inspectVaultCredential(state, active)).toMatchObject({ result: "quarantined", generation: 2 });
+  });
+
+  it("does not dispatch after the vault changes during initial marker publication", async () => {
+    const state = await stateDir(); const active = key(); await createVaultCredential(state, credential, active);
+    const exchange = vi.fn();
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange, testHooks: { afterMarkerPublication: async () => {
+      await writeFile(vaultCredentialPath(state), serializeVaultEnvelope(encryptVaultCredential(2, credential, active)), { mode: 0o600 });
+    } } })).rejects.toThrow("credential_vault_conflict");
+    expect(exchange).not.toHaveBeenCalled();
+  });
+
+  it("does not consume a recovery budget when another lock owner prevents acquisition", async () => {
+    const state = await stateDir(); const active = key(); await createVaultCredential(state, credential, active);
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange: async () => { throw new Error("credential_refresh_outcome_uncertain"); } })).rejects.toThrow();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
+    const lock = await acquireVaultLock(state, "other-process"); const exchange = vi.fn(async () => ({ accessToken: "after-lock" }));
+    try {
+      await expect(refreshVaultCredential({ stateDir: state, key: active, exchange })).rejects.toThrow("credential_vault_locked");
+      expect(JSON.parse(await readFile(vaultQuarantinePath(state), "utf8")).recoveryUsed).toBe(0);
+    } finally { await lock.release(); }
+    await expect(refreshVaultCredential({ stateDir: state, key: active, exchange })).resolves.toBe("after-lock");
+    expect(exchange).toHaveBeenCalledTimes(1);
+  }, 10_000);
+
 });

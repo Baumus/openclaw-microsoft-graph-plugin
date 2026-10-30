@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## 3.21.0 - 2026-10-30
+
+- Recover an explicitly OAuth-uncertain refresh once on a later authorized operation after a 60-second cooldown, with an authenticated, durable same-vault retry budget consumed before dispatch. No timer, background worker, Graph operation replay, permission change, or Microsoft sign-in is added.
+- Treat definitive transient token-endpoint responses separately from real Microsoft reauthorization errors. Keep legacy/ambiguous markers, in-flight crashes, exhausted recovery, uncertain local publication, changed vault bindings and storage/integrity failures fail-closed; never fall back to an older secret.
+- Preserve existing reviewed binding-bound recovery and guided reauthorization. Document upgrade/downgrade constraints for v3 refresh-state markers. No host-version floor increase.
+
 ## 3.20.1
 
 - Report the exact bounded stage of failed original-message `.eml` transfers without exposing MIME bytes, upload URLs, tokens, or provider bodies. Distinguish failures before any attachment write from uncertain upload-session outcomes, so agents know when draft readback is required before retrying.

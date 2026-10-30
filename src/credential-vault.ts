@@ -21,11 +21,15 @@ const CREDENTIAL_FIELDS = new Set(["clientId", "refreshToken", "tenant", "scopes
 const QUARANTINE_FORMAT = "openclaw-microsoft-graph-refresh-quarantine" as const;
 const LEGACY_QUARANTINE_FIELDS = new Set(["format", "version", "generation", "keyId", "vaultDigest", "reason", "createdAt", "mac"]);
 const REFRESH_STATE_FIELDS = new Set(["format", "version", "generation", "keyId", "vaultDigest", "state", "createdAt", "updatedAt", "mac"]);
-const REFRESH_STATE_ALL_FIELDS = new Set([...LEGACY_QUARANTINE_FIELDS, ...REFRESH_STATE_FIELDS]);
+const RECOVERY_FIELDS = new Set([...REFRESH_STATE_FIELDS, "reason", "recoveryUsed"]);
+const REFRESH_STATE_ALL_FIELDS = new Set([...LEGACY_QUARANTINE_FIELDS, ...RECOVERY_FIELDS]);
+export const REFRESH_RECOVERY_COOLDOWN_MS = 60_000;
+type RefreshReason = "oauth_pending" | "oauth_uncertain" | "publication" | "exhausted";
 type RefreshState = "in_flight" | "quarantined";
 type LegacyQuarantineMarker = { format: typeof QUARANTINE_FORMAT; version: 1; generation: number; keyId: string; vaultDigest: string; reason: "oauth_outcome_uncertain"; createdAt: string; mac: string };
 type RefreshStateMarker = { format: typeof QUARANTINE_FORMAT; version: 2; generation: number; keyId: string; vaultDigest: string; state: RefreshState; createdAt: string; updatedAt: string; mac: string };
-type ParsedRefreshStateMarker = RefreshStateMarker | (LegacyQuarantineMarker & { state: "quarantined"; updatedAt: string });
+type RecoveryMarker = Omit<RefreshStateMarker, "version"> & { version: 3; reason: RefreshReason; recoveryUsed: 0 | 1 };
+type ParsedRefreshStateMarker = RecoveryMarker | RefreshStateMarker | (LegacyQuarantineMarker & { state: "quarantined"; updatedAt: string });
 type MutationHooks = {
   beforePublication?: () => void | Promise<void>;
   afterPublication?: () => void | Promise<void>;
@@ -209,7 +213,7 @@ export async function acquireVaultLock(stateDir: string, operation: string): Pro
   } catch { throw new Error("credential_vault_locked"); }
 }
 
-function markerMac(marker: Omit<LegacyQuarantineMarker, "mac"> | Omit<RefreshStateMarker, "mac">, keyValue: unknown): string { return createHmac("sha256", decodeVaultKey(keyValue)).update(JSON.stringify(marker)).digest("base64url"); }
+function markerMac(marker: Omit<LegacyQuarantineMarker, "mac"> | Omit<RefreshStateMarker, "mac"> | Omit<RecoveryMarker, "mac">, keyValue: unknown): string { return createHmac("sha256", decodeVaultKey(keyValue)).update(JSON.stringify(marker)).digest("base64url"); }
 function parseMarker(raw: string, keyValue: unknown): ParsedRefreshStateMarker {
   const value = parseStrictObject(raw, REFRESH_STATE_ALL_FIELDS);
   if (value.format !== QUARANTINE_FORMAT || typeof value.mac !== "string") throw unavailable();
@@ -221,12 +225,14 @@ function parseMarker(raw: string, keyValue: unknown): ParsedRefreshStateMarker {
     if (!timingSafeEqual(strictBase64Url(mac, 32), strictBase64Url(markerMac(payload, keyValue), 32))) throw unavailable();
     return { ...marker, state: "quarantined", updatedAt: marker.createdAt };
   }
-  if (value.version !== 2 || Object.keys(value).length !== REFRESH_STATE_FIELDS.size || Object.keys(value).some((field) => !REFRESH_STATE_FIELDS.has(field))
+  const fields = value.version === 3 ? RECOVERY_FIELDS : REFRESH_STATE_FIELDS;
+  if ((value.version !== 2 && value.version !== 3) || Object.keys(value).length !== fields.size || Object.keys(value).some((field) => !fields.has(field))
+    || (value.version === 3 && (!(["oauth_pending", "oauth_uncertain", "publication", "exhausted"] as unknown[]).includes(value.reason) || (value.recoveryUsed !== 0 && value.recoveryUsed !== 1)))
     || !Number.isSafeInteger(value.generation) || Number(value.generation) < 1 || typeof value.keyId !== "string" || typeof value.vaultDigest !== "string"
     || (value.state !== "in_flight" && value.state !== "quarantined")
     || typeof value.createdAt !== "string" || !Number.isFinite(Date.parse(value.createdAt))
     || typeof value.updatedAt !== "string" || !Number.isFinite(Date.parse(value.updatedAt))) throw unavailable();
-  const marker = value as unknown as RefreshStateMarker; const { mac, ...payload } = marker;
+  const marker = value as unknown as RefreshStateMarker | RecoveryMarker; const { mac, ...payload } = marker;
   if (!timingSafeEqual(strictBase64Url(mac, 32), strictBase64Url(markerMac(payload, keyValue), 32))) throw unavailable();
   return marker;
 }
@@ -240,11 +246,14 @@ async function readMarker(stateDir: string, keyValue: unknown): Promise<ParsedRe
     await pinned.assertCurrent(); return parseMarker(result.buffer.toString("utf8"), keyValue);
   } finally { await pinned.close(); }
 }
-function markerPayload(record: VaultRecord, state: RefreshState, createdAt = new Date().toISOString()): Omit<RefreshStateMarker, "mac"> {
-  return { format: QUARANTINE_FORMAT, version: 2, generation: record.envelope.generation, keyId: record.envelope.keyId, vaultDigest: record.digest, state, createdAt, updatedAt: new Date().toISOString() };
+function markerPayload(record: VaultRecord, state: RefreshState, createdAt = new Date().toISOString(), reason: RefreshReason = "publication", recoveryUsed: 0 | 1 = 0): Omit<RecoveryMarker, "mac"> {
+  return { format: QUARANTINE_FORMAT, version: 3, generation: record.envelope.generation, keyId: record.envelope.keyId, vaultDigest: record.digest, state, createdAt, updatedAt: new Date().toISOString(), reason, recoveryUsed };
 }
-async function publishInitialMarker(stateDir: string, record: VaultRecord, keyValue: unknown, lock: FileLockHandle, hooks?: MutationHooks): Promise<void> {
-  const payload = markerPayload(record, "in_flight");
+function markerMatches(marker: ParsedRefreshStateMarker, record: VaultRecord): boolean {
+  return marker.generation === record.envelope.generation && marker.keyId === record.envelope.keyId && marker.vaultDigest === record.digest;
+}
+async function publishInitialMarker(stateDir: string, record: VaultRecord, keyValue: unknown, lock: FileLockHandle, hooks?: MutationHooks, reason: RefreshReason = "publication"): Promise<void> {
+  const payload = markerPayload(record, "in_flight", undefined, reason);
   const marker = { ...payload, mac: markerMac(payload, keyValue) };
   try {
     if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked");
@@ -252,23 +261,28 @@ async function publishInitialMarker(stateDir: string, record: VaultRecord, keyVa
     await hooks?.afterMarkerPublication?.("in_flight");
     if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked");
     const published = await readMarker(stateDir, keyValue);
-    if (!published || published.state !== "in_flight" || published.vaultDigest !== record.digest) throw unavailable();
+    if (!published || published.version !== 3 || published.state !== "in_flight" || published.reason !== reason || published.recoveryUsed !== 0 || !markerMatches(published, record)) throw unavailable();
     if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked");
   } catch (error) { if (error instanceof Error && error.message === "credential_vault_locked") throw error; throw new Error("credential_vault_write_failed"); }
 }
-async function transitionMarkerToQuarantined(stateDir: string, record: VaultRecord, keyValue: unknown, lock: FileLockHandle, hooks?: MutationHooks): Promise<void> {
+async function transitionMarker(stateDir: string, record: VaultRecord, keyValue: unknown, lock: FileLockHandle, hooks: MutationHooks | undefined, state: RefreshState, reason: RefreshReason, recoveryUsed?: 0 | 1): Promise<void> {
   const existing = await readMarker(stateDir, keyValue);
   if (!existing) throw new Error("credential_vault_write_failed");
-  const payload = markerPayload(record, "quarantined", existing.createdAt);
+  const payload = markerPayload(record, state, existing.createdAt, reason, recoveryUsed ?? (existing.version === 3 ? existing.recoveryUsed : 0));
   const marker = { ...payload, mac: markerMac(payload, keyValue) };
   try {
     await replaceFileAtomic({
       filePath: vaultQuarantinePath(stateDir), content: `${JSON.stringify(marker)}\n`, mode: 0o600, dirMode: 0o700,
       preserveExistingMode: false, copyFallbackOnPermissionError: false, destinationHardlinks: "reject", syncTempFile: true, syncParentDir: true,
-      beforeRename: async () => { if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked"); await hooks?.beforeMarkerTransition?.(); },
+      beforeRename: async () => { if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked");
+        const observed = await readMarker(stateDir, keyValue);
+        if (JSON.stringify(observed) !== JSON.stringify(existing) || !markerMatches(existing, record) || (await readVaultCredential(stateDir, keyValue)).digest !== record.digest) throw unavailable();
+        await hooks?.beforeMarkerTransition?.(); },
     });
+    await hooks?.afterMarkerPublication?.(state);
     const published = await readMarker(stateDir, keyValue);
-    if (!published || published.state !== "quarantined" || published.vaultDigest !== record.digest) throw unavailable();
+    if (!published || published.version !== 3 || published.state !== state || published.reason !== reason || published.recoveryUsed !== payload.recoveryUsed || !markerMatches(published, record)) throw unavailable();
+    if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked");
   } catch (error) { if (error instanceof Error && error.message === "credential_vault_locked") throw error; throw new Error("credential_vault_write_failed"); }
 }
 async function clearMarker(stateDir: string, keyValue: unknown, lock: FileLockHandle): Promise<void> {
@@ -320,37 +334,56 @@ export async function refreshVaultCredential(params: { stateDir: string; key: un
   params.signal?.throwIfAborted(); const lock = await acquireVaultLock(params.stateDir, "refresh");
   try {
     const current = await readVaultCredential(params.stateDir, params.key);
-    if (await readMarker(params.stateDir, params.key)) throw new Error("credential_reauthorization_required");
-    await publishInitialMarker(params.stateDir, current, params.key, lock, params.testHooks);
-    params.signal?.throwIfAborted();
+    const existing = await readMarker(params.stateDir, params.key);
+    let recovering = false;
+    if (existing) {
+      // Legacy markers and crash/publication uncertainty cannot prove an OAuth-only failure.
+      if (existing.version !== 3 || existing.state !== "quarantined" || existing.reason !== "oauth_uncertain" || existing.recoveryUsed !== 0 || !markerMatches(existing, current)) throw new Error("credential_reauthorization_required");
+      if (Date.now() < Date.parse(existing.updatedAt) + REFRESH_RECOVERY_COOLDOWN_MS) throw new Error("credential_refresh_retry_later");
+      // Consume the one retry durably BEFORE dispatch. A crash or failed readback cannot reset it.
+      await transitionMarker(params.stateDir, current, params.key, lock, params.testHooks, "in_flight", "oauth_pending", 1);
+      recovering = true;
+    } else await publishInitialMarker(params.stateDir, current, params.key, lock, params.testHooks, "oauth_pending");
+    if (params.signal?.aborted) {
+      if (!recovering) await clearMarker(params.stateDir, params.key, lock);
+      params.signal.throwIfAborted();
+    }
     if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked");
+    if ((await readVaultCredential(params.stateDir, params.key)).digest !== current.digest) throw new Error("credential_vault_conflict");
     let result: VaultRefreshResult;
     try {
       result = await params.exchange(current.credential, vaultRecordBinding(current));
       await params.testHooks?.afterExchange?.();
     } catch (error) {
-      if (error instanceof Error && error.message === "authentication_failed") {
+      if (error instanceof Error && error.message === "credential_refresh_temporarily_unavailable" && recovering) {
+        await transitionMarker(params.stateDir, current, params.key, lock, params.testHooks, "quarantined", "exhausted");
+        throw error;
+      }
+      if (error instanceof Error && ["authentication_failed", "credential_reauthorization_required", "credential_refresh_temporarily_unavailable"].includes(error.message)) {
+        if ((await readVaultCredential(params.stateDir, params.key)).digest !== current.digest) throw new Error("credential_vault_conflict");
         await clearMarker(params.stateDir, params.key, lock);
         throw error;
       }
       if (error instanceof Error && error.message === "credential_refresh_outcome_uncertain") {
-        try { await transitionMarkerToQuarantined(params.stateDir, current, params.key, lock, params.testHooks); }
+        try { await transitionMarker(params.stateDir, current, params.key, lock, params.testHooks, "quarantined", recovering ? "exhausted" : "oauth_uncertain"); }
         catch (transitionError) { if (transitionError instanceof Error && transitionError.message === "credential_vault_locked") throw transitionError; }
       }
       throw error;
     }
     if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked");
     if (typeof result.accessToken !== "string" || !result.accessToken || (result.replacementRefreshToken !== undefined && (!result.replacementRefreshToken || result.replacementRefreshToken.length > 32 * 1024))) {
-      try { await transitionMarkerToQuarantined(params.stateDir, current, params.key, lock, params.testHooks); }
+      try { await transitionMarker(params.stateDir, current, params.key, lock, params.testHooks, "quarantined", recovering ? "exhausted" : "oauth_uncertain"); }
       catch (transitionError) { if (transitionError instanceof Error && transitionError.message === "credential_vault_locked") throw transitionError; }
       throw new Error("credential_refresh_outcome_uncertain");
     }
     let durable = current;
     if (result.replacementRefreshToken !== undefined && result.replacementRefreshToken !== current.credential.refreshToken) {
-      try { durable = await replaceRecord(params.stateDir, current, { ...current.credential, refreshToken: result.replacementRefreshToken }, params.key, lock, params.testHooks); }
+      try {
+        await transitionMarker(params.stateDir, current, params.key, lock, params.testHooks, "in_flight", "publication");
+        durable = await replaceRecord(params.stateDir, current, { ...current.credential, refreshToken: result.replacementRefreshToken }, params.key, lock, params.testHooks); }
       catch {
-        const observed = await readVaultCredential(params.stateDir, params.key).catch(() => current);
-        try { await transitionMarkerToQuarantined(params.stateDir, observed, params.key, lock, params.testHooks); } catch { /* The authenticated in-flight marker remains the fail-closed fallback. */ }
+        // Never rebind an uncertain publication to an observed/older secret.
+        // The publication write-ahead marker remains fail-closed, including after restart.
         throw new Error("credential_refresh_outcome_uncertain");
       }
     }

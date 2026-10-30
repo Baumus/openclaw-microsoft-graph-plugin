@@ -209,7 +209,16 @@ async function performTokenExchange(credential: Credential, requestedScopes: str
       throw error;
     }
     if (!response.ok) {
-      if (quarantineOnTransportFailure && response.status !== 400 && response.status !== 401) throw new Error("credential_refresh_outcome_uncertain");
+      if (quarantineOnTransportFailure) {
+        // A definitive rejection did not issue a token pair. Never echo provider bodies.
+        if ([429, 500, 502, 503, 504].includes(response.status)) throw new Error("credential_refresh_temporarily_unavailable");
+        if (response.status !== 400 && response.status !== 401) throw new Error("credential_refresh_outcome_uncertain");
+        let payload: Record<string, unknown>;
+        try { payload = await boundedJson(response); }
+        catch { throw new Error("authentication_failed"); }
+        if (["invalid_grant", "interaction_required", "login_required", "consent_required", "invalid_client", "unauthorized_client"].includes(String(payload.error))) throw new Error("credential_reauthorization_required");
+        if (["server_error", "temporarily_unavailable"].includes(String(payload.error))) throw new Error("credential_refresh_temporarily_unavailable");
+      }
       throw new Error("authentication_failed");
     }
     try {
@@ -250,7 +259,7 @@ export async function exchangeRefreshTokenDetailed(credential: Credential, reque
     try {
       return await performTokenExchange(credential, exchangeScopes, signal, fetchFn, requestTimeoutMs, options.quarantineOnTransportFailure === true);
     } catch (error) {
-      if (error instanceof Error && ["authentication_failed", "credential_reauthorization_required", "credential_refresh_outcome_uncertain"].includes(error.message)) throw error;
+      if (error instanceof Error && ["authentication_failed", "credential_reauthorization_required", "credential_refresh_outcome_uncertain", "credential_refresh_temporarily_unavailable"].includes(error.message)) throw error;
       if (signal?.aborted) throw signal.reason;
       throw new Error("authentication_failed");
     }
