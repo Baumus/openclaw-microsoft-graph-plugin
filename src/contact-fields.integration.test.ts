@@ -58,7 +58,7 @@ describe("complete Graph contact fields", () => {
       expect(body).not.toHaveProperty("businessPhones");
     }
   });
-  it.each(["2025-02-29", "2000-13-01", "2000-02-30", "yesterday", "2000-01-01T12:00:00", 123, "2000-01-01T24:99:00Z"])("rejects invalid birthday %s before credentials/network/approval", async birthday => {
+  it.each(["2025-02-29", "2000-13-01", "2000-02-30", "yesterday", "2000-01-01T12:00:00", 123, "2000-01-01T24:99:00Z", "2000-01-01T24:00:00Z"])("rejects invalid birthday %s before credentials/network/approval", async birthday => {
     const fetch = vi.spyOn(globalThis, "fetch");
     const h = harness();
     const gate = await h.hooks.before_tool_call({ toolName: "outlook_contacts_write", toolCallId: "invalid", params: { action: "update", contactId: "contact", birthday } }, h.context);
