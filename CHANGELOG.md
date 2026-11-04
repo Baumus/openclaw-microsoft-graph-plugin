@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.22.0
+
+- Support every Microsoft Graph v1.0 contact property in bounded reads and every documented writable property in contact create/update, including birthday, private landlines, family/work details, notes, categories, phonetic names and individual email slots.
+- Return provider-owned contact timestamps and change keys as read-only metadata. Preserve full-address replacement and fixed native fax handling.
+- Normalize date-only birthdays to UTC and reject invalid calendar dates before approval or credentials. Omitted fields remain unchanged; collections replace as a whole.
+- Clarify that contact photo and arbitrary extension relationships require separate APIs and are not accepted as contact fields.
+
+
 All notable changes to this project are documented here.
 
 ## 3.21.0 - 2026-10-30
