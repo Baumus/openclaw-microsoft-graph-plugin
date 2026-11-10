@@ -65,7 +65,7 @@ describe("existing To Do write default selector", () => {
     ]);
     const call = event();
     const gate = await hook(call, ctx);
-    expect(gate.params).toMatchObject({ listId: "actual-default", listSelector: undefined });
+    expect(gate.params).toEqual(input);
     expect(gate.requireApproval.description).toContain('list "actual-default"');
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(String(fetchSpy.mock.calls[1][0])).toBe(continuation);
@@ -131,13 +131,13 @@ describe("existing To Do write default selector", () => {
     expect(secondGate.requireApproval.description).toContain(`list "${secondId}"`);
     expect(firstGate.requireApproval.description).not.toContain(secondId);
     expect(firstGate.requireApproval.description).not.toContain(input.title);
-    expect(firstGate.params.listId).toBe(firstId);
+    expect(firstGate.params).toEqual(input);
     await firstGate.requireApproval.onResolution("allow-once");
     expect((await tool.execute(first.toolCallId, { ...first.params, ...firstGate.params })).details.ok).toBe(true);
     expect(String(fetchSpy.mock.calls[3][0])).toContain(`/${encodeURIComponent(firstId)}/tasks`);
     await secondGate.requireApproval.onResolution("deny");
   });
-  it("uses the actual installed host runner to clear the semantic selector and bind the exact target despite a prior rewrite", async () => {
+  it("keeps the original selector through the host runner and binds the exact target despite a prior rewrite", async () => {
     // Same private-host discovery convention as hook-composition.integration.test.ts.
     const dist = process.env.OPENCLAW_TEST_HOST_DIST ?? dirname(fileURLToPath(import.meta.resolve("openclaw")));
     const files = (await readdir(dist)).filter(name => /^hooks-[A-Za-z0-9_-]+\.mjs$/.test(name)).sort();
@@ -158,7 +158,7 @@ describe("existing To Do write default selector", () => {
       { pluginId: "microsoft-graph", hookName: "before_tool_call", priority: Number.MIN_SAFE_INTEGER, source: "candidate", handler: hook },
     ] });
     const gate = await runner.runBeforeToolCall(call, ctx);
-    expect(gate.params).toMatchObject({ action: "create_task", listSelector: undefined, listId: "actual-default" });
+    expect(gate.params).toEqual(input);
     expect(gate.requireApproval.severity).toBe("warning");
     await gate.requireApproval.onResolution("allow-once");
     expect((await tool.execute(call.toolCallId, { ...call.params, ...gate.params })).details.ok).toBe(true);
@@ -192,7 +192,7 @@ describe("existing To Do write default selector", () => {
     const second = event();
     const trusted = await hook(second, ctx);
     expect(trusted.requireApproval).toBeUndefined();
-    expect(trusted.params.listId).toBe("second");
+    expect(trusted.params).toEqual(input);
     expect((await tool.execute(second.toolCallId, { ...second.params, ...trusted.params })).details.ok).toBe(true);
     expect((await tool.execute(first.toolCallId, { ...first.params, ...gate.params })).details.ok).toBe(true);
     expect(fetchSpy).toHaveBeenCalledTimes(6);
@@ -208,6 +208,42 @@ describe("existing To Do write default selector", () => {
     const result = await tool.execute(call.toolCallId, { ...call.params, ...gate.params, listId: "changed-list" });
     expect(result.details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
     expect((await tool.execute("unresolved", input)).details.error).toBe("approval_context_invalid_or_changed");
+    expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+  it.each([false, true])("preserves native Codex fingerprints and executes the pinned target once (approval=%s)", async (warning) => {
+    const { hook, tool, ctx, event } = runtime({ warning });
+    const { fetchSpy, changeDefault } = provider([{ value: [defaultList()] }]);
+    const call = event({ ...input, timeoutMs: 600000 } as any);
+    const gate = await hook(call, ctx);
+    // Native Codex cannot apply hook rewrites. Its original request must remain executable.
+    expect({ ...call.params, ...gate.params }).toEqual(call.params);
+    expect(gate.params).not.toHaveProperty("listId");
+    if (warning) expect(gate.requireApproval.description).toContain('list "actual-default"');
+    await gate.requireApproval?.onResolution("allow-once");
+    changeDefault();
+    expect((await tool.execute(call.toolCallId, call.params)).details.ok).toBe(true);
+    expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === "POST").map(([url]) => String(url))).toEqual([
+      "https://graph.microsoft.com/v1.0/me/todo/lists/actual-default/tasks",
+    ]);
+    mocks.tokenForAuthorizedOperation.mockClear();
+    fetchSpy.mockClear();
+    expect((await tool.execute(call.toolCallId, call.params)).details.error).toBe("approval_context_invalid_or_changed");
+    expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+  it.each([
+    { title: "Changed title" },
+    { listSelector: undefined, listId: "actual-default" },
+    { listSelector: undefined, listId: "different-list" },
+  ])("rejects changed original selector payload before credentials: %j", async (changed) => {
+    const { hook, tool, ctx, event } = runtime({ warning: false });
+    const { fetchSpy } = provider([{ value: [defaultList()] }]);
+    const call = event();
+    await hook(call, ctx);
+    mocks.tokenForAuthorizedOperation.mockClear();
+    fetchSpy.mockClear();
+    expect((await tool.execute(call.toolCallId, { ...call.params, ...changed })).details.error).toBe("approval_context_invalid_or_changed");
     expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
   });

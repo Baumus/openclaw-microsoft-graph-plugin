@@ -86,7 +86,7 @@ function setResolvePluginStateDir(resolver: () => string): void {
 }
 type OneDriveStagingWorkspaceContext = { agentId?: string; sessionId?: string; workspaceDir?: string; abortSignal?: AbortSignal };
 const oneDriveStagingWorkspaceContexts = new Map<string, { agentId: string; sessionId: string; workspaceDir: string }>();
-export type NativeApprovalSnapshot = { agentId?: string; sessionId?: string; toolName: string; params: string; oneDriveRoot?: OneDriveApprovalRoot };
+export type NativeApprovalSnapshot = { agentId?: string; sessionId?: string; toolName: string; params: string; oneDriveRoot?: OneDriveApprovalRoot; resolvedTodoListId?: string };
 type SessionEntryLookup = (params: { agentId?: string; sessionKey: string; readConsistency: "latest" }) => Promise<{ sessionId?: string } | undefined>;
 
 async function currentSessionId(lookup: SessionEntryLookup | undefined, agentId: string | undefined, sessionKey: string | undefined): Promise<string | undefined> {
@@ -126,16 +126,18 @@ export class NativeApprovalSnapshotStore {
 
   discard(toolCallId: string | undefined): void { if (toolCallId) this.#snapshots.delete(toolCallId); }
 
-  consume(toolCallId: string, agentId: string | undefined, sessionId: string | undefined, toolName: string, params: unknown, oneDriveRoot?: OneDriveApprovalRoot | (() => OneDriveApprovalRoot | undefined)): boolean | undefined {
+  consume(toolCallId: string, agentId: string | undefined, sessionId: string | undefined, toolName: string, params: unknown, oneDriveRoot?: OneDriveApprovalRoot | (() => OneDriveApprovalRoot | undefined), onMatch?: (snapshot: NativeApprovalSnapshot) => void): boolean | undefined {
     const snapshot = this.#snapshots.get(toolCallId);
     if (!snapshot) return undefined;
     this.#snapshots.delete(toolCallId);
     const resolvedRoot = typeof oneDriveRoot === "function" ? oneDriveRoot() : oneDriveRoot;
-    return snapshot.agentId === agentId
+    const matches = snapshot.agentId === agentId
       && snapshot.sessionId === sessionId
       && snapshot.toolName === toolName
       && snapshot.params === normalizedCriteria(params)
       && normalizedCriteria(snapshot.oneDriveRoot) === normalizedCriteria(resolvedRoot);
+    if (matches) onMatch?.(snapshot);
+    return matches;
   }
 
   clearSession(sessionId: string): void {
@@ -153,7 +155,8 @@ export class NativeApprovalSnapshotStore {
  * now realm-independent while remaining process-local (it is never persisted or shared between
  * gateways). The execution-bound identity checks in `consume` are unchanged and still fail closed.
  */
-const NATIVE_APPROVAL_SNAPSHOT_STORE_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-snapshots");
+// Version the store protocol: earlier hot-loaded instances cannot return the pinned target.
+const NATIVE_APPROVAL_SNAPSHOT_STORE_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-snapshots/v2");
 const nativeApprovalSnapshots: NativeApprovalSnapshotStore = ((globalThis as Record<symbol, unknown>)[NATIVE_APPROVAL_SNAPSHOT_STORE_KEY] as NativeApprovalSnapshotStore | undefined)
   ?? ((globalThis as Record<symbol, unknown>)[NATIVE_APPROVAL_SNAPSHOT_STORE_KEY] = new NativeApprovalSnapshotStore()) as NativeApprovalSnapshotStore;
 
@@ -702,10 +705,16 @@ export function concrete(name: string, parameters: any, agentId: string | undefi
         const semantic = semanticParams(params);
         const oneDriveRoot = approvalConfig ? () => authorizeOneDriveMutationPreflight(approvalConfig, agentId, name, semantic) : undefined;
         await waitForApprovalResolution(_id, signal);
-        const approvalSnapshotMatches = nativeApprovalSnapshots.consume(_id, agentId, sessionId, name, semantic, oneDriveRoot);
+        let resolvedTodoListId: string | undefined;
+        const approvalSnapshotMatches = nativeApprovalSnapshots.consume(_id, agentId, sessionId, name, semantic, oneDriveRoot, (snapshot) => { resolvedTodoListId = snapshot.resolvedTodoListId; });
         if (approvalSnapshotMatches === false || (classifyApproval(name, semantic) !== "none" && (approvalSnapshotMatches !== true || !await sessionIsCurrent()))) throw new Error("approval_context_invalid_or_changed");
         workspaceStagingStore.beginExecution(_id, name, sessionId);
-        value = await execute(semantic, signal);
+        // Apply the pre-approved target only after the original caller payload and identity match.
+        // Never return this internal resolution as a hook rewrite to native Codex.
+        const executionParams = name === "microsoft_todo_write" && semantic.listSelector === "default" && resolvedTodoListId
+          ? { ...semantic, listSelector: undefined, listId: resolvedTodoListId }
+          : semantic;
+        value = await execute(executionParams, signal);
       } catch (error) {
         failure = errorCode(error);
         const diagnostic = error as { diagnosticStep?: unknown; writeAttempted?: unknown };
@@ -3400,10 +3409,13 @@ export async function beforeMicrosoftGraphToolCall(
   const schemaParams = Object.fromEntries(Object.entries(callParams(event.params)).filter(([, value]) => value !== undefined));
   if (event.params && !TOOL_PARAMETER_CHECKS.get(event.toolName)?.(schemaParams)) return { block: true, blockReason: "invalid_tool_parameters" };
   // Resolve only after complete payload/schema and policy validation, under independently allowed read access.
-  // Explicit undefined clears the selector when the host shallow-merges overrides into the original call.
+  // Keep the caller payload stable for native Codex, which rejects hook rewrites.
+  // Approval text uses the resolved target; the execution snapshot binds both forms.
+  let defaultTodoParams: Record<string, unknown> | undefined;
   if (event.toolName === "microsoft_todo_write" && params.listSelector === "default") {
     if (!event.toolCallId) return { block: true, blockReason: "approval_context_tool_call_id_required" };
     try {
+      defaultTodoParams = params;
       params = { ...params, listSelector: undefined, listId: await resolveDefaultTodoList(runtimeConfig, ctx.agentId, ctx.abortSignal) };
     } catch (error) { return { block: true, blockReason: errorCode(error) }; }
   }
@@ -3455,7 +3467,8 @@ export async function beforeMicrosoftGraphToolCall(
       agentId: ctx.agentId,
       sessionId: ctx.sessionId,
       toolName: event.toolName,
-      params: normalizedCriteria(params),
+      params: normalizedCriteria(defaultTodoParams ?? params),
+      ...(defaultTodoParams ? { resolvedTodoListId: String(params.listId) } : {}),
       ...(authorizedRoot ? { oneDriveRoot: authorizedRoot } : {}),
     });
   };
@@ -3463,7 +3476,7 @@ export async function beforeMicrosoftGraphToolCall(
   if (severity === "critical") {
     const approval = mutationApprovalText(event.toolName, params);
     try { bindOwnedLease(); } catch (error) { return { block: true, blockReason: errorCode(error) }; }
-    return { params, requireApproval: {
+    return { params: defaultTodoParams ?? params, requireApproval: {
       ...approval,
       severity,
       allowedDecisions: ["allow-once", "deny"] as Array<"allow-once" | "deny">,
@@ -3510,12 +3523,12 @@ export async function beforeMicrosoftGraphToolCall(
   if (warningApprovalBypassed) {
     try { await bindExecutionSnapshot(); bindOwnedLease(); }
     catch (error) { approvalSnapshots.discard(event.toolCallId); return { block: true, blockReason: errorCode(error) }; }
-    return { params };
+    return { params: defaultTodoParams ?? params };
   }
   const approval = mutationApprovalText(event.toolName, params);
   try { bindOwnedLease(); } catch (error) { return { block: true, blockReason: errorCode(error) }; }
   return {
-    params,
+    params: defaultTodoParams ?? params,
     requireApproval: {
       title: approval.title,
       description: `${approval.description} Allow-always trusts only this agent, tool, and action until plugin reload or process restart.`,
