@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.22.1 - 2026-11-10
+
+- Fix Microsoft To Do default-list task creation through native Codex: preserve the original tool parameters while keeping the resolved list ID in the one-time, agent/session/call-bound execution snapshot.
+- Keep exact target selection before approval, independent read/create grants, approval text, owner checks and replay/tamper rejection. No permission or host compatibility changes.
+
 ## 3.22.0
 
 - Support every Microsoft Graph v1.0 contact property in bounded reads and every documented writable property in contact create/update, including birthday, private landlines, family/work details, notes, categories, phonetic names and individual email slots.
