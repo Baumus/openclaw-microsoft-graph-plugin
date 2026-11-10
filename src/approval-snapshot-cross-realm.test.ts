@@ -13,13 +13,29 @@ import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
  * it at build time.
  */
 describe("native approval snapshot store across module instances", () => {
-  const STORE_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-snapshots");
+  const STORE_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-snapshots/v2");
   const ENTRY = "./index.js";
 
   const importRealm = async (realm: number): Promise<unknown> => {
     const specifier = `${ENTRY}?realm=${realm}`;
     return import(specifier);
   };
+
+  it("does not reuse a pre-upgrade store without the resolved-target handoff protocol", async () => {
+    const legacyKey = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-snapshots");
+    const previous = (globalThis as Record<symbol, unknown>)[legacyKey];
+    const legacy = { consume: vi.fn(() => true) };
+    (globalThis as Record<symbol, unknown>)[legacyKey] = legacy;
+    try {
+      await importRealm(6);
+      expect((globalThis as Record<symbol, unknown>)[STORE_KEY]).toBeDefined();
+      expect((globalThis as Record<symbol, unknown>)[STORE_KEY]).not.toBe(legacy);
+      expect(legacy.consume).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete (globalThis as Record<symbol, unknown>)[legacyKey];
+      else (globalThis as Record<symbol, unknown>)[legacyKey] = previous;
+    }
+  });
 
   it("shares one store between separately imported module instances", async () => {
     const first = await importRealm(1);

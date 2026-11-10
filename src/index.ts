@@ -155,7 +155,8 @@ export class NativeApprovalSnapshotStore {
  * now realm-independent while remaining process-local (it is never persisted or shared between
  * gateways). The execution-bound identity checks in `consume` are unchanged and still fail closed.
  */
-const NATIVE_APPROVAL_SNAPSHOT_STORE_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-snapshots");
+// Version the store protocol: earlier hot-loaded instances cannot return the pinned target.
+const NATIVE_APPROVAL_SNAPSHOT_STORE_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-snapshots/v2");
 const nativeApprovalSnapshots: NativeApprovalSnapshotStore = ((globalThis as Record<symbol, unknown>)[NATIVE_APPROVAL_SNAPSHOT_STORE_KEY] as NativeApprovalSnapshotStore | undefined)
   ?? ((globalThis as Record<symbol, unknown>)[NATIVE_APPROVAL_SNAPSHOT_STORE_KEY] = new NativeApprovalSnapshotStore()) as NativeApprovalSnapshotStore;
 
