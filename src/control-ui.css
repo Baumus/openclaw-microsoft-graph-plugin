@@ -103,7 +103,11 @@
 .mg-instructions-help p { margin: 0 0 10px; }
 .mg-instructions-help p:last-child { margin-bottom: 0; }
 .mg-descendants { font-size: .68rem; padding: 4px 8px; }
-.mg-agent-row { display: grid; grid-template-columns: minmax(75px, 1fr) auto; align-items: center; gap: 6px 10px; padding: 11px 0; border-top: 1px solid var(--mg-border); }
+.mg-agent-row { display: grid; grid-template-columns: minmax(75px, 1fr) auto auto; align-items: center; gap: 6px 10px; padding: 11px 0; border-top: 1px solid var(--mg-border); }
+.mg-agent-actions { align-self: center; }
+.mg-ui .mg-button.mg-agent-menu-trigger { width: 36px; min-height: 36px; padding: 4px; font-size: 1.25rem; }
+.mg-agent-menu { position: fixed; inset: auto; margin: 0; width: 220px; max-width: calc(100vw - 32px); padding: 4px; border: 1px solid var(--mg-border); border-radius: 9px; background: var(--mg-panel); color: var(--mg-text); box-shadow: 0 8px 24px rgb(0 0 0 / .16); }
+.mg-agent-menu .mg-button { width: 100%; text-align: start; white-space: normal; }
 .mg-agent-name { font-size: .82rem; overflow-wrap: anywhere; }
 .mg-rights { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
 .mg-ui .mg-button.mg-right { min-height: 34px; border: 1px solid var(--mg-border); border-radius: 999px; padding: 6px 10px; font-size: .73rem; font-weight: 700; white-space: nowrap; transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease; }
@@ -127,7 +131,9 @@
 @media (max-width: 440px) {
   .mg-root-card { padding: 14px; }
   .mg-root-header { flex-wrap: wrap; }
-  .mg-agent-row { grid-template-columns: minmax(0, 1fr); }
+  .mg-agent-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .mg-agent-row .mg-rights { grid-column: 1; grid-row: 2; }
+  .mg-agent-actions { grid-column: 2; grid-row: 1 / span 2; }
   .mg-rights { justify-content: flex-start; }
   .mg-ui .mg-button.mg-right { min-height: 40px; }
 }
