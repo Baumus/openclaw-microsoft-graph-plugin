@@ -875,7 +875,7 @@ class ConfigurationPage {
           badge.dataset.root = root.label; badge.dataset.agent = agentId; badge.dataset.right = op;
           append(rights, badge);
         }
-        append(row, agentLabel, rights); append(card, row);
+        append(row, agentLabel, rights, this.agentAccessMenu(root, agentId, agentName, index)); append(card, row);
       }
       if (this.editingAccess?.rootLabel === root.label) this.renderAccessEditor(card, root);
       else {
@@ -887,10 +887,63 @@ class ConfigurationPage {
         else if (!this.host.agents.rows.length) append(card, el("p", "mg-hint", "Keine Agenten gefunden."));
       }
       const actions = el("div", "mg-root-actions");
-      append(actions, this.action("Ordner für alle Agenten entfernen", () => { if (window.confirm(format("Den Ordner {path} für alle Agenten entfernen?", { path: root.path }))) { roots.splice(index, 1); if (this.editingAccess?.rootLabel === root.label) this.editingAccess = undefined; this.render(); } }, "danger"));
+      append(actions, this.action("Ordnerfreigabe entfernen", () => { if (window.confirm(format("Den Ordner {path} für alle Agenten entfernen?", { path: root.path }))) { roots.splice(index, 1); if (this.editingAccess?.rootLabel === root.label) this.editingAccess = undefined; this.render(); } }, "danger"));
       append(card, actions); append(grid, card);
     }
     append(body, grid);
+  }
+  private agentAccessMenu(root: Root, agentId: string, agentName: string, rootIndex: number): HTMLElement {
+    const wrap = el("div", "mg-agent-actions");
+    const panel = el("div", "mg-agent-menu");
+    panel.id = `${this.helpIdPrefix}-agent-${rootIndex}-${Object.keys(root.agents).indexOf(agentId)}`;
+    panel.setAttribute("popover", "auto");
+    panel.setAttribute("role", "menu");
+    const label = format("Aktionen für {agent} auf {path}", { agent: agentName, path: root.path });
+    panel.setAttribute("aria-label", label);
+    const trigger = this.action("⋯", () => {}, "ghost mg-agent-menu-trigger");
+    trigger.dataset.agent = agentId;
+    trigger.dataset.root = root.label;
+    trigger.dataset.focusKey = JSON.stringify(["agent-menu", root.label, agentId]);
+    trigger.setAttribute("aria-label", label);
+    trigger.setAttribute("aria-haspopup", "menu");
+    trigger.setAttribute("aria-controls", panel.id);
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.setAttribute("popovertarget", panel.id);
+    const remove = this.action("Zugriff entfernen…", () => {
+      // This edits only the explicit assignment in the private draft. Root caps,
+      // other agents and ancestor grants are deliberately left untouched.
+      panel.hidePopover?.();
+      const confirmed = window.confirm(format("Zugriff von {agent} ({id}) auf {path} entfernen? Nur diese direkte Zuweisung wird entfernt. Andere Agenten bleiben unverändert. Zugriffe über übergeordnete Ordner bleiben wirksam. Die Änderung wird erst nach Prüfen und Speichern wirksam.", { agent: agentName, id: agentId, path: root.path }));
+      if (!confirmed || this.locked) { trigger.focus(); return; }
+      delete root.agents[agentId];
+      this.render();
+      [...this.container.querySelectorAll<HTMLButtonElement>(".mg-add-agent")]
+        .find(control => control.dataset.root === root.label)?.focus();
+    }, "danger");
+    remove.setAttribute("role", "menuitem");
+    remove.setAttribute("autofocus", "");
+    panel.addEventListener("beforetoggle", event => {
+      const open = (event as ToggleEvent).newState === "open";
+      trigger.setAttribute("aria-expanded", String(open));
+      if (open) {
+        const anchor = trigger.getBoundingClientRect();
+        // Set a bounded top-layer position before painting, including RTL.
+        panel.style.left = `${Math.max(16, Math.min(anchor.right - 220, window.innerWidth - 236))}px`;
+        panel.style.top = `${Math.max(16, Math.min(anchor.bottom + 4, window.innerHeight - 72))}px`;
+      }
+    });
+    trigger.addEventListener("keydown", event => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault(); panel.showPopover?.(); remove.focus();
+      }
+    });
+    panel.addEventListener("keydown", event => {
+      if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) { event.preventDefault(); remove.focus(); }
+      if (event.key === "Escape") { event.preventDefault(); panel.hidePopover?.(); trigger.focus(); }
+      if (event.key === "Tab") panel.hidePopover?.();
+    });
+    append(panel, remove); append(wrap, trigger, panel);
+    return wrap;
   }
   private renderInstructionsControl(card: HTMLElement, root: Root, index: number) {
     const row = el("div", "mg-instructions-control");

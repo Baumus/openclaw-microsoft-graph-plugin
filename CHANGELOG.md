@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.23.0 - 2026-11-11
+
+- Add a discreet per-agent OneDrive folder action menu with a named confirmation for removing only that explicit assignment. Other agents, root permission caps, parent-folder grants, permission toggles and the add-agent workflow remain unchanged; the last assignment leaves an empty deny-by-default root.
+- Keep folder-wide removal separately labeled, explain that inherited parent access remains effective, and retain the existing review/save/apply flow. Native light-dismiss menus support keyboard, touch and responsive layouts; synthetic unit/browser regressions cover removal, cancel and empty-root authorization.
+
 ## 3.22.1 - 2026-11-10
 
 - Fix Microsoft To Do default-list task creation through native Codex: preserve the original tool parameters while keeping the resolved list ID in the one-time, agent/session/call-bound execution snapshot.

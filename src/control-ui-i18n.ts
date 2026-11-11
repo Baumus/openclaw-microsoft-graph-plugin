@@ -4,6 +4,10 @@ export const hostLocales = ["en", "ar", "de", "es", "fa", "fr", "hi", "id", "it"
 export type HostLocale = typeof hostLocales[number];
 const catalogs: Record<string, Record<string, string>> = {
   "en": {
+    "Ordnerfreigabe entfernen": "Remove folder sharing",
+    "Zugriff entfernen…": "Remove access…",
+    "Aktionen für {agent} auf {path}": "Actions for {agent} on {path}",
+    "Zugriff von {agent} ({id}) auf {path} entfernen? Nur diese direkte Zuweisung wird entfernt. Andere Agenten bleiben unverändert. Zugriffe über übergeordnete Ordner bleiben wirksam. Die Änderung wird erst nach Prüfen und Speichern wirksam.": "Remove access for {agent} ({id}) to {path}? Only this direct assignment is removed. Other agents are unchanged. Access through parent folders remains effective. The change takes effect only after review and save.",
     "Die Regeln sind gespeichert. Wir warten auf laufende Arbeit und prüfen die Aktivierung weiter. Danach werden nur die bestätigten Agent-Tools freigeschaltet – auch nach erneutem Öffnen dieser Seite.": "Rules are saved. We keep checking activation while ongoing work finishes. Only the confirmed agent tools will then be enabled, including after reopening this page.",
     "Die Regeln sind gespeichert. Der Tool-Schritt ist noch unbestätigt und wird nicht blind wiederholt. Lade bei Bedarf den aktuellen Stand und prüfe den gewünschten Zugang erneut.": "Rules are saved. The tool step is unconfirmed and will not be repeated blindly. If needed, load the current state and review the intended access again.",
     "Der Vorgang konnte nicht beendet werden. Prüfe Verbindung und aktuellen Stand.": "The operation could not be closed. Check the connection and current state.",
@@ -286,6 +290,10 @@ const catalogs: Record<string, Record<string, string>> = {
     "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Status check interrupted. Check the connection; this page will retry."
   },
   "de": {
+    "Ordnerfreigabe entfernen": "Ordnerfreigabe entfernen",
+    "Zugriff entfernen…": "Zugriff entfernen…",
+    "Aktionen für {agent} auf {path}": "Aktionen für {agent} auf {path}",
+    "Zugriff von {agent} ({id}) auf {path} entfernen? Nur diese direkte Zuweisung wird entfernt. Andere Agenten bleiben unverändert. Zugriffe über übergeordnete Ordner bleiben wirksam. Die Änderung wird erst nach Prüfen und Speichern wirksam.": "Zugriff von {agent} ({id}) auf {path} entfernen? Nur diese direkte Zuweisung wird entfernt. Andere Agenten bleiben unverändert. Zugriffe über übergeordnete Ordner bleiben wirksam. Die Änderung wird erst nach Prüfen und Speichern wirksam.",
     "Die Regeln sind gespeichert. Wir warten auf laufende Arbeit und prüfen die Aktivierung weiter. Danach werden nur die bestätigten Agent-Tools freigeschaltet – auch nach erneutem Öffnen dieser Seite.": "Die Regeln sind gespeichert. Wir warten auf laufende Arbeit und prüfen die Aktivierung weiter. Danach werden nur die bestätigten Agent-Tools freigeschaltet – auch nach erneutem Öffnen dieser Seite.",
     "Die Regeln sind gespeichert. Der Tool-Schritt ist noch unbestätigt und wird nicht blind wiederholt. Lade bei Bedarf den aktuellen Stand und prüfe den gewünschten Zugang erneut.": "Die Regeln sind gespeichert. Der Tool-Schritt ist noch unbestätigt und wird nicht blind wiederholt. Lade bei Bedarf den aktuellen Stand und prüfe den gewünschten Zugang erneut.",
     "Der Vorgang konnte nicht beendet werden. Prüfe Verbindung und aktuellen Stand.": "Der Vorgang konnte nicht beendet werden. Prüfe Verbindung und aktuellen Stand.",
@@ -568,6 +576,10 @@ const catalogs: Record<string, Record<string, string>> = {
     "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut."
   },
   "es": {
+    "Ordnerfreigabe entfernen": "Eliminar uso compartido de la carpeta",
+    "Zugriff entfernen…": "Eliminar acceso…",
+    "Aktionen für {agent} auf {path}": "Acciones para {agent} en {path}",
+    "Zugriff von {agent} ({id}) auf {path} entfernen? Nur diese direkte Zuweisung wird entfernt. Andere Agenten bleiben unverändert. Zugriffe über übergeordnete Ordner bleiben wirksam. Die Änderung wird erst nach Prüfen und Speichern wirksam.": "¿Eliminar el acceso de {agent} ({id}) a {path}? Solo se elimina esta asignación directa. Los demás agentes no cambian. El acceso a través de carpetas superiores sigue vigente. El cambio solo se aplica después de revisar y guardar.",
     "Microsoft-Berechtigungen erneuern": "Renovar los permisos de Microsoft",
     "Falls Microsoft einen Zugriff trotz gültigem Zugang verweigert, prüfe zuerst Policy und Kontotyp. Bei entzogener Einwilligung kannst du die Berechtigungen im Host-Terminal erneut erteilen.": "Si Microsoft deniega el acceso pese a una credencial válida, comprueba primero la política y el tipo de cuenta. Si se revocó el consentimiento, puedes renovar los permisos en el terminal del host.",
     "Microsoft-Zugang erneut autorisieren": "Volver a autorizar el acceso a Microsoft",
@@ -763,6 +775,10 @@ const catalogs: Record<string, Record<string, string>> = {
     "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Se interrumpió la comprobación del estado. Comprueba la conexión; esta página volverá a intentarlo."
   },
   "ar": {
+    "Ordnerfreigabe entfernen": "إزالة مشاركة المجلد",
+    "Zugriff entfernen…": "إزالة الوصول…",
+    "Aktionen für {agent} auf {path}": "إجراءات {agent} على {path}",
+    "Zugriff von {agent} ({id}) auf {path} entfernen? Nur diese direkte Zuweisung wird entfernt. Andere Agenten bleiben unverändert. Zugriffe über übergeordnete Ordner bleiben wirksam. Die Änderung wird erst nach Prüfen und Speichern wirksam.": "هل تريد إزالة وصول {agent} ({id}) إلى {path}؟ ستُزال هذه المنحة المباشرة فقط. لن تتغير صلاحيات الوكلاء الآخرين. يبقى الوصول عبر المجلدات الأصلية ساريًا. لا يسري التغيير إلا بعد المراجعة والحفظ.",
     "Microsoft-Berechtigungen erneuern": "تجديد أذونات Microsoft",
     "Falls Microsoft einen Zugriff trotz gültigem Zugang verweigert, prüfe zuerst Policy und Kontotyp. Bei entzogener Einwilligung kannst du die Berechtigungen im Host-Terminal erneut erteilen.": "إذا رفضت Microsoft الوصول رغم صلاحية بيانات الاعتماد، فتحقق أولاً من السياسة ونوع الحساب. إذا سُحبت الموافقة، يمكنك تجديد الأذونات في طرفية المضيف.",
     "Microsoft-Zugang erneut autorisieren": "إعادة تفويض الوصول إلى Microsoft",
