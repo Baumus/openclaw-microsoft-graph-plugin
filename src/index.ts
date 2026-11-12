@@ -85,7 +85,12 @@ function setResolvePluginStateDir(resolver: () => string): void {
   (globalThis as Record<symbol, unknown>)[PLUGIN_STATE_DIR_RESOLVER_KEY] = resolver;
 }
 type OneDriveStagingWorkspaceContext = { agentId?: string; sessionId?: string; workspaceDir?: string; abortSignal?: AbortSignal };
-const oneDriveStagingWorkspaceContexts = new Map<string, { agentId: string; sessionId: string; workspaceDir: string }>();
+// Native Gateway discovery and execution may import separate copies of this bundle.
+// Only host factory context populates this bounded, process-local identity map.
+const ONEDRIVE_STAGING_WORKSPACE_CONTEXTS_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/onedrive-staging-workspace-contexts/v1");
+type OneDriveStagingWorkspaceContexts = Map<string, { agentId: string; sessionId: string; workspaceDir: string }>;
+const oneDriveStagingWorkspaceContexts: OneDriveStagingWorkspaceContexts = ((globalThis as Record<symbol, unknown>)[ONEDRIVE_STAGING_WORKSPACE_CONTEXTS_KEY] as OneDriveStagingWorkspaceContexts | undefined)
+  ?? ((globalThis as Record<symbol, unknown>)[ONEDRIVE_STAGING_WORKSPACE_CONTEXTS_KEY] = new Map()) as OneDriveStagingWorkspaceContexts;
 export type NativeApprovalSnapshot = { agentId?: string; sessionId?: string; toolName: string; params: string; oneDriveRoot?: OneDriveApprovalRoot; resolvedTodoListId?: string };
 type SessionEntryLookup = (params: { agentId?: string; sessionKey: string; readConsistency: "latest" }) => Promise<{ sessionId?: string } | undefined>;
 
