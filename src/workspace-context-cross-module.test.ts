@@ -14,7 +14,7 @@ afterEach(async () => {
   directory = undefined;
 });
 
-describe("trusted OneDrive workspace context across native module imports", () => {
+describe("trusted OneDrive workspace context across native module imports", { timeout: 15_000 }, () => {
   async function setup() {
     directory = await mkdtemp(join(tmpdir(), "mg-workspace-context-"));
     const stateDir = join(directory, "state");

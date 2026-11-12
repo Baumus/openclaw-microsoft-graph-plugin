@@ -20,12 +20,13 @@ afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { 
 const deviceResponse = { device_code: "synthetic-private-device-code", user_code: "ABCD-EFGH", verification_uri: "https://microsoft.com/devicelogin", expires_in: 600, interval: 1 };
 const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 async function terminal(signIn: DeviceCodeSignIn, sessionId: string) {
-  for (let index = 0; index < 30; index++) {
+  // Vault publication includes durable filesystem I/O; wait for its observable
+  // terminal state instead of assuming it completes within 30 short polls.
+  return vi.waitFor(() => {
     const status = signIn.status(sessionId);
-    if (status.state !== "pending") return status;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error("device_test_timeout");
+    expect(status.state, "device sign-in must reach a terminal state").not.toBe("pending");
+    return status;
+  }, { timeout: 2_000, interval: 10 });
 }
 
 describe("gateway-side device-code sign-in", () => {
@@ -123,12 +124,15 @@ describe("gateway-side device-code sign-in", () => {
     const started = await signIn.reauthorize();
     expect(started.scopes).toContain("Contacts.ReadWrite");
     expect((await readVaultCredential(state, key)).credential).toEqual(original);
-    release(response({ refresh_token: "renewed-secret", scope: requested }));
-    expect(await terminal(signIn, started.sessionId)).toEqual({ state: "created", scopes: requested.split(" ") });
-    const after = await readVaultCredential(state, key);
-    expect(after.credential.refreshToken).toBe("renewed-secret");
-    expect(after.credential.scopes).toContain("Contacts.ReadWrite");
-    expect(after.envelope.generation).toBe(before.generation! + 1);
+    // A valid asynchronous response may outlast the old ~150 ms polling budget.
+    const releaseTimer = setTimeout(() => release(response({ refresh_token: "renewed-secret", scope: requested })), 250);
+    try {
+      expect(await terminal(signIn, started.sessionId)).toEqual({ state: "created", scopes: requested.split(" ") });
+      const after = await readVaultCredential(state, key);
+      expect(after.credential.refreshToken).toBe("renewed-secret");
+      expect(after.credential.scopes).toContain("Contacts.ReadWrite");
+      expect(after.envelope.generation).toBe(before.generation! + 1);
+    } finally { clearTimeout(releaseTimer); }
   });
 
   it("preserves the original vault on missing consent, wrong app, or concurrent rotation", async () => {

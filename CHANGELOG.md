@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.23.1 - 2026-11-12
+
+- Fix trusted OneDrive workspace context across separate native module imports while preserving bounded agent/session isolation. Thanks to @JakubKolacek!
+- Make device-code terminal-state tests resilient to asynchronous vault I/O and retain focused Linux/macOS compatibility coverage with lean CI.
+
 ## 3.23.0 - 2026-11-11
 
 - Add a discreet per-agent OneDrive folder action menu with a named confirmation for removing only that explicit assignment. Other agents, root permission caps, parent-folder grants, permission toggles and the add-agent workflow remain unchanged; the last assignment leaves an empty deny-by-default root.
