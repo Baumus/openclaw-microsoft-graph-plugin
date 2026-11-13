@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.24.0 - 2026-11-13
+
+- Automatically enrich relevant Graph failures with bounded Service Health evidence when an organizational credential already carries ServiceHealth.Read.All; never request consent or widen data-operation scopes automatically.
+- Preserve legacy errors and lifecycle write-safety contracts while adding failure categories, HTTP status, bounded retry timing and attempt metadata. Health incidents are conservatively matched, stripped of provider prose, cached briefly and never interpreted as proof of a global outage.
+
 ## 3.23.1 - 2026-11-12
 
 - Fix trusted OneDrive workspace context across separate native module imports while preserving bounded agent/session isolation. Thanks to @JakubKolacek!
