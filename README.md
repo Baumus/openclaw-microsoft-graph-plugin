@@ -346,6 +346,18 @@ The plugin reads the original message's complete Microsoft Graph MIME (`/$value`
 
 One original is attached per call. MIME can be **up to Microsoft Graph’s 150 MB attachment maximum** (157,286,400 bytes). The plugin automatically uses a direct attachment below 3 MiB and a chunked upload session at or above 3 MiB; larger originals are rejected before any upload. Microsoft mailbox/message-size policies can impose a lower limit (the typical default message limit is 35 MB), which the plugin cannot override. `attachmentDownloadTimeoutMs` bounds the complete read-and-upload operation (default 10 minutes); each MIME read/upload request remains separately bounded (default 30 seconds, configurable through `requestTimeoutMs`). Include a sufficient outer tool `timeoutMs` for a large original. Call separately with distinct names for multiple originals. A failure after an attachment POST can have an unknown outcome: inspect `list_attachments` on the draft before retrying to avoid duplicates. Concurrent edits/sends by another client cannot be locked atomically; review the completed draft before sending. MIME bytes are never returned in model-facing results or logged.
 
+## Attach a file from the calling agent workspace
+
+Call `outlook_mail_write` with a finished workspace-relative file:
+
+```json
+{ "action": "add_attachment", "messageId": "<returned-draft-id>", "attachmentName": "report.pdf", "sourceWorkspacePath": "reports/report.pdf" }
+```
+
+Supply exactly one of `sourceWorkspacePath` or an existing `attachmentMediaUri`. Workspace sources use the existing private automatic staging mechanism (64 MiB per file and shared staging quotas); existing media sources retain the 150 MB Outlook limit. Absolute host paths, traversal, symlinks and hardlinks are rejected. The trusted calling agent/session selects the workspace, not tool arguments. Common extensions infer MIME; supply `attachmentContentType` to override it.
+
+The plugin computes SHA-256 and size before native approval, binds the exact call including its original relative path and private artifact, and rechecks bytes before credentials or provider access. Optional `sourceSha256` and `sourceByteSize` are paired assertions, not prerequisites. Native approval remains authoritative; no chat tokens, Base64 arguments, extra Microsoft scopes or manual staging are needed. Approved content is the private snapshot: later edits to the original workspace file do not change it. A changed staged artifact requires a fresh call. Plugin-owned copies are cleaned on settlement or bounded expiry. This action adds an attachment to the draft and never sends it.
+
 ## Place images within an Outlook mail body
 
 Use an HTML draft and a matching CID attachment. Put `<img src="cid:chart-1" alt="Chart">` at the precise position in `bodyHtml` where the image should appear, then add the private image to that draft with `inlineContentId: "chart-1"`:

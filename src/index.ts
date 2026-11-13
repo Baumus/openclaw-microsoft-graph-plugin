@@ -662,7 +662,7 @@ const ACTION_SCHEMA_GUIDANCE: Readonly<Record<string, string>> = {
   outlook_calendar_read: "list_calendars: no ID; list_events/search_events: optional exact calendarId from list_calendars and bounded dates; get_event/list_attachments: eventId plus calendarId when non-default; download_attachment: also attachmentId; get_schedule: startDateTime, endDateTime, schedules. Continue list pages; narrow client-filtered searches.",
   outlook_calendar_write: "create: subject/startDateTime/endDateTime; update: eventId plus changed fields; multiwrite: operations with unique operationId and create/update payloads; respond: eventId and response; attach: eventId and private media; delete: eventId. calendarId must be an exact authorized ID. Native approval is separate from deprecated chat fields.",
   outlook_mail_read: "list_folders: no ID or parentFolderId; list/search_messages: folder/folderId or mailbox-wide; get_message/list_attachments: messageId; download_attachment: messageId and attachmentId. Folder and message IDs come from preceding read actions; follow continuation.",
-  outlook_mail_write: "reply_draft: answer one unambiguously identified original message using its messageId and content; reply_all_draft: only when all recipients are intended; create_draft: only for a new, independent message with subject and body. If the original message is ambiguous or missing, ask the user; do not fall back to create_draft. update_draft/update_properties: messageId and changed fields; forward_draft: messageId and content; copy/move: messageId and exactly one destination or destinationFolderId; mark_read: messageId and isRead; add_attachment: messageId and private media. add_message_attachment: existing draft messageId, original sourceMessageId, optional .eml attachmentName; attaches original MIME up to 150 MB using direct or upload-session transport, requires read and update access, never sends. For an inline image, place <img src=\"cid:IMAGE_ID\"> at the desired position in bodyHtml, then add_attachment with the same inlineContentId=IMAGE_ID and an image MIME type; send_draft/delete: messageId. Native approval remains sole authority.",
+  outlook_mail_write: "reply_draft: answer one unambiguously identified original message using its messageId and content; reply_all_draft: only when all recipients are intended; create_draft: only for a new, independent message with subject and body. If the original message is ambiguous or missing, ask the user; do not fall back to create_draft. update_draft/update_properties: messageId and changed fields; forward_draft: messageId and content; copy/move: messageId and exactly one destination or destinationFolderId; mark_read: messageId and isRead; add_attachment: messageId, attachmentName and exactly one of sourceWorkspacePath relative to this agent workspace or an existing attachmentMediaUri. The plugin privately stages and fingerprints the file before native approval. add_message_attachment: existing draft messageId, original sourceMessageId, optional .eml attachmentName; attaches original MIME up to 150 MB using direct or upload-session transport, requires read and update access, never sends. For an inline image, place <img src=\"cid:IMAGE_ID\"> at the desired position in bodyHtml, then add_attachment with the same inlineContentId=IMAGE_ID and an image MIME type; send_draft/delete: messageId. Native approval remains sole authority.",
   outlook_contacts_read: "list_contacts: optional limit/continuation; search_contacts: search plus optional limit, capped client-side scan; get_contact: exact contactId. Search may be incomplete; never treat a truncated search as proof of absence.",
   outlook_contacts_write: "create: at least one name or email field; update: exact contactId and at least one changed field; delete: exact contactId. Search and disambiguate before changing an existing contact. Addresses require all five components or null to clear; omitted addresses/faxes are unchanged, empty fax clears. Fax writes return provider readback, never a caller-input echo. Native approval remains sole authority.",
   microsoft_todo_read: "list_lists: no ID; search_lists: search; list/search_tasks: listId from list_lists; get_task/child lists: listId and taskId; get_attachment: also attachmentId. Follow continuation where offered; narrow capped search.",
@@ -1156,6 +1156,9 @@ const mailWriteSchema = Type.Object({
   internetMessageId: Type.Optional(Type.String({ minLength: 3, maxLength: 998, pattern: "^<[^<>\\r\\n]+>$" })),
   internetMessageHeaders: Type.Optional(Type.Array(Type.Object({ name: Type.String({ minLength: 3, maxLength: 128, pattern: "^[xX]-[A-Za-z0-9-]+$" }), value: Type.String({ maxLength: 998 }) }, { additionalProperties: false }), { maxItems: 50 })),
   ...attachmentInputFields(OUTLOOK_ATTACHMENT_MAX_BYTES),
+  sourceWorkspacePath: Type.Optional(Type.String({ minLength: 1, maxLength: 1024, description: "For add_attachment only: finished workspace-relative file; exactly one of sourceWorkspacePath or attachmentMediaUri. No absolute paths, traversal or links. Privately staged and hash-bound before approval. Workspace staging limit: 64 MiB." })),
+  sourceSha256,
+  sourceByteSize,
   sourceMessageId: Type.Optional(Type.String({ minLength: 1, maxLength: 512, description: "For add_message_attachment only: original own-mailbox message ID from outlook_mail_read. Its complete MIME is attached as .eml to the existing draft in messageId (up to 150 MB; MIME at or above 3 MiB automatically uses an upload session)." })),
   inlineContentId: Type.Optional(Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$", description: "For add_attachment only: embed an image in HTML mail at the matching <img src=\"cid:ID\"> position. The image must be PNG, JPEG, or GIF." })),
 }, { additionalProperties: false });
@@ -1305,7 +1308,7 @@ export const WRITE_ACTION_FIELDS = {
     reply_all_draft: ["action", "messageId", "bodyHtml", "bodyText"],
     forward_draft: ["action", "messageId", "bodyHtml", "bodyText", "to", "cc", "bcc"],
     copy: ["action", "messageId", "destination", "destinationFolderId"],
-    add_attachment: ["action", "messageId", "attachmentName", "attachmentContentType", "attachmentMediaUri", "inlineContentId"],
+    add_attachment: ["action", "messageId", "attachmentName", "attachmentContentType", "attachmentMediaUri", "sourceWorkspacePath", "sourceSha256", "sourceByteSize", "inlineContentId"],
     add_message_attachment: ["action", "messageId", "sourceMessageId", "attachmentName"],
     move: ["action", "messageId", "destination", "destinationFolderId"],
     mark_read: ["action", "messageId", "isRead"],
@@ -1444,6 +1447,22 @@ async function openVerifiedProtectedMediaUploadSource(sourceMediaUri: string, wo
   if (source.sha256 === fingerprint.sourceSha256 && source.size === fingerprint.sourceByteSize) return source;
   await source.close();
   throw new Error("invalid_source_fingerprint");
+}
+
+function isMailAttachment(toolName: string, params: Record<string, unknown>): boolean {
+  return toolName === "outlook_mail_write" && params.action === "add_attachment";
+}
+
+async function bindMailAttachmentArtifact(params: Record<string, unknown>, context: OneDriveStagingWorkspaceContext, onStaged: (lease: WorkspaceStagingLease) => void): Promise<Record<string, unknown>> {
+  const bound = await bindOneDriveWriteArtifact("onedrive_upload", {
+    sourceWorkspacePath: params.sourceWorkspacePath, sourceMediaUri: params.attachmentMediaUri,
+    sourceSha256: params.sourceSha256, sourceByteSize: params.sourceByteSize,
+    contentType: params.attachmentContentType ?? (params.sourceWorkspacePath === undefined ? "application/octet-stream" : workspaceFileContentType(String(params.sourceWorkspacePath))),
+  }, context, onStaged);
+  const result = { ...params, attachmentMediaUri: bound.sourceMediaUri, attachmentContentType: bound.contentType,
+    sourceSha256: bound.sourceSha256, sourceByteSize: bound.sourceByteSize };
+  await prepareAttachmentWritePlan(result, stagingWorkspaceFor(context), "#microsoft.graph.fileAttachment", OUTLOOK_ATTACHMENT_MAX_BYTES);
+  return result;
 }
 
 function validateOneDriveSourceSelection(toolName: string, params: Record<string, unknown>): void {
@@ -1585,7 +1604,7 @@ export function mutationApprovalText(toolName: string, rawParams: unknown): { ti
         : action.includes("draft") ? "Creates or changes a draft that may contain recipient-visible content."
           : action === "move" || action === "copy" ? "Changes mailbox organization by moving or copying a message."
             : action === "add_message_attachment" ? "Reads the complete selected original message, including its embedded attachments, and attaches it as .eml to the selected existing draft; does not send."
-            : action === "add_attachment" ? "Adds file content to a remote draft."
+            : action === "add_attachment" ? `Adds file content to a remote draft. Content SHA-256 ${params.sourceSha256 ?? "unavailable"}, ${params.sourceByteSize ?? "unknown"} bytes.`
               : "Changes remote mailbox state or message properties.";
   } else if (toolName === "outlook_contacts_write") {
     target = action === "create" ? "new contact in own default contacts" : `contact ID "${approvalDisplayValue(params.contactId, "unspecified contact")}" in own default contacts`;
@@ -1837,7 +1856,7 @@ const plugin = defineToolPlugin({
       tool({ name: "outlook_calendar_read", label: "Outlook Calendar Read", optional: true, description: "Bounded default or explicitly authorized calendar reads, selected stable event fields, event search, free/busy, attachment metadata, and direct file downloads.", parameters: calendarReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_read", calendarReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarRead(config, toolContext.agentId, params, signal)) }),
       tool({ name: "outlook_calendar_write", label: "Outlook Calendar Write", optional: true, description: "Create, update, or non-atomically multiwrite stable Microsoft Graph v1.0 event settings, respond, attach private media up to 150 MB, or delete. Multiwrite is capped at 100 operations, ordered, and chunked into Graph batches of 20. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: calendarWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_write", calendarWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "outlook_mail_read", label: "Outlook Mail Read", optional: true, description: "Bounded own-mailbox message reads, KQL/filter search, selected stable message fields, attachment metadata, and direct file downloads.", parameters: mailReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_read", mailReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailRead(config, toolContext.agentId, params, signal)) }),
-      tool({ name: "outlook_mail_write", label: "Outlook Mail Write", optional: true, description: "Own-mailbox draft fields, reply/reply-all/forward drafts, copy/move, private-media attachments up to 150 MB, original-message .eml attachments up to 150 MB to existing drafts, send, and delete. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: mailWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_write", mailWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
+      tool({ name: "outlook_mail_write", label: "Outlook Mail Write", optional: true, description: "Own-mailbox draft fields, reply/reply-all/forward drafts, copy/move, workspace-relative sourceWorkspacePath (64 MiB staging limit) or private attachmentMediaUri (150 MB), exactly one source, hash-bound before native approval and reverified before credentials; original-message .eml attachments up to 150 MB to existing drafts, send, and delete. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: mailWriteSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("outlook_mail_write", mailWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId))) }),
       tool({ name: "outlook_contacts_read", label: "Outlook Contacts Read", optional: true, description: TOOL_GUIDANCE.outlook_contacts_read, parameters: contactsReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_contacts_read", contactsReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => contactsRead(config, toolContext.agentId, params, signal)) }),
       tool({ name: "outlook_contacts_write", label: "Outlook Contacts Write", optional: true, description: TOOL_GUIDANCE.outlook_contacts_write, parameters: contactsWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_contacts_write", contactsWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => contactsWrite(config, toolContext.agentId, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       tool({ name: "microsoft_todo_read", label: "Microsoft To Do Read", optional: true, description: "Bounded own-account list/task reads and client-side search, including checklist, linked-resource, and attachment collections.", parameters: todoReadSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_read", todoReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoRead(config, toolContext.agentId, params, signal)) }),
@@ -2223,6 +2242,8 @@ export function fileAttachmentPayload(p: any, content: Buffer, type: "#microsoft
 async function prepareAttachmentWritePlan(p: any, workspaceDir: string | undefined, type: "#microsoft.graph.fileAttachment" | "#microsoft.graph.taskFileAttachment", maxBytes: number): Promise<AttachmentWritePlan> {
   if (p.attachmentMediaUri === undefined) throw new Error("invalid_attachment");
   const content = await readProtectedMediaSource(p.attachmentMediaUri, workspaceDir, maxBytes);
+  const fingerprint = sourceFingerprint(p);
+  if (fingerprint && (fingerprint.sourceByteSize !== content.length || fingerprint.sourceSha256 !== createHash("sha256").update(content).digest("hex"))) throw new Error("invalid_source_fingerprint");
   return attachmentWritePlan(p, type, maxBytes, content);
 }
 
@@ -3429,7 +3450,7 @@ export async function beforeMicrosoftGraphToolCall(
   try { authorizedRoot = authorizeOneDriveMutationPreflight(runtimeConfig, ctx.agentId, event.toolName, params); }
   catch (error) { return { block: true, blockReason: errorCode(error) }; }
 
-  try { validateOneDriveSourceSelection(event.toolName, params); }
+  try { validateOneDriveSourceSelection(isMailAttachment(event.toolName, params) ? "onedrive_upload" : event.toolName, isMailAttachment(event.toolName, params) ? { ...params, sourceMediaUri: params.attachmentMediaUri } : params); }
   catch (error) { return { block: true, blockReason: errorCode(error) }; }
   const schemaParams = Object.fromEntries(Object.entries(callParams(event.params)).filter(([, value]) => value !== undefined));
   if (event.params && !TOOL_PARAMETER_CHECKS.get(event.toolName)?.(schemaParams)) return { block: true, blockReason: "invalid_tool_parameters" };
@@ -3455,7 +3476,7 @@ export async function beforeMicrosoftGraphToolCall(
     try { await workspaceStagingStore.cleanup(event.toolCallId, event.toolName, ctx.sessionId); }
     catch { onCleanupDeferred(); }
   };
-  try { params = await bindOneDriveWriteArtifact(event.toolName, params, ctx, (lease) => { ownedLease = lease; }); }
+  try { params = isMailAttachment(event.toolName, params) ? await bindMailAttachmentArtifact(params, ctx, (lease) => { ownedLease = lease; }) : await bindOneDriveWriteArtifact(event.toolName, params, ctx, (lease) => { ownedLease = lease; }); }
   catch (error) { const cleaned = await cleanupUnboundLease(); return { block: true, blockReason: cleaned ? errorCode(error) : "workspace_file_unavailable" }; }
 
   try {
