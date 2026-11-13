@@ -8,6 +8,7 @@ import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 import { stageWorkspaceFile, validateWorkspaceRelativeFilePath, workspaceFileContentType, workspaceStagingStore, type WorkspaceStagingLease } from "./stage-workspace-file.js";
 import { downloadOneDriveFile, downloadOutlookFileAttachment, publishPrivateMediaBytes } from "./attachment-download.js";
 import { exchangeRefreshToken, readCredential, selectScope, tokenForAuthorizedOperation } from "./credential.js";
+import { automaticServiceHealth, failureCategory, type Service } from "./service-health.js";
 import { registerCredentialCli, registerCredentialGatewayMethods } from "./credential-cli.js";
 import { registerConfigurationUiMethods } from "./config-ui-rpc.js";
 import { registerUpdateStatusMethod } from "./update-status.js";
@@ -282,7 +283,7 @@ export function lifecycleResult(toolName: string, value: unknown): unknown {
   const incomplete = record.truncated === true || record.completeness === "partial" || record.completeness === "unknown" || record.outcome === "partial" || record.outcome === "applied_with_warning";
   const code = typeof record.error === "string" ? record.error : ok ? incomplete ? "partial_results" : "ok" : "operation_failed";
   const credentialFailure = code.startsWith("credential_") || code === "authentication_failed";
-  const providerAuthorizationFailure = code === "provider_error_401" || code === "provider_error_403";
+  const providerAuthorizationFailure = code === "provider_error_401" || code === "provider_error_403" || code === "provider_access_denied";
   const uncertain = mutation && !ok && record.writeAttempted !== false && !credentialFailure && (code === "invalid_provider_response" || !/^(invalid_|unsupported_|access_denied|connector_disabled|trusted_|approval_context_|instruction_|onedrive_agents_instructions_required|workspace_|exactly_one_)/.test(code));
   const operations = Array.isArray(record.operations) ? record.operations as Array<Record<string, unknown>> : undefined;
   const mutationApplied = !mutation ? false : operations ? operations.some((entry) => entry.applied === true) ? true : operations.some((entry) => entry.status === 0) ? "unknown" : false : ok ? true : uncertain ? "unknown" : false;
@@ -695,7 +696,7 @@ export function callerCapabilities(config: RuntimeConfig, agentId: string | unde
       : undefined;
     return [service, { actions: executable ? grant?.operations ?? [] : [], resources: advertisedResources, ...(limitation ? { limitation } : {}) }];
   }));
-  return { ok: true, roots, services, prerequisites: ["Operator-managed Microsoft sign-in and credential vault must be ready; this read-only tool does not check credentials or connect to Graph.", "Use exact rootLabel from this response; rootPath identifies the configured folder but is not a tool label or proof of live connectivity. Never derive labels from agent IDs or folder names. If no authorized root matches or several match, ask rather than guess.", "Discover exact IDs with read tools before writes.", "Native approval may be required for writes; caller policy remains authoritative."] };
+  return { ok: true, reliabilityContract: "automatic-service-health-v1", roots, services, prerequisites: ["Operator-managed Microsoft sign-in and credential vault must be ready; this read-only tool does not check credentials or connect to Graph.", "Use exact rootLabel from this response; rootPath identifies the configured folder but is not a tool label or proof of live connectivity. Never derive labels from agent IDs or folder names. If no authorized root matches or several match, ask rather than guess.", "Discover exact IDs with read tools before writes.", "Native approval may be required for writes; caller policy remains authoritative."] };
 }
 
 export function concrete(name: string, parameters: any, agentId: string | undefined, sessionId: string | undefined, logger: Logger, execute: (params: any, signal?: AbortSignal) => Promise<unknown>, approvalConfig?: RuntimeConfig, sessionIsCurrent: () => Promise<boolean> = async () => true) {
@@ -704,6 +705,7 @@ export function concrete(name: string, parameters: any, agentId: string | undefi
       const started = Date.now();
       let value: unknown;
       let failure: string | undefined;
+      let reliability: Record<string, unknown> = {};
       let diagnosticStep: string | undefined;
       let writeAttempted: boolean | undefined;
       try {
@@ -720,8 +722,21 @@ export function concrete(name: string, parameters: any, agentId: string | undefi
           ? { ...semantic, listSelector: undefined, listId: resolvedTodoListId }
           : semantic;
         value = await execute(executionParams, signal);
+        const batch = value as { operations?: Array<{ status: number; ok?: boolean; error?: { code?: string }; serviceHealth?: unknown; failureCategory?: string }> };
+        const failed = Array.isArray(batch?.operations) ? batch.operations.filter(op => !op.ok && (op.status === 401 || op.status === 403 || op.status === 429 || op.status >= 500 || op.error?.code?.startsWith("provider_"))) : [];
+        if (failed.length && approvalConfig && !signal?.aborted) {
+          const health = await automaticServiceHealth({ config: approvalConfig, policy: validatePolicy(approvalConfig.policy), stateDir: stateDirForVault(), service: "calendar", signal });
+          for (const op of failed) { op.serviceHealth = health; op.failureCategory = failureCategory("", op.status); }
+        }
       } catch (error) {
         failure = errorCode(error);
+        const provider = error as { providerStatus?: number; attempts?: number; retryAfterMs?: number; providerCode?: string };
+        reliability = { ...(provider?.providerCode ? { providerCode: provider.providerCode } : {}), failureCategory: failureCategory(failure, provider?.providerStatus), ...(provider?.providerStatus ? { httpStatus: provider.providerStatus } : {}), ...(provider?.attempts ? { attempts: provider.attempts } : {}), ...(Number.isFinite(provider?.retryAfterMs) && provider.retryAfterMs! >= 0 && provider.retryAfterMs! <= 86400000 ? { retryAfterMs: provider.retryAfterMs } : {}) };
+        if (approvalConfig && (failure.startsWith("provider_") || failure === "request_timeout") && !signal?.aborted) {
+          const service: Service = name.startsWith("onedrive_") ? "onedrive" : name.startsWith("outlook_mail_") ? "mail" : name.startsWith("outlook_calendar_") ? "calendar" : name.startsWith("outlook_contacts_") ? "contacts" : name.startsWith("microsoft_todo_") ? "todo" : "unknown";
+          try { reliability.serviceHealth = await automaticServiceHealth({ config: approvalConfig, policy: validatePolicy(approvalConfig.policy), stateDir: stateDirForVault(), service, signal }); } catch { /* cancellation takes precedence */ }
+          if (signal?.aborted) { failure = "request_aborted"; reliability = {}; }
+        }
         const diagnostic = error as { diagnosticStep?: unknown; writeAttempted?: unknown };
         if (typeof diagnostic?.diagnosticStep === "string" && /^(draft_precheck|source_mime_read|draft_recheck|direct_attachment_post|upload_session_create|upload_session_validation|upload_chunk|upload_final_response)$/.test(diagnostic.diagnosticStep)) diagnosticStep = diagnostic.diagnosticStep;
         if (typeof diagnostic?.writeAttempted === "boolean") writeAttempted = diagnostic.writeAttempted;
@@ -729,7 +744,7 @@ export function concrete(name: string, parameters: any, agentId: string | undefi
       let cleanupDeferred = false;
       try { await workspaceStagingStore.cleanup(_id, name, sessionId); }
       catch { cleanupDeferred = true; logger.warn(STAGING_CLEANUP_DEFERRED); }
-      const response = failure ? { ok: false, error: failure, ...(diagnosticStep ? { diagnosticStep } : {}), ...(writeAttempted === undefined ? {} : { writeAttempted }) } : value;
+      const response = failure ? { ok: false, error: failure, ...reliability, ...(diagnosticStep ? { diagnosticStep } : {}), ...(writeAttempted === undefined ? {} : { writeAttempted }) } : value;
       const record = response && typeof response === "object" && !Array.isArray(response) ? response as Record<string, unknown> : undefined;
       const outcome = cleanupDeferred && record
         ? { ...record, cleanupWarning: STAGING_CLEANUP_DEFERRED, ...(record.ok !== false && !record.outcome ? { outcome: "applied_with_warning" } : {}) }
@@ -2972,7 +2987,7 @@ async function mailWrite(config: RuntimeConfig, agentId: string | undefined, wor
       });
       return { ok: true, action: p.action, ...uploaded, attachment: { name: plan.name, contentType: plan.contentType, size: plan.size } };
       } catch (error) {
-        throw Object.assign(new Error(errorCode(error)), { diagnosticStep, writeAttempted });
+        throw Object.assign(new Error(errorCode(error)), error, { diagnosticStep, writeAttempted });
       }
     }
     if (p.action === "add_attachment") {

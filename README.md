@@ -33,6 +33,16 @@ Installation alone does not sign you in, grant an agent access, or make an incom
 
 **Earlier ClawHub validation notice:** Older validation runs flagged `contracts.tools` as an unsupported manifest contract (`manifest-unknown-contracts`). OpenClaw requires this field to discover the plugin's agent tools. The [upstream Inspector fix](https://github.com/openclaw/plugin-inspector/commit/d0cfd5ef980e6fc9c10a2252760249a79baa8e3c) has merged, and the current local package validation reports no findings. Check the hosted result for each published version separately.
 
+### Automatic failure diagnostics (3.24)
+
+Relevant Microsoft Graph failures automatically include `serviceHealth` evidence in the existing tool result; no extra agent call or tool is required. Local policy/approval denials and successful requests never trigger a privileged status probe. OAuth/token-endpoint failures are not evidence that mail, calendar, contacts, tasks or files are down.
+
+The optional check uses [Graph v1.0 service issues](https://learn.microsoft.com/en-us/graph/api/serviceannouncement-list-issues?view=graph-rest-1.0), requiring **ServiceHealth.Read.All** with administrator consent in an organizational tenant. This plugin currently uses delegated refresh-token credentials, not application credentials. Personal accounts and ambiguous `common` tenants are unsupported. Default Control UI sign-in does not add this permission. An operator must separately review/consent and provision an organizational vault credential explicitly containing the scope; this release never changes live consent, credentials or configuration. Data-operation tokens continue requesting only their existing service scope, including the read-only scope ceiling.
+
+Without that existing grant the result reports `not_authorized`; credential/status failures report `unavailable`, unsupported account/service combinations report `unsupported`. These are not successful health checks and do not replace the original error. Checks add at most 1500 ms to the caller, use at most three bounded pages without retries, share concurrent checks, and cache sanitized results for 30 seconds using isolated vault-generation/service identities. Caller cancellation takes precedence without cancelling another caller's diagnostic.
+
+Only fresh, unresolved Microsoft incidents with exact service/feature matches are returned as IDs, status and timestamps. Unknown feature names remain unmatched. An incomplete listing or no matching incident never means healthy; repeated 503s never imply a global outage. Provider titles, posts, impact descriptions, raw error bodies, URLs and account data are not agent-facing diagnostic content. Existing `error`/`code`, `nextAction`, `retrySafety` and `mutationApplied` remain authoritative. Uncertain writes must be read back before retrying and are never automatically replayed.
+
 **OpenClaw SDK migration:** Version 3.16.0 uses the awaited `getSessionEntryAsync` reader for session-bound approval checks, eliminating the `getSessionEntry` deprecation warning. This API requires OpenClaw 2026.10.5 or newer. Earlier plugin releases remain available for older hosts; this change does not itself alter Microsoft permissions or stored credentials.
 
 ### 2. Choose access and connect Microsoft

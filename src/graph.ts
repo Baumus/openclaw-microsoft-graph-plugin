@@ -258,6 +258,10 @@ async function readDigest(response: Response, maximum: number): Promise<{ bytes:
 }
 
 function providerStatusError(status: number): Error {
+  return Object.assign(legacyProviderStatusError(status), { providerStatus: status });
+}
+
+function legacyProviderStatusError(status: number): Error {
   if (status === 401 || status === 403) return Object.assign(new Error("provider_access_denied"), { providerStatus: status });
   if (status === 404) return new Error("item_not_found");
   if (status === 409 || status === 412) return new Error("item_conflict");
@@ -299,7 +303,8 @@ async function abortableDelay(delayMs: number, signal?: AbortSignal): Promise<vo
 function retryAfterDelay(response: Response, now: () => number): number | undefined {
   const raw = response.headers.get("retry-after")?.trim();
   if (!raw) return undefined;
-  if (/^\d+$/.test(raw)) return Number(raw) * 1_000;
+  if (/^\d{1,8}$/.test(raw)) return Number(raw) * 1_000;
+  if (!/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(raw)) return undefined;
   const date = Date.parse(raw);
   return Number.isFinite(date) ? Math.max(0, date - now()) : undefined;
 }
@@ -356,6 +361,7 @@ async function fetchGraphValue<T>(
       throwPreferredAbort(operationSignal);
       if (!retryable || retries >= policy.readRetries || !transientTransportError(error, requestTimeout)) {
         if (requestTimeout.aborted) throw requestTimeout.reason;
+        if (error instanceof Error) Object.assign(error, { attempts: retries + 1 });
         throw error;
       }
       try { await response.body?.cancel(); } catch { /* discard timed-out response bytes */ }
@@ -424,7 +430,15 @@ export async function graphRequest(token: string, path: string, options: GraphOp
   const body = options.body === undefined ? undefined : JSON.stringify(options.body);
   if (body !== undefined) headers["content-type"] = "application/json";
   return fetchGraphValue(url, { method: options.method ?? "GET", headers, body }, options.signal, fetchFn, options, async (response) => {
-    if (!response.ok) throw providerStatusError(response.status);
+    if (!response.ok) {
+      const error = Object.assign(providerStatusError(response.status), { retryAfterMs: retryAfterDelay(response, Date.now) });
+      try {
+        const bytes = await readBytes(response, 16 * 1024);
+        const code = JSON.parse(new TextDecoder().decode(bytes))?.error?.code;
+        if (new Set(["InvalidAuthenticationToken", "ErrorAccessDenied", "Authorization_RequestDenied", "TooManyRequests", "ServiceUnavailable", "ErrorInternalServerError", "ResourceNotFound", "ErrorItemNotFound"]).has(code)) Object.assign(error, { providerCode: code });
+      } catch { /* malformed/untrusted body cannot replace the original error */ }
+      throw error;
+    }
     if (options.response === "none" || response.status === 204) return null;
     const bytes = await readBytes(response, options.maxBytes ?? MAX_JSON_BYTES);
     if (options.response === "bytes") return bytes;
