@@ -257,8 +257,9 @@ async function readDigest(response: Response, maximum: number): Promise<{ bytes:
   return { bytes: total, sha256: hash.digest("hex") };
 }
 
-function providerStatusError(status: number): Error {
-  return Object.assign(legacyProviderStatusError(status), { providerStatus: status });
+const responseAttempts = new WeakMap<Response, number>();
+function providerStatusError(status: number, response?: Response): Error {
+  return Object.assign(legacyProviderStatusError(status), { providerStatus: status, attempts: response ? responseAttempts.get(response) ?? 1 : 1, ...(response ? { retryAfterMs: retryAfterDelay(response, Date.now) } : {}) });
 }
 
 function legacyProviderStatusError(status: number): Error {
@@ -356,6 +357,7 @@ async function fetchGraphValue<T>(
       }
     }
     try {
+      responseAttempts.set(response, retries + 1);
       return await consume(response);
     } catch (error) {
       throwPreferredAbort(operationSignal);
@@ -419,6 +421,7 @@ async function fetchGraphResponse(
         continue;
       }
     }
+    responseAttempts.set(response, retries + 1);
     return response;
   }
 }
@@ -431,7 +434,7 @@ export async function graphRequest(token: string, path: string, options: GraphOp
   if (body !== undefined) headers["content-type"] = "application/json";
   return fetchGraphValue(url, { method: options.method ?? "GET", headers, body }, options.signal, fetchFn, options, async (response) => {
     if (!response.ok) {
-      const error = Object.assign(providerStatusError(response.status), { retryAfterMs: retryAfterDelay(response, Date.now) });
+      const error = Object.assign(providerStatusError(response.status, response), { retryAfterMs: retryAfterDelay(response, Date.now) });
       try {
         const bytes = await readBytes(response, 16 * 1024);
         const code = JSON.parse(new TextDecoder().decode(bytes))?.error?.code;
@@ -457,7 +460,7 @@ export async function graphStreamRequest(token: string, path: string, options: P
     }, options.signal, fetchFn);
   if (!response.ok) {
     try { await response.body?.cancel(); } catch { /* discard provider error bytes */ }
-    throw providerStatusError(response.status);
+    throw providerStatusError(response.status, response);
   }
   return response;
 }
@@ -468,7 +471,7 @@ async function graphDigestRequest(token: string, path: string, maxBytes: number,
       method: "GET",
       headers: { accept: "application/octet-stream", authorization: "Bearer " + token },
     }, signal, fetchFn, {}, async (response) => {
-      if (!response.ok) throw providerStatusError(response.status);
+      if (!response.ok) throw providerStatusError(response.status, response);
       return readDigest(response, maxBytes);
     });
 }
@@ -563,7 +566,7 @@ export async function uploadAttachmentSession(
       }
       if (!response.ok) {
         try { await response.body?.cancel(); } catch { /* discard provider error content */ }
-        throw providerStatusError(response.status);
+        throw providerStatusError(response.status, response);
       }
       chunks += 1;
       const final = endExclusive === content.byteLength;
@@ -664,7 +667,7 @@ async function graphContinuationRequest(token: string, continuation: unknown, pa
     if (signal?.aborted) throw signal.reason;
     throw new Error("provider_unavailable");
   }
-  if (!response.ok) throw providerStatusError(response.status);
+  if (!response.ok) throw providerStatusError(response.status, response);
   let bytes: Uint8Array;
   try { bytes = await readBytes(response, MAX_JSON_BYTES); }
   catch (error) { throwPreferredAbort(signal); throw error; }
@@ -1276,7 +1279,7 @@ export async function driveWriteSource(root: AllowedRoot, relativePath: string, 
       throw new Error("provider_unavailable");
     }
     if (!streamCompleted) throw new Error("invalid_provider_response");
-    if (!response.ok) throw providerStatusError(response.status);
+    if (!response.ok) throw providerStatusError(response.status, response);
     return driveWriteReceipt(root, update, source, await parseDriveItemResponse(response), "simple", source.size === 0 ? 0 : Math.ceil(source.size / uploadChunkBytes));
   }
 
@@ -1319,7 +1322,7 @@ export async function driveWriteSource(root: AllowedRoot, relativePath: string, 
         if (requestSignal.aborted) throw requestSignal.reason;
         throw new Error("provider_unavailable");
       }
-      if (!response.ok) throw providerStatusError(response.status);
+      if (!response.ok) throw providerStatusError(response.status, response);
       chunks += 1;
       if (endExclusive === source.size) {
         if (response.status !== 200 && response.status !== 201) throw new Error("invalid_provider_response");

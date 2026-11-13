@@ -2711,7 +2711,7 @@ export function planCalendarMultiwrite(operations: unknown): CalendarMultiwriteP
 
 function sanitizedBatchError(status: number, body: unknown): { code: string } {
   const raw = body && typeof body === "object" && !Array.isArray(body) ? (body as any).error?.code : undefined;
-  const code = typeof raw === "string" && /^[A-Za-z0-9_.-]{1,128}$/.test(raw) ? raw : `provider_error_${status}`;
+  const code = typeof raw === "string" && new Set(["InvalidAuthenticationToken", "ErrorAccessDenied", "Authorization_RequestDenied", "TooManyRequests", "ServiceUnavailable", "ErrorInternalServerError", "ResourceNotFound", "ErrorItemNotFound"]).has(raw) ? raw : `provider_error_${status}`;
   return { code };
 }
 
