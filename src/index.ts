@@ -725,8 +725,13 @@ export function concrete(name: string, parameters: any, agentId: string | undefi
         const batch = value as { operations?: Array<{ status: number; ok?: boolean; error?: { code?: string }; serviceHealth?: unknown; failureCategory?: string }> };
         const failed = Array.isArray(batch?.operations) ? batch.operations.filter(op => !op.ok && (op.status === 401 || op.status === 403 || op.status === 429 || op.status >= 500 || op.error?.code?.startsWith("provider_"))) : [];
         if (failed.length && approvalConfig && !signal?.aborted) {
-          const health = await automaticServiceHealth({ config: approvalConfig, policy: validatePolicy(approvalConfig.policy), stateDir: stateDirForVault(), service: "calendar", signal });
-          for (const op of failed) { op.serviceHealth = health; op.failureCategory = failureCategory("", op.status); }
+          try {
+            const health = await automaticServiceHealth({ config: approvalConfig, policy: validatePolicy(approvalConfig.policy), stateDir: stateDirForVault(), service: "calendar", signal });
+            for (const op of failed) { op.serviceHealth = health; op.failureCategory = failureCategory("", op.status); }
+          } catch {
+            // A cancelled diagnostic must retain all previously accepted operation receipts.
+            if (signal?.aborted) Object.assign(batch, { ok: false, error: "request_aborted" });
+          }
         }
       } catch (error) {
         failure = errorCode(error);
@@ -2711,7 +2716,7 @@ export function planCalendarMultiwrite(operations: unknown): CalendarMultiwriteP
 
 function sanitizedBatchError(status: number, body: unknown): { code: string } {
   const raw = body && typeof body === "object" && !Array.isArray(body) ? (body as any).error?.code : undefined;
-  const code = typeof raw === "string" && new Set(["InvalidAuthenticationToken", "ErrorAccessDenied", "Authorization_RequestDenied", "TooManyRequests", "ServiceUnavailable", "ErrorInternalServerError", "ResourceNotFound", "ErrorItemNotFound"]).has(raw) ? raw : `provider_error_${status}`;
+  const code = typeof raw === "string" && new Set(["InvalidAuthenticationToken", "ErrorAccessDenied", "Authorization_RequestDenied", "TooManyRequests", "ServiceUnavailable", "ErrorInternalServerError", "ResourceNotFound", "ErrorItemNotFound", "ErrorConflict"]).has(raw) ? raw : `provider_error_${status}`;
   return { code };
 }
 
