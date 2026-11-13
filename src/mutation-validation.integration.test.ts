@@ -69,7 +69,7 @@ const malformedMutations: Array<{ tool: string; action: string; params: Record<s
   { tool: "outlook_mail_write", action: "reply_all_draft", params: { action: "reply_all_draft", messageId: "message" }, error: "invalid_mail_payload" },
   { tool: "outlook_mail_write", action: "forward_draft", params: { action: "forward_draft", messageId: "message", bodyText: "Forward" }, error: "invalid_mail_payload" },
   { tool: "outlook_mail_write", action: "copy", params: { action: "copy", messageId: "message", destination: "inbox", destinationFolderId: "folder" }, error: "invalid_destination" },
-  { tool: "outlook_mail_write", action: "add_attachment", params: { action: "add_attachment", messageId: "message" }, error: "invalid_attachment" },
+  { tool: "outlook_mail_write", action: "add_attachment", params: { action: "add_attachment", messageId: "message" }, error: "exactly_one_source_required" },
   { tool: "outlook_mail_write", action: "move", params: { action: "move", messageId: "message" }, error: "invalid_destination" },
   { tool: "outlook_mail_write", action: "mark_read", params: { action: "mark_read", messageId: "message" }, error: "invalid_read_state" },
   { tool: "outlook_mail_write", action: "send_draft", params: { action: "send_draft", messageId: "message", bodyText: "must not be ignored" }, error: "invalid_write_parameter" },

@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.25.0 - 2026-11-13
+
+- Add workspace-relative sourceWorkspacePath to Outlook mail add_attachment, mutually exclusive with attachmentMediaUri. Reuse private automatic staging with trusted caller/session isolation, safe regular-file reads and exact SHA-256 approval binding.
+- Reverify attachment bytes before credentials or provider access. Workspace staging remains capped at 64 MiB; existing private-media attachments retain the 150 MB limit. No additional Microsoft scopes or manual staging are required.
+
 ## 3.24.0 - 2026-11-13
 
 - Automatically enrich relevant Graph failures with bounded Service Health evidence when an organizational credential already carries ServiceHealth.Read.All; never request consent or widen data-operation scopes automatically.
