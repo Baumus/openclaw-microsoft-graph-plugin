@@ -29,7 +29,7 @@ async function readStatus(token: string, service: Service, signal: AbortSignal, 
   const incidents: NonNullable<Health["incidents"]> = [];
   for (let page = 0; page < 3; page++) {
     const response = await fetchFn(url, { headers: { authorization: "Bearer " + token, accept: "application/json" }, signal, redirect: "error" });
-    if (response.status === 401 || response.status === 403) { await response.body?.cancel(); return noGrant(); }
+    if (response.status === 401 || response.status === 403) { await response.body?.cancel(); return { status: "not_authorized", reason: "status_endpoint_access_denied", evidence: "observed_request_failure" }; }
     if (!response.ok) { await response.body?.cancel(); return unavailable("status_endpoint_failed"); }
     if (!response.body) return unavailable("invalid_status_response");
     const reader = response.body.getReader(); let size = 0; const chunks: Uint8Array[] = [];
@@ -73,10 +73,13 @@ export async function automaticServiceHealth(params: { config: { credentialVault
       let expire: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<Health>(resolve => { expire = setTimeout(() => { controller.abort(); resolve(unavailable("diagnostic_timeout")); }, Math.max(1, budget - (Date.now() - started))); });
       try {
-        return await Promise.race([timeout, (async () => {
-          const token = await tokenForAuthorizedOperation({ config: params.config, policy: params.policy, allowedScopes: ["ServiceHealth.Read.All"], stateDir, signal: controller.signal, requestTimeoutMs: budget, fetchFn: params.fetchFn });
-          return readStatus(token, params.service, controller.signal, params.fetchFn ?? fetch);
-        })()]);
+        // A rotating refresh must finish its durable vault transaction even after
+        // the diagnostic waiter leaves. Use the normal 10s token deadline, never
+        // the diagnostic/caller signal. Keep this flight/capacity slot until it
+        // settles, and handle failures below without weakening vault quarantine.
+        const token = await tokenForAuthorizedOperation({ config: params.config, policy: params.policy, allowedScopes: ["ServiceHealth.Read.All"], stateDir, fetchFn: params.fetchFn });
+        if (controller.signal.aborted) return unavailable("diagnostic_timeout");
+        return await Promise.race([timeout, readStatus(token, params.service, controller.signal, params.fetchFn ?? fetch)]);
       } catch { return unavailable("status_check_failed"); }
       finally { if (expire) clearTimeout(expire); }
     })();

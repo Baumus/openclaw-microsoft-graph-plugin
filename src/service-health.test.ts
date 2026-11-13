@@ -44,7 +44,7 @@ describe("automatic Service Health", () => {
     expect(fetchFn).toHaveBeenCalledTimes(3);
   });
   it("status authorization failure is explicit", async () => {
-    expect((await automaticServiceHealth({ ...params, fetchFn: vi.fn(async () => new Response(null, { status: 403 })) })).status).toBe("not_authorized");
+    expect(await automaticServiceHealth({ ...params, fetchFn: vi.fn(async () => new Response(null, { status: 403 })) })).toMatchObject({ status: "not_authorized", reason: "status_endpoint_access_denied" });
   });
   it("bounds latency even when a fetch ignores abort", async () => {
     const start = Date.now();
