@@ -1,3 +1,4 @@
+import { describeParameters } from "./agent-parameter-guidance.js";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { Type } from "typebox";
@@ -16,6 +17,8 @@ import { ContinuationStore, normalizedCriteria, type ContinuationBinding } from 
 import { authorizeOperation, authorizeRoot, GraphPolicySchema, normalizeRelativePath, validatePolicy, type AllowedRoot, type GraphPolicy, type OneDriveOperation } from "./policy.js";
 import { base64DecodedByteLengthStrict, base64JsonResponseLimit, canonicalGraphContinuation, validTransferContentType, decodeBase64Strict, DIRECT_ATTACHMENT_MAX_BYTES, driveCreateFolder, driveDelete, driveList, driveListContinuation, driveMetadataUpdate, drivePath, driveRead, driveReadInstructionsCandidate, driveSearchPath, driveSearchScoped, driveWriteSource, graphOperationSignal, graphRequest, normalizeDriveSearch, ONEDRIVE_READ_MAX_BYTES, ONEDRIVE_WRITE_MAX_BYTES, OUTLOOK_ATTACHMENT_MAX_BYTES, safeId, TODO_ATTACHMENT_MAX_BYTES, uploadAttachmentSession, validateDriveFolderInput, validateDriveMetadataInput, validateDriveWriteBytes, type DriveUploadSource } from "./graph.js";
 import { ONEDRIVE_AGENTS_MAX_FILE_BYTES, ONEDRIVE_AGENTS_MAX_PARALLEL, OneDriveAgentsSessionCache, oneDriveAgentsSessionCache } from "./onedrive-agents-instructions.js";
+
+import { MAX_REPLY_HISTORY_BYTES, prependReplyHtml, replyFragment } from "./mail-reply.js";
 
 const MAX_RESULTS = 50;
 const MAX_MAIL_FOLDERS = 200;
@@ -287,7 +290,7 @@ export function lifecycleResult(toolName: string, value: unknown): unknown {
   const uncertain = mutation && !ok && record.writeAttempted !== false && !credentialFailure && (code === "invalid_provider_response" || !/^(invalid_|unsupported_|access_denied|connector_disabled|trusted_|approval_context_|instruction_|onedrive_agents_instructions_required|workspace_|exactly_one_)/.test(code));
   const operations = Array.isArray(record.operations) ? record.operations as Array<Record<string, unknown>> : undefined;
   const mutationApplied = !mutation ? false : operations ? operations.some((entry) => entry.applied === true) ? true : operations.some((entry) => entry.status === 0) ? "unknown" : false : ok ? true : uncertain ? "unknown" : false;
-  const nextAction = toolName === "outlook_contacts_write" && record.appliedButUnverified === true ? "The contact write was accepted but fax readback failed. Read the exact contact before any retry; do not repeat the completed write." : !ok && record.action === "multiwrite" ? "Inspect each operation and read back uncertain targets before retrying only unapplied operations." : !ok ? code === "credential_scope_missing" ? "Ask the operator to inspect credential status in the Control UI and follow its guided reauthorization; do not retry unchanged." : code === "credential_refresh_retry_later" ? "OAuth refresh had an uncertain outcome; no Graph request was sent. Wait at least 60 seconds before a fresh authorized operation; recovery is bounded to one attempt. Do not automatically replay data writes." : code === "credential_refresh_temporarily_unavailable" ? "Microsoft token endpoint is temporarily unavailable; no Graph request was sent. Wait before a fresh authorized operation; do not automatically replay data writes." : code === "credential_reauthorization_required" || code === "credential_refresh_outcome_uncertain" ? "Credential refresh is blocked. Ask the operator to inspect credential status and arrange reviewed recovery; do not retry unchanged." : code === "authentication_failed" ? "Ask the operator to inspect credential status, account, and tenant before considering reauthorization; do not retry unchanged." : providerAuthorizationFailure ? `${uncertain ? "Read back the exact target before retrying; the remote outcome is unknown. " : ""}Ask the operator to check policy, Microsoft consent, account, and tenant; use guided Control UI reauthorization only if consent is missing.` : uncertain ? "Read back the exact target before retrying; the remote outcome is unknown." : code === "access_denied" ? "Call microsoft_graph_capabilities with {} to discover this caller's effective roots/actions. Use only an exact returned rootLabel, never an agent ID, folder name, or path inferred as a label. Local access_denied does not prove Microsoft consent failure or a UI contradiction. If the required root/action is absent or discovery is unavailable, ask the operator to review access; do not guess labels, widen rights, or retry unchanged." : code.startsWith("approval_context_") ? "Request a new exact call and native approval; the previous approval cannot be reused." : code === "workspace_file_unavailable" ? "Use an existing regular file relative to this agent workspace; links and host-absolute paths are not accepted." : code === "workspace_file_changed" ? "Finish writing the file, then make a fresh call; no OneDrive write was attempted." : code === "workspace_context_unavailable" ? "This tool needs a trusted agent workspace context; ask the OpenClaw operator to check the tool route." : code === "exactly_one_source_required" ? "Pass exactly one of sourceWorkspacePath or sourceMediaUri." : "Correct the request or prerequisite, then make a fresh call." : incomplete && record.action === "multiwrite" ? "Inspect per-operation outcomes and read back unverified targets before retrying." : record.cleanupWarning === STAGING_CLEANUP_DEFERRED ? "The action result is preserved; staged-file cleanup is queued for retry. Do not repeat a completed write." : incomplete ? record.continuation ? "Repeat the same criteria with continuation for the next page." : "Narrow the query or time range; completeness is not proven." : mutation && toolName === "outlook_mail_write" && record.action === "send_draft" ? "Graph accepted the send request; delivery is not proven. Inspect Sent Items before any retry." : "No further action required.";
+  const nextAction = record.draftCreated === true && !ok ? "Read the exact created draft before retrying content insertion; do not recreate it." : toolName === "outlook_contacts_write" && record.appliedButUnverified === true ? "The contact write was accepted but fax readback failed. Read the exact contact before any retry; do not repeat the completed write." : !ok && record.action === "multiwrite" ? "Inspect each operation and read back uncertain targets before retrying only unapplied operations." : !ok ? code === "credential_scope_missing" ? "Ask the operator to inspect credential status in the Control UI and follow its guided reauthorization; do not retry unchanged." : code === "credential_refresh_retry_later" ? "OAuth refresh had an uncertain outcome; no Graph request was sent. Wait at least 60 seconds before a fresh authorized operation; recovery is bounded to one attempt. Do not automatically replay data writes." : code === "credential_refresh_temporarily_unavailable" ? "Microsoft token endpoint is temporarily unavailable; no Graph request was sent. Wait before a fresh authorized operation; do not automatically replay data writes." : code === "credential_reauthorization_required" || code === "credential_refresh_outcome_uncertain" ? "Credential refresh is blocked. Ask the operator to inspect credential status and arrange reviewed recovery; do not retry unchanged." : code === "authentication_failed" ? "Ask the operator to inspect credential status, account, and tenant before considering reauthorization; do not retry unchanged." : providerAuthorizationFailure ? `${uncertain ? "Read back the exact target before retrying; the remote outcome is unknown. " : ""}Ask the operator to check policy, Microsoft consent, account, and tenant; use guided Control UI reauthorization only if consent is missing.` : uncertain ? "Read back the exact target before retrying; the remote outcome is unknown." : code === "access_denied" ? "Call microsoft_graph_capabilities with {} to discover this caller's effective roots/actions. Use only an exact returned rootLabel, never an agent ID, folder name, or path inferred as a label. Local access_denied does not prove Microsoft consent failure or a UI contradiction. If the required root/action is absent or discovery is unavailable, ask the operator to review access; do not guess labels, widen rights, or retry unchanged." : code.startsWith("approval_context_") ? "Request a new exact call and native approval; the previous approval cannot be reused." : code === "workspace_file_unavailable" ? "Use an existing regular file relative to this agent workspace; links and host-absolute paths are not accepted." : code === "workspace_file_changed" ? "Finish writing the file, then make a fresh call; no OneDrive write was attempted." : code === "workspace_context_unavailable" ? "This tool needs a trusted agent workspace context; ask the OpenClaw operator to check the tool route." : code === "exactly_one_source_required" ? "Pass exactly one of sourceWorkspacePath or sourceMediaUri." : "Correct the request or prerequisite, then make a fresh call." : incomplete && record.action === "multiwrite" ? "Inspect per-operation outcomes and read back unverified targets before retrying." : record.cleanupWarning === STAGING_CLEANUP_DEFERRED ? "The action result is preserved; staged-file cleanup is queued for retry. Do not repeat a completed write." : incomplete ? record.continuation ? "Repeat the same criteria with continuation for the next page." : "Narrow the query or time range; completeness is not proven." : mutation && toolName === "outlook_mail_write" && record.action === "send_draft" ? "Graph accepted the send request; delivery is not proven. Inspect Sent Items before any retry." : "No further action required.";
   return { ...record, phase: !ok && mutationApplied !== true ? "failed" : incomplete ? "partial" : "complete", code, nextAction, retrySafety: mutation ? uncertain || record.action === "send_draft" || record.action === "multiwrite" || record.appliedButUnverified === true ? "readback_before_retry" : ok ? "do_not_repeat" : "safe_after_correction" : "safe", mutationApplied, ...(record.action === "send_draft" && ok ? { deliveryStatus: "unknown" } : {}), ...(record.items && Array.isArray(record.items) && record.items.length === 0 ? { noResults: !incomplete } : {}) };
 }
 function result(value: unknown, toolName?: string) { const details = toolName ? lifecycleResult(toolName, value) : value; return { content: [{ type: "text" as const, text: JSON.stringify(details) }], details }; }
@@ -661,12 +664,12 @@ function toolGuidance(name: string): string {
 const ACTION_SCHEMA_GUIDANCE: Readonly<Record<string, string>> = {
   outlook_calendar_read: "list_calendars: no ID; list_events/search_events: optional exact calendarId from list_calendars and bounded dates; get_event/list_attachments: eventId plus calendarId when non-default; download_attachment: also attachmentId; get_schedule: startDateTime, endDateTime, schedules. Continue list pages; narrow client-filtered searches.",
   outlook_calendar_write: "create: subject/startDateTime/endDateTime; update: eventId plus changed fields; multiwrite: operations with unique operationId and create/update payloads; respond: eventId and response; attach: eventId and private media; delete: eventId. calendarId must be an exact authorized ID. Native approval is separate from deprecated chat fields.",
-  outlook_mail_read: "list_folders: no ID or parentFolderId; list/search_messages: folder/folderId or mailbox-wide; get_message/list_attachments: messageId; download_attachment: messageId and attachmentId. Folder and message IDs come from preceding read actions; follow continuation.",
-  outlook_mail_write: "reply_draft: answer one unambiguously identified original message using its messageId and content; reply_all_draft: only when all recipients are intended; create_draft: only for a new, independent message with subject and body. If the original message is ambiguous or missing, ask the user; do not fall back to create_draft. update_draft/update_properties: messageId and changed fields; forward_draft: messageId and content; copy/move: messageId and exactly one destination or destinationFolderId; mark_read: messageId and isRead; add_attachment: messageId, attachmentName and exactly one of sourceWorkspacePath relative to this agent workspace or an existing attachmentMediaUri. The plugin privately stages and fingerprints the file before native approval. add_message_attachment: existing draft messageId, original sourceMessageId, optional .eml attachmentName; attaches original MIME up to 150 MB using direct or upload-session transport, requires read and update access, never sends. For an inline image, place <img src=\"cid:IMAGE_ID\"> at the desired position in bodyHtml, then add_attachment with the same inlineContentId=IMAGE_ID and an image MIME type; send_draft/delete: messageId. Native approval remains sole authority.",
+  outlook_mail_read: "list_folders: no ID or parentFolderId; list_messages/search_messages: folder/folderId or mailbox-wide; get_message/list_attachments: messageId; download_attachment: messageId and attachmentId. Folder and message IDs come from preceding read actions; follow continuation.",
+  outlook_mail_write: "reply_draft: native answer to one exact original; bodyHtml/bodyText is ONLY the new answer, never include quoted history. Omitting content creates the native draft unchanged; reply_all_draft: only when all recipients are intended; create_draft: only for a new, independent message with subject and body. If the original message is ambiguous or missing, ask the user; do not fall back to create_draft. prepend_reply_draft: prepend only new bodyHtml/bodyText to an existing draft while retaining its opaque HTML and images (not idempotent; read before retry). update_draft/update_properties: messageId and changed fields; forward_draft: messageId and content; copy/move: messageId and exactly one destination or destinationFolderId; mark_read: messageId and isRead; add_attachment: messageId, attachmentName and exactly one of sourceWorkspacePath relative to this agent workspace or an existing attachmentMediaUri. The plugin privately stages and fingerprints the file before native approval. add_message_attachment: existing draft messageId, original sourceMessageId, optional .eml attachmentName; attaches original MIME up to 150 MB using direct or upload-session transport, requires read and update access, never sends. For an inline image, place <img src=\"cid:IMAGE_ID\"> at the desired position in bodyHtml, then add_attachment with the same inlineContentId=IMAGE_ID and an image MIME type; send_draft/delete: messageId. Native approval remains sole authority.",
   outlook_contacts_read: "list_contacts: optional limit/continuation; search_contacts: search plus optional limit, capped client-side scan; get_contact: exact contactId. Search may be incomplete; never treat a truncated search as proof of absence.",
   outlook_contacts_write: "create: at least one name or email field; update: exact contactId and at least one changed field; delete: exact contactId. Search and disambiguate before changing an existing contact. Addresses require all five components or null to clear; omitted addresses/faxes are unchanged, empty fax clears. Fax writes return provider readback, never a caller-input echo. Native approval remains sole authority.",
-  microsoft_todo_read: "list_lists: no ID; search_lists: search; list/search_tasks: listId from list_lists; get_task/child lists: listId and taskId; get_attachment: also attachmentId. Follow continuation where offered; narrow capped search.",
-  microsoft_todo_write: "create_list: title; update/delete_list: listId; create_task: title and exactly one of listId or listSelector default; the actual owned non-shared default list is resolved before approval (requires read and create); update/delete_task: listId and taskId; checklist/linked-resource/attachment actions: listId, taskId and the relevant child ID for update/delete. Native approval is separate from deprecated chat fields.",
+  microsoft_todo_read: "list_lists: no ID; search_lists: search; list_tasks/search_tasks: listId from list_lists; get_task/list_checklist/list_linked_resources/list_attachments: listId and taskId; get_attachment: also attachmentId. Follow continuation where offered; narrow capped search.",
+  microsoft_todo_write: "create_list: title; update_list/delete_list: listId; create_task: title and exactly one of listId or listSelector default; the actual owned non-shared default list is resolved before approval (requires read and create); update_task/delete_task: listId and taskId; add_checklist/update_checklist/delete_checklist/add_linked_resource/update_linked_resource/delete_linked_resource/add_attachment/delete_attachment: listId, taskId and the relevant child ID for update/delete. Native approval is separate from deprecated chat fields.",
 };
 const APPROVAL_BEARING_TOOLS = new Set(["onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete", "outlook_calendar_write", "outlook_mail_write", "outlook_contacts_write", "microsoft_todo_write"]);
 const transportTimeoutMs = Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_OUTER_TOOL_TIMEOUT_MS, description: "Outer OpenClaw tool-call budget in milliseconds (maximum 600000). For native approval, pass 180000 or more; include expected transfer time. This is transport metadata, not Graph data or approval authority. A 24-hour transfer cannot fit this host cap." }));
@@ -1145,7 +1148,7 @@ const mailReadSchema = Type.Object({
   bodyContentType: Type.Optional(Type.Union([Type.Literal("html"), Type.Literal("text")], { default: "html" })), limit, continuation,
 }, { additionalProperties: false });
 const mailWriteSchema = Type.Object({
-  action: Type.Union([Type.Literal("create_draft"), Type.Literal("update_draft"), Type.Literal("update_properties"), Type.Literal("reply_draft"), Type.Literal("reply_all_draft"), Type.Literal("forward_draft"), Type.Literal("copy"), Type.Literal("add_attachment"), Type.Literal("add_message_attachment"), Type.Literal("move"), Type.Literal("mark_read"), Type.Literal("send_draft"), Type.Literal("delete")]),
+  action: Type.Union([Type.Literal("create_draft"), Type.Literal("update_draft"), Type.Literal("update_properties"), Type.Literal("reply_draft"), Type.Literal("reply_all_draft"), Type.Literal("prepend_reply_draft"), Type.Literal("forward_draft"), Type.Literal("copy"), Type.Literal("add_attachment"), Type.Literal("add_message_attachment"), Type.Literal("move"), Type.Literal("mark_read"), Type.Literal("send_draft"), Type.Literal("delete")]),
   chatConfirmed,
   chatConfirmationToken,
   messageId: Type.Optional(resourceId), subject: Type.Optional(Type.String({ maxLength: 998 })), bodyHtml, bodyText, to: emailList, cc: emailList, bcc: emailList, replyTo: emailList,
@@ -1306,6 +1309,7 @@ export const WRITE_ACTION_FIELDS = {
     update_properties: ["action", "messageId", ...MAIL_PROPERTY_WRITE_FIELDS],
     reply_draft: ["action", "messageId", "bodyHtml", "bodyText"],
     reply_all_draft: ["action", "messageId", "bodyHtml", "bodyText"],
+    prepend_reply_draft: ["action", "messageId", "bodyHtml", "bodyText"],
     forward_draft: ["action", "messageId", "bodyHtml", "bodyText", "to", "cc", "bcc"],
     copy: ["action", "messageId", "destination", "destinationFolderId"],
     add_attachment: ["action", "messageId", "attachmentName", "attachmentContentType", "attachmentMediaUri", "sourceWorkspacePath", "sourceSha256", "sourceByteSize", "inlineContentId"],
@@ -1680,7 +1684,7 @@ const APPROVAL_INVENTORY_CALLS: ApprovalInventoryCall[] = [
   ...["update", "multiwrite", "respond", "attach", "delete"].map((action) => ({ tool: "outlook_calendar_write", action, params: { action } })),
   { tool: "outlook_calendar_write", condition: "unknown_or_missing_action", params: {} },
   ...["create_draft", "update_draft"].map((action) => ({ tool: "outlook_mail_write", action, params: { action } })),
-  ...["reply_draft", "reply_all_draft", "forward_draft", "copy", "add_attachment", "add_message_attachment", "move", "mark_read", "update_properties", "send_draft", "delete"].map((action) => ({ tool: "outlook_mail_write", action, params: { action } })),
+  ...["reply_draft", "reply_all_draft", "prepend_reply_draft", "forward_draft", "copy", "add_attachment", "add_message_attachment", "move", "mark_read", "update_properties", "send_draft", "delete"].map((action) => ({ tool: "outlook_mail_write", action, params: { action } })),
   { tool: "outlook_mail_write", condition: "unknown_or_missing_action", params: {} },
   ...["create", "update", "delete"].map((action) => ({ tool: "outlook_contacts_write", action, params: { action } })),
   { tool: "outlook_contacts_write", condition: "unknown_or_missing_action", params: {} },
@@ -1869,6 +1873,7 @@ const plugin = defineToolPlugin({
       item.description = toolGuidance(item.name);
       if (APPROVAL_BEARING_TOOLS.has(item.name) && item.parameters.properties) item.parameters.properties.timeoutMs = transportTimeoutMs;
       if (ACTION_SCHEMA_GUIDANCE[item.name] && item.parameters.properties?.action) (item.parameters.properties.action as { description?: string }).description = ACTION_SCHEMA_GUIDANCE[item.name];
+      describeParameters(item.parameters);
       const checker = Compile(item.parameters as any);
       TOOL_PARAMETER_CHECKS.set(item.name, (value) => checker.Check(value));
     }
@@ -2172,10 +2177,11 @@ export function mailMessagePayload(p: any, allowDraftFields: boolean, creating =
   return value;
 }
 
-export function mailReplyForwardPlan(p: any): { endpoint: "createReply" | "createReplyAll" | "createForward"; body: { message: Record<string, unknown> } } {
+export function mailReplyForwardPlan(p: any): { endpoint: "createReply" | "createReplyAll" | "createForward"; body: { message?: Record<string, unknown> }; replyHtml?: string } {
   if (!new Set(["reply_draft", "reply_all_draft", "forward_draft"]).has(p.action)) throw new Error("invalid_mail_payload");
   assertWriteActionFields(p, WRITE_ACTION_FIELDS.mail);
   const body = configuredBody(p);
+  if (p.action !== "forward_draft") return { endpoint: p.action === "reply_draft" ? "createReply" : "createReplyAll", body: {}, ...(body === undefined ? {} : { replyHtml: replyFragment(body) }) };
   if (body === undefined) throw new Error("invalid_mail_payload");
   if (p.action === "forward_draft" && ![p.to, p.cc, p.bcc].some((value) => Array.isArray(value) && value.length > 0)) throw new Error("invalid_mail_payload");
   const message: Record<string, unknown> = { body };
@@ -2915,9 +2921,9 @@ async function mailRead(config: RuntimeConfig, agentId: string | undefined, p: a
     }
     if (p.action === "list_attachments") {
       const prefix = mailPrefix!;
-      const path = continuedPath ?? `${prefix}?$top=${max}&$select=id,name,contentType,size,isInline,lastModifiedDateTime`;
+      const path = continuedPath ?? `${prefix}?$top=${max}&$select=id,name,contentType,size,isInline,contentId,lastModifiedDateTime`;
       const data = await graphRequest(token, path, { signal: bounded });
-      return { ok: true, action: p.action, ...publicPage(boundedCollectionPage(data, ["id", "name", "contentType", "size", "isInline", "lastModifiedDateTime"], max, prefix), mailBinding!, prefix) };
+      return { ok: true, action: p.action, ...publicPage(boundedCollectionPage(data, ["id", "name", "contentType", "size", "isInline", "contentId", "lastModifiedDateTime"], max, prefix), mailBinding!, prefix) };
     }
     if (p.action === "download_attachment") {
       if (!p.attachmentId) throw new Error("invalid_resource_id");
@@ -2938,6 +2944,7 @@ async function mailRead(config: RuntimeConfig, agentId: string | undefined, p: a
 function planMailWrite(p: any) {
   assertWriteActionFields(p, WRITE_ACTION_FIELDS.mail);
   if (p.action === "add_attachment" && p.inlineContentId !== undefined && (typeof p.inlineContentId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(p.inlineContentId) || !["image/png", "image/jpeg", "image/gif"].includes(String(p.attachmentContentType).toLowerCase()))) throw new Error("invalid_inline_image");
+  if (p.action === "prepend_reply_draft") { const body = configuredBody(p); if (!body) throw new Error("invalid_mail_payload"); replyFragment(body); }
   const operation = p.action === "send_draft" ? "send" : p.action === "move" ? "move" : p.action === "mark_read" ? "mark" : p.action === "delete" ? "delete" : p.action === "create_draft" || p.action.endsWith("_draft") ? "draft" : "update";
   const scope = p.action === "send_draft" ? "mail_send" : "mail_write";
   const replyForwardPlan = new Set(["reply_draft", "reply_all_draft", "forward_draft"]).has(p.action) ? mailReplyForwardPlan(p) : undefined;
@@ -2961,6 +2968,16 @@ function planMailWrite(p: any) {
   return { operation, scope, replyForwardPlan, id, messagePlan, destinationPlan };
 }
 
+async function prependNativeReply(token: string, draftId: string, fragment: string, signal?: AbortSignal) {
+  const path = `/me/messages/${safeId(draftId)}`;
+  const draft = await graphRequest(token, `${path}?$select=id,isDraft,body`, { signal, maxBytes: MAX_REPLY_HISTORY_BYTES * 6, headers: { Prefer: 'outlook.body-content-type="html"' } });
+  if (draft.id !== draftId || draft.isDraft !== true) throw new Error("invalid_mail_draft_target");
+  if (draft.body?.contentType?.toLowerCase() !== "html") throw new Error("reply_history_unavailable");
+  const content = prependReplyHtml(draft.body.content, fragment);
+  // Existing remote images are passed through, never downloaded or converted to CID.
+  return graphRequest(token, path, { method: "PATCH", body: { body: { contentType: "HTML", content } }, signal, maxBytes: MAX_REPLY_HISTORY_BYTES * 6 });
+}
+
 async function mailWrite(config: RuntimeConfig, agentId: string | undefined, workspaceDir: string | undefined, p: any, signal?: AbortSignal) {
   const { operation, scope, replyForwardPlan, id, messagePlan, destinationPlan } = planMailWrite(p);
   let attachmentPlan: AttachmentWritePlan | undefined;
@@ -2970,9 +2987,18 @@ async function mailWrite(config: RuntimeConfig, agentId: string | undefined, wor
     }
     if (p.action === "update_draft" || p.action === "update_properties") return { ok: true, action: p.action, item: await graphRequest(token, `/me/messages/${id}`, { method: "PATCH", body: messagePlan, signal: bounded }) };
     if (p.action === "reply_draft" || p.action === "reply_all_draft" || p.action === "forward_draft") {
-      const draft = await graphRequest(token, mailMessageActionPath(p.messageId, replyForwardPlan!.endpoint), { method: "POST", body: replyForwardPlan!.body, signal: bounded });
-      return { ok: true, action: p.action, item: draft };
+      const draft = await graphRequest(token, mailMessageActionPath(p.messageId, replyForwardPlan!.endpoint), { method: "POST", body: replyForwardPlan!.body, signal: bounded, maxBytes: MAX_REPLY_HISTORY_BYTES * 6, headers: { Prefer: 'outlook.body-content-type="html"' } });
+      if (replyForwardPlan!.replyHtml === undefined) return { ok: true, action: p.action, item: draft };
+      // Creation has already happened. Always return its identity on subsequent failure;
+      // never retry creation or delete the recoverable native draft.
+      try {
+        const item = await prependNativeReply(token, draft.id, replyForwardPlan!.replyHtml, bounded);
+        return { ok: true, action: p.action, item };
+      } catch {
+        return { ok: false, action: p.action, error: "reply_content_update_failed", draftCreated: true, item: { id: draft.id }, outcomeUnknown: true, nextAction: "Read this exact draft before any retry; do not recreate it." };
+      }
     }
+    if (p.action === "prepend_reply_draft") return { ok: true, action: p.action, item: await prependNativeReply(token, p.messageId, replyFragment(configuredBody(p)!), bounded) };
     if (p.action === "move") {
       return { ok: true, action: p.action, item: await graphRequest(token, mailMessageActionPath(p.messageId, "move"), { method: "POST", body: destinationPlan, signal: bounded }) };
     }

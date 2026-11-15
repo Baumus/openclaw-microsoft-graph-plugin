@@ -602,9 +602,9 @@ describe("microsoft-graph plugin contract", () => {
   it("fully validates reply and forward patches before any Graph draft creation", () => {
     expect(mailReplyForwardPlan({ action: "reply_draft", bodyText: "Reply" })).toEqual({
       endpoint: "createReply",
-      body: { message: { body: { contentType: "Text", content: "Reply" } } },
+      body: {}, replyHtml: "<div>Reply</div>",
     });
-    expect(mailReplyForwardPlan({ action: "reply_all_draft", bodyText: "Reply all" })).toEqual({ endpoint: "createReplyAll", body: { message: { body: { contentType: "Text", content: "Reply all" } } } });
+    expect(mailReplyForwardPlan({ action: "reply_all_draft", bodyText: "Reply all" })).toEqual({ endpoint: "createReplyAll", body: {}, replyHtml: "<div>Reply all</div>" });
     expect(mailReplyForwardPlan({ action: "forward_draft", bodyHtml: "<p>Forward</p>", to: ["person@example.invalid"] })).toEqual({ endpoint: "createForward", body: { message: { body: { contentType: "HTML", content: "<p>Forward</p>" }, toRecipients: [{ emailAddress: { address: "person@example.invalid" } }] } } });
     expect(() => mailReplyForwardPlan({ action: "reply_draft", bodyText: "Reply", categories: ["Blue category"] })).toThrow("invalid_write_parameter");
     expect(() => mailReplyForwardPlan({ action: "reply_draft", bodyText: "Reply", bodyHtml: "<p>Reply</p>" })).toThrow("invalid_body_format");

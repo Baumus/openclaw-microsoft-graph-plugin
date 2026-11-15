@@ -1,7 +1,11 @@
 # Changelog
 
-## 3.25.0 - 2026-11-13
+## 3.25.0 - 2026-11-15
 
+- Create native reply/reply-all drafts before inserting only the newly authored answer; preserve provider HTML, remote signature images and existing CID attachments without reconstructing the quote. Body fields are optional for untouched native drafts.
+- Add `prepend_reply_draft` for existing drafts; expose mail attachment content IDs. Keep authored-content validation, policy and approval boundaries unchanged.
+- Retain the created draft identity when insertion fails; never automatically recreate, send or delete it. Support retained histories up to 4 MiB without truncation.
+- Migration: reply body fields now contain only the new answer, not an entire composed message. No after-write preservation comparison, edit-conflict locking or Outlook UI acceptance workflow is introduced.
 - Add workspace-relative sourceWorkspacePath to Outlook mail add_attachment, mutually exclusive with attachmentMediaUri. Reuse private automatic staging with trusted caller/session isolation, safe regular-file reads and exact SHA-256 approval binding.
 - Reverify attachment bytes before credentials or provider access. Workspace staging remains capped at 64 MiB; existing private-media attachments retain the 150 MB limit. No additional Microsoft scopes or manual staging are required.
 

@@ -65,8 +65,6 @@ const malformedMutations: Array<{ tool: string; action: string; params: Record<s
   { tool: "outlook_mail_write", action: "create_draft", params: { action: "create_draft", subject: "Missing body" }, error: "invalid_mail_payload" },
   { tool: "outlook_mail_write", action: "update_draft", params: { action: "update_draft", messageId: "message" }, error: "invalid_mail_payload" },
   { tool: "outlook_mail_write", action: "update_properties", params: { action: "update_properties", messageId: "message" }, error: "invalid_mail_payload" },
-  { tool: "outlook_mail_write", action: "reply_draft", params: { action: "reply_draft", messageId: "message" }, error: "invalid_mail_payload" },
-  { tool: "outlook_mail_write", action: "reply_all_draft", params: { action: "reply_all_draft", messageId: "message" }, error: "invalid_mail_payload" },
   { tool: "outlook_mail_write", action: "forward_draft", params: { action: "forward_draft", messageId: "message", bodyText: "Forward" }, error: "invalid_mail_payload" },
   { tool: "outlook_mail_write", action: "copy", params: { action: "copy", messageId: "message", destination: "inbox", destinationFolderId: "folder" }, error: "invalid_destination" },
   { tool: "outlook_mail_write", action: "add_attachment", params: { action: "add_attachment", messageId: "message" }, error: "exactly_one_source_required" },
