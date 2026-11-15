@@ -4,6 +4,7 @@ import { getToolPluginMetadata } from "openclaw/plugin-sdk/tool-plugin";
 const credential = vi.hoisted(() => ({ tokenForAuthorizedOperation: vi.fn(async () => "synthetic-token") }));
 vi.mock("./credential.js", async () => ({ ...await vi.importActual<typeof import("./credential.js")>("./credential.js"), ...credential }));
 
+import { describeParameters } from "./agent-parameter-guidance.js";
 import entry, { beforeMicrosoftGraphToolCall, callerCapabilities, lifecycleResult } from "./index.js";
 import { planPolicyToolReconciliation } from "./control-ui-tool-exposure.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
@@ -17,7 +18,49 @@ function runtime(policy = graphPolicyFixture(), agentId = "main") {
   return { tools, hooks, context };
 }
 
+function check(schema: any, path: string) {
+  for (const [name, field] of Object.entries(schema.properties ?? {}) as Array<[string, any]>) {
+    const location = `${path}.${name}`;
+    expect(field.description?.trim(), `${location}: add schema help or shared parameter guidance`).toBeTruthy();
+    if (name === "action") {
+      for (const variant of field.anyOf ?? [field]) {
+        expect(typeof variant.const, `${location}: expected a literal action`).toBe("string");
+        expect(field.description.split(/[^A-Za-z0-9_]+/), `${location}: missing guidance for ${variant.const}`).toContain(variant.const);
+      }
+    }
+    check(field, location);
+  }
+  for (const variant of [...(schema.anyOf ?? []), ...(schema.oneOf ?? []), ...(schema.allOf ?? [])]) check(variant, path);
+  if (schema.items) check(schema.items, `${path}[]`);
+}
+
+
 describe("agent-facing Microsoft Graph contracts", () => {
+  it("covers every registered tool, action and nested parameter without a parallel inventory", () => {
+    const definitions = getToolPluginMetadata(entry)!.tools;
+    const { tools } = runtime();
+    expect(Object.keys(tools).sort()).toEqual(definitions.map((tool) => tool.name).sort());
+    for (const definition of definitions) {
+      expect(definition.description).not.toContain(`Microsoft Graph ${definition.name} operation.`);
+      expect(tools[definition.name].parameters).toEqual(definition.parameters);
+      check(definition.parameters, definition.name);
+    }
+  });
+
+  it("rejects undocumented new actions and nested fields", () => {
+    expect(() => check({ properties: { action: { description: "read: no ID", anyOf: [{ const: "read" }, { const: "new_action" }] } } }, "synthetic")).toThrow();
+    expect(() => check({ properties: { operations: { description: "Batch entries", items: { properties: { newField: { type: "string" } } } } } }, "synthetic")).toThrow();
+  });
+
+  it("reuses shared help without overwriting specific help or masking unknown fields", () => {
+    const schema = { properties: { messageId: { type: "string", description: "Specific draft ID" }, entries: { description: "Entries", items: { anyOf: [{ properties: { taskId: { type: "string" }, unknownField: { type: "string" } } }] } } } };
+    describeParameters(schema);
+    expect(schema.properties.messageId.description).toBe("Specific draft ID");
+    expect((schema.properties.entries.items.anyOf[0].properties.taskId as any).description).toContain("microsoft_todo_read");
+    expect((schema.properties.entries.items.anyOf[0].properties.unknownField as any).description).toBeUndefined();
+    expect(() => check(schema, "synthetic")).toThrow();
+  });
+
   it("guides reply drafts to the original message instead of a standalone draft", () => {
     const mailTool = getToolPluginMetadata(entry)!.tools.find((tool) => tool.name === "outlook_mail_write")!;
     const actionGuidance = ((mailTool.parameters as any).properties.action as { description: string }).description;
@@ -35,7 +78,7 @@ describe("agent-facing Microsoft Graph contracts", () => {
   it("advertises concrete guidance for every runtime tool and action-specific schema hints", () => {
     const metadata = getToolPluginMetadata(entry)!;
     const { tools, context } = runtime();
-    expect(metadata.tools).toHaveLength(19);
+    expect(metadata.tools.length).toBeGreaterThan(0);
     for (const definition of metadata.tools) {
       const concrete = tools[definition.name];
       expect(concrete.description, definition.name).toBeTruthy();
