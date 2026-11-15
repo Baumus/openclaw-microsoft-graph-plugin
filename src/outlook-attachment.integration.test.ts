@@ -295,3 +295,22 @@ describe("Outlook attachment transport boundaries", () => {
     expect(() => sanitizeAttachmentMime("text/plain\r\nx-test: injected")).toThrow("invalid_provider_response");
   });
 });
+
+it("lists attachment metadata without selecting derived-only contentId", async () => {
+  const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = new URL(String(input));
+    if (url.searchParams.get("$select")?.split(",").includes("contentId")) {
+      return Response.json({ error: { code: "BadRequest" } }, { status: 400 });
+    }
+    return Response.json({ value: [{ id: "attachment-1", name: "inline.png", contentId: "provider-cid", contentBytes: "PRIVATE" }] });
+  });
+  const { tool } = registeredTool("outlook_mail_read");
+  const response = await tool.execute("list", { action: "list_attachments", messageId: "synthetic", limit: 5 });
+  expect(response.details).toMatchObject({ ok: true });
+  expect(fetchSpy).toHaveBeenCalledTimes(1);
+  const url = new URL(String(fetchSpy.mock.calls[0][0]));
+  expect(url.searchParams.get("$select")).toBe("id,name,contentType,size,isInline,lastModifiedDateTime");
+  expect(url.searchParams.get("$top")).toBe("5");
+  expect(JSON.stringify(response.details)).toContain("provider-cid");
+  expect(JSON.stringify(response.details)).not.toContain("PRIVATE");
+});
