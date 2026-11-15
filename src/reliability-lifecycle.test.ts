@@ -2,6 +2,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 const health = vi.hoisted(() => vi.fn());
 vi.mock("./service-health.js", async () => ({ ...await vi.importActual("./service-health.js"), automaticServiceHealth: health }));
 import { concrete } from "./index.js";
+import { graphRequest } from "./graph.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 const config = { enabled: true, policy: graphPolicyFixture() } as any;
@@ -22,4 +23,14 @@ it("preserves partial batch successes and decorates failing operations only", as
   const result = (await tool.execute("batch", { action: "list_events" })).details as any;
   expect(result.operations[0]).not.toHaveProperty("serviceHealth");
   expect(result.operations[1]).toMatchObject({ failureCategory: "transient_provider", serviceHealth: { status: "not_authorized" } });
+});
+
+it("delivers allowlisted attachment HTTP400 diagnosis through the connector boundary without private provider text", async () => {
+  const fetchFn = vi.fn(async () => Response.json({ error: { code: "Request_BadRequest", message: "private@example.com", innerError: { requestId: "private-id" } } }, { status: 400 }));
+  const tool = concrete("outlook_mail_read", {}, "main", "synthetic", logger, async () => graphRequest("synthetic", "/me/messages/synthetic/attachments?$top=5&$select=id", {}, fetchFn), config);
+  const result = (await tool.execute("attachment-diagnosis", { action: "list_attachments", messageId: "synthetic", limit: 5 })).details as any;
+  expect(result).toMatchObject({ ok: false, error: "provider_error_400", providerCode: "Request_BadRequest", httpStatus: 400, attempts: 1, mutationApplied: false });
+  expect(JSON.stringify(result)).not.toMatch(/private|synthetic/);
+  expect(JSON.stringify(logger.info.mock.calls)).not.toMatch(/private|synthetic/);
+  expect(fetchFn).toHaveBeenCalledTimes(1);
 });

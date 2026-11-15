@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.25.1 - 2026-11-15
+
+- Fix mail attachment listing HTTP400 by selecting only base attachment properties; retain safe contentId metadata when returned by the provider.
+- Add bounded, allowlisted HTTP400 provider codes without exposing private provider messages. Remove the temporary diagnostic interface.
+
 ## 3.25.0 - 2026-11-15
 
 - Create native reply/reply-all drafts before inserting only the newly authored answer; preserve provider HTML, remote signature images and existing CID attachments without reconstructing the quote. Body fields are optional for untouched native drafts.

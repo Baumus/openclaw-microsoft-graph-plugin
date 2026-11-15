@@ -2921,7 +2921,7 @@ async function mailRead(config: RuntimeConfig, agentId: string | undefined, p: a
     }
     if (p.action === "list_attachments") {
       const prefix = mailPrefix!;
-      const path = continuedPath ?? `${prefix}?$top=${max}&$select=id,name,contentType,size,isInline,contentId,lastModifiedDateTime`;
+      const path = continuedPath ?? `${prefix}?$top=${max}&$select=id,name,contentType,size,isInline,lastModifiedDateTime`;
       const data = await graphRequest(token, path, { signal: bounded });
       return { ok: true, action: p.action, ...publicPage(boundedCollectionPage(data, ["id", "name", "contentType", "size", "isInline", "contentId", "lastModifiedDateTime"], max, prefix), mailBinding!, prefix) };
     }

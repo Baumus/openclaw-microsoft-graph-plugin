@@ -438,7 +438,7 @@ export async function graphRequest(token: string, path: string, options: GraphOp
       try {
         const bytes = await readBytes(response, 16 * 1024);
         const code = JSON.parse(new TextDecoder().decode(bytes))?.error?.code;
-        if (new Set(["InvalidAuthenticationToken", "ErrorAccessDenied", "Authorization_RequestDenied", "TooManyRequests", "ServiceUnavailable", "ErrorInternalServerError", "ResourceNotFound", "ErrorItemNotFound"]).has(code)) Object.assign(error, { providerCode: code });
+        if (new Set(["InvalidAuthenticationToken", "ErrorAccessDenied", "Authorization_RequestDenied", "TooManyRequests", "ServiceUnavailable", "ErrorInternalServerError", "ResourceNotFound", "ErrorItemNotFound", "BadRequest", "Request_BadRequest", "ErrorInvalidRequest", "ErrorInvalidIdMalformed", "ErrorInvalidUrlQueryFilter", "ErrorInvalidProperty", "ErrorInvalidPropertyRequest", "ErrorInvalidPropertySet", "ErrorUnsupportedQuery", "Request_UnsupportedQuery"]).has(code)) Object.assign(error, { providerCode: code });
       } catch { /* malformed/untrusted body cannot replace the original error */ }
       throw error;
     }
