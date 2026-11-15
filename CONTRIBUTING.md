@@ -62,3 +62,19 @@ PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/path/to/chrome npm run test:ui:healing
 ```
 
 This checks agent/tool-specific warning text, include-preserving root CAS, repair completion, and explicit-deny handling without live Gateway or provider access. Screenshots and result JSON default to `/tmp/msgraph-tool-healing-ui-evidence`.
+
+## Agent-facing interface coverage
+
+`src/agent-usability.test.ts` walks the registered tool schemas, including nested
+objects, array items and union variants. Every parameter needs an inline
+`description` or a reusable entry in `src/agent-parameter-guidance.ts`; existing
+inline help wins. Every action literal must appear explicitly in its action
+schema guidance, with its inputs explained there. Keep ID discovery instructions
+in the parameter help and reuse the existing tool/action guidance, not a separate
+test-only documentation inventory. Tool metadata and runtime schemas must match.
+
+Run `npx vitest run src/agent-usability.test.ts` after interface changes. The normal
+`npm test` CI job also runs this check. Review changed descriptions for accuracy:
+these deterministic checks catch missing guidance, not whether prose is actually
+understandable. Add a focused behavioral regression when a real usage error occurs;
+no model-based evaluation service is needed.
