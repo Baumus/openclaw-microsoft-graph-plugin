@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.25.0 - 2026-11-15
+
+- Create native reply/reply-all drafts before inserting only the newly authored answer; preserve provider HTML, remote signature images and existing CID attachments without reconstructing the quote. Body fields are optional for untouched native drafts.
+- Add `prepend_reply_draft` for existing drafts; expose mail attachment content IDs. Keep authored-content validation, policy and approval boundaries unchanged.
+- Retain the created draft identity when insertion fails; never automatically recreate, send or delete it. Support retained histories up to 4 MiB without truncation.
+- Migration: reply body fields now contain only the new answer, not an entire composed message. No after-write preservation comparison, edit-conflict locking or Outlook UI acceptance workflow is introduced.
+
 ## 3.24.0 - 2026-11-13
 
 - Automatically enrich relevant Graph failures with bounded Service Health evidence when an organizational credential already carries ServiceHealth.Read.All; never request consent or widen data-operation scopes automatically.

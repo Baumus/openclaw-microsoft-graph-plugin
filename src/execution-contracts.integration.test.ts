@@ -136,25 +136,58 @@ describe("execution contracts", () => {
     }
   });
 
-  it.each([
-    ["reply_draft", "createReply", { action: "reply_draft", messageId: "original", bodyText: "Reply" }],
-    ["reply_all_draft", "createReplyAll", { action: "reply_all_draft", messageId: "original", bodyHtml: "<p>Reply all</p>" }],
-    ["forward_draft", "createForward", { action: "forward_draft", messageId: "original", bodyText: "Forward", to: ["person@example.invalid"] }],
-  ])("%s creates a complete draft in one Graph mutation", async (action, endpoint, params) => {
+  it("forwards with an explicit body in one mutation", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ id: "forward-draft" }, { status: 201 }));
+    try {
+      const result = await registeredTools().outlook_mail_write.execute("forward", { action: "forward_draft", messageId: "original", bodyHtml: "<p>Forward</p>", to: ["person@example.invalid"] });
+      expect(result.details).toMatchObject({ ok: true, item: { id: "forward-draft" } });
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(fetchSpy.mock.calls[0][1]?.body))).toHaveProperty("message.body");
+    } finally { fetchSpy.mockRestore(); }
+  });
+
+  it.each(["reply_draft", "reply_all_draft"])("%s creates native history then prepends only new HTML", async (action) => {
+    const history = '<html><head><style>.sig{color:blue}</style></head><body class="mail"><div>Original</div><img src="https://images.example.invalid/signature.png"><img src="cid:original-logo"></body></html>';
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
-      expect(init?.method).toBe("POST");
-      return Response.json({ id: `${action}-draft` }, { status: 201 });
+      if (init?.method === "POST") return Response.json({ id: "native-draft", isDraft: true });
+      if (init?.method === "PATCH") return Response.json({ id: "native-draft", isDraft: true });
+      return Response.json({ id: "native-draft", isDraft: true, body: { contentType: "html", content: history } });
     });
     try {
-      const response = await registeredTools().outlook_mail_write.execute("draft", params);
-      expect(response.details).toMatchObject({ ok: true, action, item: { id: `${action}-draft` } });
+      const result = await registeredTools().outlook_mail_write.execute("reply", { action, messageId: "original", bodyHtml: "<p>New answer</p>" });
+      expect(result.details).toMatchObject({ ok: true, item: { id: "native-draft" } });
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+      expect(JSON.parse(String(fetchSpy.mock.calls[0][1]?.body))).toEqual({});
+      expect(String(fetchSpy.mock.calls[0][0])).toContain(action === "reply_draft" ? "/createReply" : "/createReplyAll");
+      const patched = JSON.parse(String(fetchSpy.mock.calls[2][1]?.body));
+      expect(patched).toEqual({ body: { contentType: "HTML", content: history.replace('<body class="mail">', '<body class="mail"><p>New answer</p>') } });
+      for (const [input] of fetchSpy.mock.calls) expect(new URL(String(input)).hostname).toBe("graph.microsoft.com");
+    } finally { fetchSpy.mockRestore(); }
+  });
+
+  it("supports native creation with no body and preserves draft identity on a failed insert", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      if (init?.method === "POST") return Response.json({ id: "retained-draft" });
+      return Response.json({ id: "retained-draft", isDraft: false });
+    });
+    try {
+      const tool = registeredTools().outlook_mail_write;
+      expect((await tool.execute("native-only", { action: "reply_draft", messageId: "original" })).details).toMatchObject({ ok: true, item: { id: "retained-draft" } });
       expect(fetchSpy).toHaveBeenCalledTimes(1);
-      expect(String(fetchSpy.mock.calls[0][0])).toContain(`/messages/original/${endpoint}`);
-      expect(JSON.parse(String(fetchSpy.mock.calls[0][1]?.body))).toHaveProperty("message.body");
-      expect(fetchSpy.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
-    } finally {
-      fetchSpy.mockRestore();
-    }
+      const failed = (await tool.execute("insert-failed", { action: "reply_draft", messageId: "original", bodyHtml: "<p>Reply</p>" })).details;
+      expect(failed).toMatchObject({ ok: false, draftCreated: true, item: { id: "retained-draft" } });
+      expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(0);
+    } finally { fetchSpy.mockRestore(); }
+  });
+
+  it("prepends to an existing draft without new creation or attachment writes", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => Response.json(init?.method === "PATCH" ? { id: "existing" } : { id: "existing", isDraft: true, body: { contentType: "html", content: '<div>Quote<img src="https://images.example.invalid/logo"></div>' } }));
+    try {
+      const result = await registeredTools().outlook_mail_write.execute("prepend", { action: "prepend_reply_draft", messageId: "existing", bodyHtml: "<p>Answer</p>" });
+      expect(result.details).toMatchObject({ ok: true, item: { id: "existing" } });
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(String(fetchSpy.mock.calls[1][1]?.body)).body.content).toBe('<p>Answer</p><div>Quote<img src="https://images.example.invalid/logo"></div>');
+    } finally { fetchSpy.mockRestore(); }
   });
 
   it("marks a terminal 1,000-result mail search as truncated with unknown completeness", async () => {
