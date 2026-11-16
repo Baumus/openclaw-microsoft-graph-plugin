@@ -130,6 +130,12 @@ describe.each([
 
     const approved = await preflight("stage-success");
     await approved.requireApproval.onResolution("allow-once");
+    const stagedBeforeRepeat = await mediaFiles();
+    await writeFile(join(workspaceDir, "reports", "onepager.pdf"), "changed original source after first approval");
+    const repeat = await preflight("stage-success");
+    expect(repeat.block).not.toBe(true);
+    expect(await mediaFiles()).toEqual(stagedBeforeRepeat);
+    await repeat.requireApproval.onResolution("allow-once");
     graphSuccess(bytes, update);
     expect((await tools[toolName].execute("stage-success", approved.params)).details).toMatchObject({ ok: true });
     expect(await mediaFiles()).toEqual(originalFiles);

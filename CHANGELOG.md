@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.25.3 - 2026-11-16
+
+- Fix workspace-source OneDrive uploads and updates when the host preflights the same call more than once. Reuse its exact bound staged artifact instead of creating a conflicting private copy.
+- Retain exact caller, session, target-root, content-integrity and single-use checks. Prevent delayed preflight from resurrecting consumed approvals or cleaning execution-owned staging. Mixed snapshot protocol versions fail closed.
+- Add bounded approval-binding diagnostics using process-local opaque correlation and fixed categories; do not log file contents, paths, raw caller identities or content fingerprints. No permission or configuration changes.
+
 ## 3.25.2 - 2026-11-16
 
 - Fix OneDrive uploads and updates blocked by native Codex approval parameter integrity checks. Preserve original caller input while privately binding staged content to the single-use approval snapshot.
