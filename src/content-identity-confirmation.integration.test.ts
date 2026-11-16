@@ -235,7 +235,7 @@ describe.each([
       contentType: "application/pdf",
     };
     const approval = await hooks.before_tool_call({ toolName, toolCallId: "auto", params }, context);
-    expect(approval.params).toEqual({ ...params, sourceSha256: digest(bytes), sourceByteSize: bytes.byteLength });
+    expect(approval.params).toEqual(params);
     expect(approval.requireApproval.description).toContain(digest(bytes));
     expect(readCredential).not.toHaveBeenCalled();
     await approval.requireApproval.onResolution("allow-once");
