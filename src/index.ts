@@ -1,5 +1,5 @@
 import { describeParameters } from "./agent-parameter-guidance.js";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { Type } from "typebox";
 import { Compile } from "typebox/compile";
@@ -74,6 +74,50 @@ const Config = Type.Object({
 export type RuntimeConfig = { enabled?: boolean; warningApprovalsRequired?: boolean; credentialVaultKey?: unknown; policy?: GraphPolicy; requestTimeoutMs?: number; readOperationTimeoutMs?: number; calendarMultiwriteTimeoutMs?: number; maxConcurrent?: number; maxReadBytes?: number; maxReadOutputBytes?: number; maxAttachmentDownloadBytes?: number; attachmentDownloadTimeoutMs?: number; oneDriveTransferTimeoutMs?: number };
 type OneDriveApprovalRoot = Pick<AllowedRoot, "label" | "drive_id" | "item_id">;
 type Logger = { info: (message: string) => void; warn: (message: string) => void };
+// Process-local keyed correlation prevents dictionary attacks on caller identities.
+// Share only the key across module copies; never persist or log it.
+const APPROVAL_DIAGNOSTIC_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/approval-diagnostic/v1");
+const approvalDiagnosticIdentity = ((globalThis as Record<symbol, unknown>)[APPROVAL_DIAGNOSTIC_KEY]
+  ?? ((globalThis as Record<symbol, unknown>)[APPROVAL_DIAGNOSTIC_KEY] = {
+    key: randomBytes(32), process: randomBytes(12).toString("hex"),
+  })) as { key: Uint8Array; process: string };
+function approvalDiagnostic(logger: Logger | undefined, tool: string, callId: string | undefined,
+  stage: string, fields: Record<string, boolean | string> = {}): void {
+  if (!logger || (tool !== "onedrive_upload" && tool !== "onedrive_update")) return;
+  try {
+    logger.info(JSON.stringify({ event: "microsoft_graph_approval_binding", tool, stage,
+      process: approvalDiagnosticIdentity.process,
+      call: callId ? createHmac("sha256", approvalDiagnosticIdentity.key).update(callId).digest("hex").slice(0, 24) : null,
+      ...fields }));
+  } catch { /* Diagnostics must never change authorization or cleanup. */ }
+}
+// Output is selected from literals, never copied from provider/instruction text.
+export function approvalDiagnosticCategory(value: unknown): string {
+  switch (value) {
+    case "approval_context_invalid_or_changed": return "approval_binding";
+    case "approval_context_tool_call_id_required": return "missing_call";
+    case "approval_context_capacity_exceeded": return "capacity";
+    case "trusted_session_identity_required": return "session_identity";
+    case "onedrive_agents_instructions_required": return "instructions_required";
+    case "instruction_acknowledgement_invalid": return "instruction_ack";
+    case "access_denied": return "policy_denied";
+    case "workspace_file_unavailable": return "workspace_unavailable";
+    case "invalid_tool_parameters": return "parameters";
+    case "connector_disabled": return "disabled";
+    case undefined: return "none";
+    default: return "unknown";
+  }
+}
+function approvalDiagnosticDecision(value: unknown): string {
+  switch (value) {
+    case "allow-once": return "allow_once";
+    case "allow-always": return "allow_always";
+    case "deny": return "deny";
+    case "timeout": return "timeout";
+    case "cancelled": return "cancelled";
+    default: return "unknown";
+  }
+}
 let activeRequests = 0;
 const continuationStore = new ContinuationStore();
 /**
@@ -133,13 +177,32 @@ export class NativeApprovalSnapshotStore {
       : { ...snapshot });
   }
 
-  discard(toolCallId: string | undefined): void { if (toolCallId) this.#snapshots.delete(toolCallId); }
-
-  consume(toolCallId: string, agentId: string | undefined, sessionId: string | undefined, toolName: string, params: unknown, oneDriveRoot?: OneDriveApprovalRoot | (() => OneDriveApprovalRoot | undefined), onMatch?: (snapshot: NativeApprovalSnapshot) => void): boolean | undefined {
+  // A host may preflight the same invocation at native admission and dispatch.
+  // Reuse only its already-bound private artifact, never a newly staged replacement.
+  artifactForPreflight(toolCallId: string, binding: Omit<NativeApprovalSnapshot, "resolvedArtifactParams" | "resolvedTodoListId">) {
     const snapshot = this.#snapshots.get(toolCallId);
     if (!snapshot) return undefined;
+    const { resolvedArtifactParams, resolvedTodoListId: _todo, ...originalBinding } = snapshot;
+    if (!resolvedArtifactParams || normalizedCriteria(originalBinding) !== normalizedCriteria(binding)) throw new Error("approval_context_invalid_or_changed");
+    return {
+      params: resolvedArtifactParams,
+      assertCurrent: () => {
+        if (this.#snapshots.get(toolCallId) !== snapshot) throw new Error("approval_context_invalid_or_changed");
+      },
+    };
+  }
+
+  discard(toolCallId: string | undefined): void { if (toolCallId) this.#snapshots.delete(toolCallId); }
+
+  consume(toolCallId: string, agentId: string | undefined, sessionId: string | undefined, toolName: string, params: unknown, oneDriveRoot?: OneDriveApprovalRoot | (() => OneDriveApprovalRoot | undefined), onMatch?: (snapshot: NativeApprovalSnapshot) => void, onCheck?: (fields: Record<string, boolean>) => void): boolean | undefined {
+    const snapshot = this.#snapshots.get(toolCallId);
+    if (!snapshot) { onCheck?.({ snapshot_present: false }); return undefined; }
     this.#snapshots.delete(toolCallId);
     const resolvedRoot = typeof oneDriveRoot === "function" ? oneDriveRoot() : oneDriveRoot;
+    onCheck?.({ snapshot_present: true, agent_matches: snapshot.agentId === agentId,
+      session_matches: snapshot.sessionId === sessionId, tool_matches: snapshot.toolName === toolName,
+      params_match: snapshot.params === normalizedCriteria(params),
+      root_matches: normalizedCriteria(snapshot.oneDriveRoot) === normalizedCriteria(resolvedRoot) });
     const matches = snapshot.agentId === agentId
       && snapshot.sessionId === sessionId
       && snapshot.toolName === toolName
@@ -164,8 +227,8 @@ export class NativeApprovalSnapshotStore {
  * now realm-independent while remaining process-local (it is never persisted or shared between
  * gateways). The execution-bound identity checks in `consume` are unchanged and still fail closed.
  */
-// Version the store protocol: older tools cannot hydrate the approved artifact parameters.
-const NATIVE_APPROVAL_SNAPSHOT_STORE_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-snapshots/v3");
+// Version the protocol: older stores lack exact-call artifact reuse/currentness checks.
+const NATIVE_APPROVAL_SNAPSHOT_STORE_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-snapshots/v4");
 const nativeApprovalSnapshots: NativeApprovalSnapshotStore = ((globalThis as Record<symbol, unknown>)[NATIVE_APPROVAL_SNAPSHOT_STORE_KEY] as NativeApprovalSnapshotStore | undefined)
   ?? ((globalThis as Record<symbol, unknown>)[NATIVE_APPROVAL_SNAPSHOT_STORE_KEY] = new NativeApprovalSnapshotStore()) as NativeApprovalSnapshotStore;
 
@@ -714,11 +777,19 @@ export function concrete(name: string, parameters: any, agentId: string | undefi
       try {
         const semantic = semanticParams(params);
         const oneDriveRoot = approvalConfig ? () => authorizeOneDriveMutationPreflight(approvalConfig, agentId, name, semantic) : undefined;
-        await waitForApprovalResolution(_id, signal);
+        approvalDiagnostic(logger, name, _id, "approval_wait");
+        try { await waitForApprovalResolution(_id, signal); }
+        catch (error) {
+          approvalDiagnostic(logger, name, _id, "approval_wait_error", { category: approvalDiagnosticCategory(errorCode(error)), aborted: signal?.aborted === true });
+          throw error;
+        }
         let resolvedTodoListId: string | undefined;
         let resolvedArtifactParams: string | undefined;
-        const approvalSnapshotMatches = nativeApprovalSnapshots.consume(_id, agentId, sessionId, name, semantic, oneDriveRoot, (snapshot) => { resolvedTodoListId = snapshot.resolvedTodoListId; resolvedArtifactParams = snapshot.resolvedArtifactParams; });
-        if (approvalSnapshotMatches === false || (classifyApproval(name, semantic) !== "none" && (approvalSnapshotMatches !== true || !await sessionIsCurrent()))) throw new Error("approval_context_invalid_or_changed");
+        const approvalSnapshotMatches = nativeApprovalSnapshots.consume(_id, agentId, sessionId, name, semantic, oneDriveRoot, (snapshot) => { resolvedTodoListId = snapshot.resolvedTodoListId; resolvedArtifactParams = snapshot.resolvedArtifactParams; }, (fields) => approvalDiagnostic(logger, name, _id, "consume", fields));
+        const requiresSnapshot = classifyApproval(name, semantic) !== "none";
+        const sessionCurrent = approvalSnapshotMatches === true && requiresSnapshot ? await sessionIsCurrent() : undefined;
+        if (sessionCurrent !== undefined) approvalDiagnostic(logger, name, _id, "execute_session", { current: sessionCurrent });
+        if (approvalSnapshotMatches === false || (requiresSnapshot && (approvalSnapshotMatches !== true || !sessionCurrent))) throw new Error("approval_context_invalid_or_changed");
         workspaceStagingStore.beginExecution(_id, name, sessionId);
         // Apply the pre-approved target only after the original caller payload and identity match.
         // Never return this internal resolution as a hook rewrite to native Codex.
@@ -739,6 +810,7 @@ export function concrete(name: string, parameters: any, agentId: string | undefi
         }
       } catch (error) {
         failure = errorCode(error);
+        if (failure === "approval_context_invalid_or_changed") approvalDiagnostic(logger, name, _id, "execute_approval_error", { category: "approval_binding" });
         const provider = error as { providerStatus?: number; attempts?: number; retryAfterMs?: number; providerCode?: string };
         reliability = { ...(provider?.providerCode ? { providerCode: provider.providerCode } : {}), failureCategory: failureCategory(failure, provider?.providerStatus), ...(provider?.providerStatus ? { httpStatus: provider.providerStatus } : {}), ...(provider?.attempts ? { attempts: provider.attempts } : {}), ...(Number.isFinite(provider?.retryAfterMs) && provider.retryAfterMs! >= 0 && provider.retryAfterMs! <= 86400000 ? { retryAfterMs: provider.retryAfterMs } : {}) };
         if (approvalConfig && (failure.startsWith("provider_") || failure === "request_timeout") && !signal?.aborted) {
@@ -3442,13 +3514,21 @@ export async function beforeMicrosoftGraphToolCall(
   approvalSnapshots = nativeApprovalSnapshots,
   onCleanupDeferred: () => void = () => undefined,
   lookupSession: SessionEntryLookup | undefined = undefined,
+  diagnosticLogger?: Logger,
 ) {
   if (!Object.hasOwn(TOOL_GUIDANCE, event.toolName)) return;
   const severity = classifyApproval(event.toolName, event.params);
+  approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "preflight", {
+    session_key_present: !!ctx.sessionKey, session_id_present: !!ctx.sessionId,
+    requester_owner: ctx.requester?.senderIsOwner === true,
+  });
   // tools.invoke supplies sessionKey to this hook but currently omits sessionId.
   // Resolve the persisted generation for approval-bearing calls using host context only.
   if (severity !== "none" && ctx.sessionKey) {
     const resolved = await currentSessionId(lookupSession, ctx.agentId, ctx.sessionKey);
+    approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "hook_session", {
+      resolved: !!resolved, supplied_matches: !ctx.sessionId || ctx.sessionId === resolved,
+    });
     if (!resolved || (ctx.sessionId && ctx.sessionId !== resolved)) return { block: true, blockReason: "trusted_session_identity_required" };
     ctx = { ...ctx, sessionId: resolved };
   }
@@ -3497,6 +3577,8 @@ export async function beforeMicrosoftGraphToolCall(
   const originalArtifactParams = (event.toolName === "onedrive_upload" || event.toolName === "onedrive_update") ? params : undefined;
   const hookParams = () => originalArtifactParams ? event.params as Record<string, unknown> : defaultTodoParams ?? params;
   let ownedLease: WorkspaceStagingLease | undefined;
+  let reusedArtifact: ReturnType<NativeApprovalSnapshotStore["artifactForPreflight"]>;
+  let reuseAccepted = false;
   let leaseBound = false;
   const cleanupUnboundLease = async (): Promise<boolean> => {
     if (!ownedLease || leaseBound) return true;
@@ -3507,13 +3589,46 @@ export async function beforeMicrosoftGraphToolCall(
     try { await workspaceStagingStore.cleanup(event.toolCallId, event.toolName, ctx.sessionId); }
     catch { onCleanupDeferred(); }
   };
-  try { params = isMailAttachment(event.toolName, params) ? await bindMailAttachmentArtifact(params, ctx, (lease) => { ownedLease = lease; }) : await bindOneDriveWriteArtifact(event.toolName, params, ctx, (lease) => { ownedLease = lease; }); }
-  catch (error) { const cleaned = await cleanupUnboundLease(); return { block: true, blockReason: cleaned ? errorCode(error) : "workspace_file_unavailable" }; }
+  const discardReusedBinding = async (): Promise<void> => {
+    // Execution/reset/expiration owns cleanup once this exact snapshot is gone.
+    // A delayed preflight must not discard a newer binding or unlink executing bytes.
+    try { reusedArtifact?.assertCurrent(); } catch { return; }
+    approvalSnapshots.discard(event.toolCallId);
+    await cleanupBoundLease();
+  };
+  try {
+    if (originalArtifactParams && typeof params.sourceWorkspacePath === "string" && event.toolCallId) {
+      reusedArtifact = approvalSnapshots.artifactForPreflight(event.toolCallId, {
+        agentId: ctx.agentId, sessionId: ctx.sessionId, toolName: event.toolName,
+        params: normalizedCriteria(originalArtifactParams),
+        ...(authorizedRoot ? { oneDriveRoot: authorizedRoot } : {}),
+      });
+    }
+    if (reusedArtifact) {
+      if (!workspaceStagingStore.has(event.toolCallId!)) throw new Error("approval_context_invalid_or_changed");
+      params = JSON.parse(reusedArtifact.params);
+      approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "artifact_reused");
+    } else {
+      params = isMailAttachment(event.toolName, params) ? await bindMailAttachmentArtifact(params, ctx, (lease) => { ownedLease = lease; }) : await bindOneDriveWriteArtifact(event.toolName, params, ctx, (lease) => { ownedLease = lease; });
+    }
+  } catch (error) {
+    if (originalArtifactParams) { approvalSnapshots.discard(event.toolCallId); await cleanupBoundLease(); }
+    const cleaned = await cleanupUnboundLease();
+    return { block: true, blockReason: cleaned ? errorCode(error) : "workspace_file_unavailable" };
+  }
 
   try {
   const bindOwnedLease = () => {
+    if (reusedArtifact) { reusedArtifact.assertCurrent(); reuseAccepted = true; }
     if (ownedLease) {
-      workspaceStagingStore.bind(event.toolCallId!, event.toolName, ownedLease, ctx.sessionId, () => approvalSnapshots.discard(event.toolCallId));
+      approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "lease_bind");
+      try { workspaceStagingStore.bind(event.toolCallId!, event.toolName, ownedLease, ctx.sessionId, () => {
+        approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "lease_discard");
+        approvalSnapshots.discard(event.toolCallId);
+      }); } catch (error) {
+        approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "lease_bind_error", { category: approvalDiagnosticCategory(errorCode(error)) });
+        throw error;
+      }
       leaseBound = true;
     }
   };
@@ -3539,8 +3654,15 @@ export async function beforeMicrosoftGraphToolCall(
   if (severity !== "none" && !event.toolCallId) return { block: true, blockReason: "approval_context_tool_call_id_required" };
 
   const bindExecutionSnapshot = async (isCurrent = () => true) => {
-    if (!await sessionIdentityCurrent(lookupSession, ctx.agentId, ctx.sessionKey, ctx.sessionId) || !isCurrent()) throw new Error("approval_context_invalid_or_changed");
-    if (event.toolCallId) approvalSnapshots.record(event.toolCallId, {
+    const sessionCurrent = await sessionIdentityCurrent(lookupSession, ctx.agentId, ctx.sessionKey, ctx.sessionId);
+    const resolutionCurrent = isCurrent();
+    approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "bind_session", {
+      current: sessionCurrent, resolution_current: resolutionCurrent,
+    });
+    if (!sessionCurrent || !resolutionCurrent) throw new Error("approval_context_invalid_or_changed");
+    approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "snapshot_bind");
+    reusedArtifact?.assertCurrent();
+    try { if (event.toolCallId) approvalSnapshots.record(event.toolCallId, {
       agentId: ctx.agentId,
       sessionId: ctx.sessionId,
       toolName: event.toolName,
@@ -3548,7 +3670,11 @@ export async function beforeMicrosoftGraphToolCall(
       ...(originalArtifactParams ? { resolvedArtifactParams: JSON.stringify(params) } : {}),
       ...(defaultTodoParams ? { resolvedTodoListId: String(params.listId) } : {}),
       ...(authorizedRoot ? { oneDriveRoot: authorizedRoot } : {}),
-    });
+    }); } catch (error) {
+      approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "snapshot_bind_error", { category: approvalDiagnosticCategory(errorCode(error)) });
+      throw error;
+    }
+    approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "recorded");
   };
 
   if (severity === "critical") {
@@ -3561,24 +3687,25 @@ export async function beforeMicrosoftGraphToolCall(
       timeoutMs: 120_000,
       onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
         return trackApprovalResolution(event.toolCallId!, ctx.sessionId, async (isCurrent) => {
+          approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "resolution", { decision: approvalDiagnosticDecision(decision), lease_present: !ownedLease || workspaceStagingStore.has(event.toolCallId!) });
           if (ownedLease && !workspaceStagingStore.has(event.toolCallId!)) return;
           if (decision === "allow-once") {
             try { await bindExecutionSnapshot(isCurrent); }
             catch {
               if (isCurrent()) {
-                approvalSnapshots.discard(event.toolCallId);
-                await cleanupBoundLease();
+                await discardReusedBinding();
               }
               throw new Error("approval_context_invalid_or_changed");
             }
           }
-          else { approvalSnapshots.discard(event.toolCallId); await cleanupBoundLease(); }
+          else { await discardReusedBinding(); }
         });
       },
     } };
   }
 
   try {
+    approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "instruction_preflight");
     const instructionGate = await enforceOneDriveInstructionPreflight(
       runtimeConfig,
       { agentId: ctx.agentId, sessionId: ctx.sessionId },
@@ -3587,8 +3714,12 @@ export async function beforeMicrosoftGraphToolCall(
       ctx.abortSignal,
       { ...instructionDependencies, expectedRoot: expectedRoot ?? instructionDependencies.expectedRoot },
     );
-    if (instructionGate) return instructionGate;
+    if (instructionGate) {
+      approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "instruction_gate", { category: approvalDiagnosticCategory(instructionGate.blockReason) });
+      return instructionGate;
+    }
   } catch (error) {
+    approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "instruction_preflight_error", { category: approvalDiagnosticCategory(errorCode(error)) });
     return { block: true, blockReason: errorCode(error) };
   }
   if (severity === "none") return;
@@ -3598,9 +3729,10 @@ export async function beforeMicrosoftGraphToolCall(
   const service = event.toolName.startsWith("onedrive_") ? "onedrive" : event.toolName.startsWith("outlook_calendar_") ? "calendar" : event.toolName.startsWith("outlook_mail_") ? "mail" : event.toolName.startsWith("outlook_contacts_") ? "contacts" : "todo";
   const warningRequired = runtimeConfig.policy?.rules.warningApprovalsByService?.[service] ?? runtimeConfig.warningApprovalsRequired ?? true;
   const warningApprovalBypassed = warningRequired === false || warningApprovalTrustStore.has(scope);
+  approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "approval_route", { bypassed: warningApprovalBypassed });
   if (warningApprovalBypassed) {
     try { await bindExecutionSnapshot(); bindOwnedLease(); }
-    catch (error) { approvalSnapshots.discard(event.toolCallId); return { block: true, blockReason: errorCode(error) }; }
+    catch (error) { if (!reusedArtifact) approvalSnapshots.discard(event.toolCallId); return { block: true, blockReason: errorCode(error) }; }
     return { params: hookParams() };
   }
   const approval = mutationApprovalText(event.toolName, params);
@@ -3615,23 +3747,24 @@ export async function beforeMicrosoftGraphToolCall(
       timeoutMs: 120_000,
       onResolution(decision: "allow-once" | "allow-always" | "deny" | "timeout" | "cancelled") {
         return trackApprovalResolution(event.toolCallId!, ctx.sessionId, async (isCurrent) => {
+          approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "resolution", { decision: approvalDiagnosticDecision(decision), lease_present: !ownedLease || workspaceStagingStore.has(event.toolCallId!) });
           if (ownedLease && !workspaceStagingStore.has(event.toolCallId!)) return;
           if (decision === "allow-once" || decision === "allow-always") {
             try { await bindExecutionSnapshot(isCurrent); }
             catch {
               if (isCurrent()) {
-                approvalSnapshots.discard(event.toolCallId);
-                await cleanupBoundLease();
+                await discardReusedBinding();
               }
               throw new Error("approval_context_invalid_or_changed");
             }
             if (decision === "allow-always") warningApprovalTrustStore.grant(scope);
-          } else { approvalSnapshots.discard(event.toolCallId); await cleanupBoundLease(); }
+          } else { await discardReusedBinding(); }
         });
       },
     },
   };
   } finally {
+    if (reusedArtifact && !reuseAccepted) await discardReusedBinding();
     if (!await cleanupUnboundLease()) return { block: true, blockReason: "workspace_file_unavailable" };
   }
 }
@@ -3668,7 +3801,19 @@ plugin.register = (api) => {
   const warningApprovalTrustStore = new WarningApprovalTrustStore();
   api.on(
     "before_tool_call",
-    (event, ctx) => beforeMicrosoftGraphToolCall(runtimeConfig, event, ctx, {}, warningApprovalTrustStore, nativeApprovalSnapshots, () => api.logger.warn(STAGING_CLEANUP_DEFERRED), api.runtime?.agent?.session?.getSessionEntryAsync),
+    async (event, ctx) => {
+      try {
+        const outcome = await beforeMicrosoftGraphToolCall(runtimeConfig, event, ctx, {}, warningApprovalTrustStore, nativeApprovalSnapshots, () => api.logger.warn(STAGING_CLEANUP_DEFERRED), api.runtime?.agent?.session?.getSessionEntryAsync, api.logger);
+        approvalDiagnostic(api.logger, event.toolName, event.toolCallId, "hook_result", {
+          blocked: outcome?.block === true, approval_requested: !!outcome?.requireApproval,
+          category: approvalDiagnosticCategory(outcome?.blockReason),
+        });
+        return outcome;
+      } catch (error) {
+        approvalDiagnostic(api.logger, event.toolName, event.toolCallId, "hook_throw", { category: approvalDiagnosticCategory(errorCode(error)) });
+        throw error;
+      }
+    },
     // Run after ordinary policy hooks so this plugin's exact original snapshot
     // becomes authoritative. The execution-bound snapshot still fails closed
     // if a same/lower-priority hook attempts a later rewrite.

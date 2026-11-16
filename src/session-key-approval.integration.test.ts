@@ -3,11 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import entry from "./index.js";
+import { workspaceStagingStore } from "./stage-workspace-file.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 
 let directory: string | undefined;
 const originalStateDir = process.env.OPENCLAW_STATE_DIR;
 afterEach(async () => {
+  vi.restoreAllMocks();
   if (originalStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR;
   else process.env.OPENCLAW_STATE_DIR = originalStateDir;
   if (directory) await rm(directory, { recursive: true, force: true });
@@ -53,10 +55,61 @@ async function candidate(warningApprovalsRequired = true) {
     const runs = await readdir(root).catch(() => []);
     return (await Promise.all(runs.map((run) => readdir(join(root, run))))).flat().filter((name) => name !== ".workspace-staging-owner");
   };
-  return { hook: hooks.before_tool_call, tool, event, hookContext, getSessionEntryAsync, deprecatedGetSessionEntry, setStoredId: (id: string | undefined) => { storedId = id; }, setLookupFails: (value: boolean) => { lookupFails = value; }, staged };
+  return { hook: hooks.before_tool_call, tool, event, hookContext, getSessionEntryAsync, deprecatedGetSessionEntry, setStoredId: (id: string | undefined) => { storedId = id; }, setLookupFails: (value: boolean) => { lookupFails = value; }, policy, staged };
 }
 
 describe("host sessionKey-only approval context", () => {
+  it("reuses the bound staged bytes for repeated host preflight of the same call", async () => {
+    const { hook, tool, event, hookContext, staged } = await candidate(false);
+    event.params = { ...event.params, contentType: "text/markdown", timeoutMs: 180000 } as any;
+    const first = await hook(event, hookContext);
+    expect(first.block).not.toBe(true);
+    const files = await staged();
+    const second = await hook(event, hookContext);
+    expect(second.block).not.toBe(true);
+    expect(second.params).toEqual(event.params);
+    expect(await staged()).toEqual(files);
+    expect((await tool.execute(event.toolCallId, event.params)).details.error).toBe("credential_vault_unavailable");
+    expect(await staged()).toEqual([]);
+    expect((await tool.execute(event.toolCallId, event.params)).details.error).toBe("approval_context_invalid_or_changed");
+  });
+
+  it.each(["destination", "root", "session"])("rejects changed %s on repeated preflight", async (field) => {
+    const c = await candidate(false);
+    await c.hook(c.event, c.hookContext);
+    const event = structuredClone(c.event);
+    if (field === "destination") event.params.relativePath = "different.pdf";
+    if (field === "root") c.policy.services.onedrive.allowed_roots[0].item_id = "changed-root";
+    if (field === "session") c.setStoredId("generation-B");
+    const result = await c.hook(event, c.hookContext);
+    // A changed stored generation is resolved by the hook but mismatches the
+    // recorded snapshot; no caller can borrow the old artifact.
+    expect(result.block).toBe(true);
+    expect((await c.tool.execute(c.event.toolCallId, c.event.params)).details.error).toBe("approval_context_invalid_or_changed");
+    expect(await c.staged()).toEqual([]);
+  });
+
+  it("cannot resurrect a consumed snapshot while duplicate preflight awaits currentness", async () => {
+    const c = await candidate(false);
+    await c.hook(c.event, c.hookContext);
+    let release!: () => void;
+    c.getSessionEntryAsync.mockImplementationOnce(async () => ({ sessionId: "generation-A" }));
+    c.getSessionEntryAsync.mockImplementationOnce(async () => {
+      await new Promise<void>(resolve => { release = resolve; });
+      return { sessionId: "generation-A" };
+    });
+    const duplicate = c.hook(c.event, c.hookContext);
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    const cleanup = vi.spyOn(workspaceStagingStore, "cleanup");
+    expect((await c.tool.execute(c.event.toolCallId, c.event.params)).details.error).toBe("credential_vault_unavailable");
+    const executionCleanupCalls = cleanup.mock.calls.length;
+    release();
+    expect((await duplicate).block).toBe(true);
+    expect(cleanup.mock.calls).toHaveLength(executionCleanupCalls);
+    expect((await c.tool.execute(c.event.toolCallId, c.event.params)).details.error).toBe("approval_context_invalid_or_changed");
+    expect(await c.staged()).toEqual([]);
+  });
+
   it.each([true, false])("preserves Codex relay input with warning approval %s", async (required) => {
     const { hook, tool, event, hookContext, staged } = await candidate(required);
     const original = JSON.stringify(event.params);
