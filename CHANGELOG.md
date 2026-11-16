@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.25.2 - 2026-11-16
+
+- Fix OneDrive uploads and updates blocked by native Codex approval parameter integrity checks. Preserve original caller input while privately binding staged content to the single-use approval snapshot.
+- Retain caller, session, root, fingerprint verification and staging cleanup protections; mixed snapshot protocol versions fail closed. No permission or configuration changes.
+
 ## 3.25.1 - 2026-11-15
 
 - Fix mail attachment listing HTTP400 by selecting only base attachment properties; retain safe contentId metadata when returned by the provider.
