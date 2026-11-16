@@ -51,11 +51,14 @@ describe("trusted OneDrive workspace context across native module imports", { ti
     const { hooks, hookContext, params, bytes, context, factoryModule, logger, config } = await setup();
     const gate = await hooks.before_tool_call({ toolName: "onedrive_upload", toolCallId: "cross-workspace", params }, hookContext);
     expect(gate.block).toBeUndefined();
-    expect(gate.params.sourceSha256).toBe(createHash("sha256").update(bytes).digest("hex"));
-    expect(gate.params.sourceByteSize).toBe(bytes.length);
-    expect(gate.params.contentType).toBe("text/plain");
+    expect(gate.params).toEqual(params);
     await gate.requireApproval.onResolution("allow-once");
+    let stagedUri: string | undefined;
     const action = vi.fn(async (p: any) => {
+      stagedUri = p.sourceMediaUri;
+      expect(p.sourceSha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+      expect(p.sourceByteSize).toBe(bytes.length);
+      expect(p.contentType).toBe("text/plain");
       const source = await factoryModule.openProtectedMediaUploadSource(p.sourceMediaUri, context.workspaceDir);
       try { expect(await source.readChunk(0, bytes.length)).toEqual(bytes); }
       finally { await source.close(); }
@@ -65,7 +68,7 @@ describe("trusted OneDrive workspace context across native module imports", { ti
     expect((await tool.execute("cross-workspace", gate.params)).details.ok).toBe(true);
     expect(action).toHaveBeenCalledTimes(1);
     expect((await tool.execute("cross-workspace", gate.params)).details.error).toBe("approval_context_invalid_or_changed");
-    await expect(factoryModule.openProtectedMediaUploadSource(gate.params.sourceMediaUri, context.workspaceDir)).rejects.toThrow();
+    await expect(factoryModule.openProtectedMediaUploadSource(stagedUri!, context.workspaceDir)).rejects.toThrow();
     hooks.session_end({}, hookContext);
   });
 

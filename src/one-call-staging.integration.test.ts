@@ -227,20 +227,8 @@ describe("workspace-file OneDrive approval preflight", () => {
     };
     expect(result).toMatchObject({ requireApproval: expect.anything() });
     expect(result.params.sourceWorkspacePath).toBe(params.sourceWorkspacePath);
-    expect(result.params).toMatchObject({
-      rootLabel: "synthetic_documents",
-      relativePath: "onepager.pdf",
-      contentType: "application/pdf",
-      sourceSha256: createHash("sha256").update(bytes).digest("hex"),
-      sourceByteSize: bytes.byteLength,
-    });
-    expect(result.params.sourceMediaUri).toMatch(/^media:\/\/inbound\//);
-    const source = await openProtectedMediaUploadSource(result.params.sourceMediaUri as string, workspaceDir);
-    try {
-      expect(await source.readChunk(0, bytes.length)).toEqual(bytes);
-    } finally {
-      await source.close();
-    }
+    expect(result.params).toEqual(params);
+    expect(await stagedFiles(stateDir)).toHaveLength(1);
     await result.requireApproval.onResolution("deny");
     expect(await stagedFiles(stateDir)).toEqual([]);
   });

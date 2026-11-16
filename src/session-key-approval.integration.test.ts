@@ -57,6 +57,21 @@ async function candidate(warningApprovalsRequired = true) {
 }
 
 describe("host sessionKey-only approval context", () => {
+  it.each([true, false])("preserves Codex relay input with warning approval %s", async (required) => {
+    const { hook, tool, event, hookContext, staged } = await candidate(required);
+    const original = JSON.stringify(event.params);
+    const decision = await hook(event, hookContext);
+    expect(Object.keys(decision.params).filter(key => !(key in event.params)).sort())
+      .toEqual([]);
+    expect(JSON.stringify(decision.params)).toBe(original);
+    if (required) await decision.requireApproval.onResolution("allow-once");
+    expect(JSON.stringify(decision.params)).toBe(original);
+    expect(await staged()).toHaveLength(1);
+    expect((await tool.execute(event.toolCallId, event.params)).details)
+      .toMatchObject({ ok: false, error: "credential_vault_unavailable" });
+    expect(await staged()).toEqual([]);
+  });
+
   it("binds a one-call workspace upload to the persisted generation and reaches the credential gate", async () => {
     const { hook, tool, event, hookContext, getSessionEntryAsync, deprecatedGetSessionEntry, staged } = await candidate();
     const approval = await hook(event, hookContext);
@@ -66,7 +81,7 @@ describe("host sessionKey-only approval context", () => {
     // OpenClaw 2026.9.8 shallow-merges hook overrides into the original call.
     const hostParams = { ...event.params, ...approval.params };
     expect(hostParams).toHaveProperty("sourceWorkspacePath", "reports/onepager.pdf");
-    expect(hostParams).toHaveProperty("sourceMediaUri");
+    expect(hostParams).toEqual(event.params);
     expect((await tool.execute(event.toolCallId, hostParams)).details).toMatchObject({ ok: false, error: "credential_vault_unavailable" });
     expect(await staged()).toEqual([]);
     expect(getSessionEntryAsync).toHaveBeenCalledTimes(3);
@@ -79,8 +94,17 @@ describe("host sessionKey-only approval context", () => {
     expect(decision.requireApproval).toBeUndefined();
     const hostParams = { ...event.params, ...decision.params };
     expect(hostParams).toHaveProperty("sourceWorkspacePath", "reports/onepager.pdf");
-    expect(hostParams).toHaveProperty("sourceMediaUri");
+    expect(hostParams).toEqual(event.params);
     expect((await tool.execute(event.toolCallId, hostParams)).details).toMatchObject({ ok: false, error: "credential_vault_unavailable" });
+    expect(await staged()).toEqual([]);
+  });
+
+  it.each(["sourceMediaUri", "sourceSha256", "sourceByteSize", "contentType"])("rejects injected %s before execution", async (field) => {
+    const { hook, tool, event, hookContext, staged } = await candidate(false);
+    await hook(event, hookContext);
+    const altered = { ...event.params, [field]: field === "sourceByteSize" ? 1 : "synthetic-injection" };
+    expect((await tool.execute(event.toolCallId, altered)).details)
+      .toMatchObject({ ok: false, error: "approval_context_invalid_or_changed", mutationApplied: false });
     expect(await staged()).toEqual([]);
   });
 

@@ -95,7 +95,7 @@ const ONEDRIVE_STAGING_WORKSPACE_CONTEXTS_KEY = Symbol.for("@baumus/openclaw-mic
 type OneDriveStagingWorkspaceContexts = Map<string, { agentId: string; sessionId: string; workspaceDir: string }>;
 const oneDriveStagingWorkspaceContexts: OneDriveStagingWorkspaceContexts = ((globalThis as Record<symbol, unknown>)[ONEDRIVE_STAGING_WORKSPACE_CONTEXTS_KEY] as OneDriveStagingWorkspaceContexts | undefined)
   ?? ((globalThis as Record<symbol, unknown>)[ONEDRIVE_STAGING_WORKSPACE_CONTEXTS_KEY] = new Map()) as OneDriveStagingWorkspaceContexts;
-export type NativeApprovalSnapshot = { agentId?: string; sessionId?: string; toolName: string; params: string; oneDriveRoot?: OneDriveApprovalRoot; resolvedTodoListId?: string };
+export type NativeApprovalSnapshot = { agentId?: string; sessionId?: string; toolName: string; params: string; oneDriveRoot?: OneDriveApprovalRoot; resolvedTodoListId?: string; resolvedArtifactParams?: string };
 type SessionEntryLookup = (params: { agentId?: string; sessionKey: string; readConsistency: "latest" }) => Promise<{ sessionId?: string } | undefined>;
 
 async function currentSessionId(lookup: SessionEntryLookup | undefined, agentId: string | undefined, sessionKey: string | undefined): Promise<string | undefined> {
@@ -164,8 +164,8 @@ export class NativeApprovalSnapshotStore {
  * now realm-independent while remaining process-local (it is never persisted or shared between
  * gateways). The execution-bound identity checks in `consume` are unchanged and still fail closed.
  */
-// Version the store protocol: earlier hot-loaded instances cannot return the pinned target.
-const NATIVE_APPROVAL_SNAPSHOT_STORE_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-snapshots/v2");
+// Version the store protocol: older tools cannot hydrate the approved artifact parameters.
+const NATIVE_APPROVAL_SNAPSHOT_STORE_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-snapshots/v3");
 const nativeApprovalSnapshots: NativeApprovalSnapshotStore = ((globalThis as Record<symbol, unknown>)[NATIVE_APPROVAL_SNAPSHOT_STORE_KEY] as NativeApprovalSnapshotStore | undefined)
   ?? ((globalThis as Record<symbol, unknown>)[NATIVE_APPROVAL_SNAPSHOT_STORE_KEY] = new NativeApprovalSnapshotStore()) as NativeApprovalSnapshotStore;
 
@@ -716,12 +716,13 @@ export function concrete(name: string, parameters: any, agentId: string | undefi
         const oneDriveRoot = approvalConfig ? () => authorizeOneDriveMutationPreflight(approvalConfig, agentId, name, semantic) : undefined;
         await waitForApprovalResolution(_id, signal);
         let resolvedTodoListId: string | undefined;
-        const approvalSnapshotMatches = nativeApprovalSnapshots.consume(_id, agentId, sessionId, name, semantic, oneDriveRoot, (snapshot) => { resolvedTodoListId = snapshot.resolvedTodoListId; });
+        let resolvedArtifactParams: string | undefined;
+        const approvalSnapshotMatches = nativeApprovalSnapshots.consume(_id, agentId, sessionId, name, semantic, oneDriveRoot, (snapshot) => { resolvedTodoListId = snapshot.resolvedTodoListId; resolvedArtifactParams = snapshot.resolvedArtifactParams; });
         if (approvalSnapshotMatches === false || (classifyApproval(name, semantic) !== "none" && (approvalSnapshotMatches !== true || !await sessionIsCurrent()))) throw new Error("approval_context_invalid_or_changed");
         workspaceStagingStore.beginExecution(_id, name, sessionId);
         // Apply the pre-approved target only after the original caller payload and identity match.
         // Never return this internal resolution as a hook rewrite to native Codex.
-        const executionParams = name === "microsoft_todo_write" && semantic.listSelector === "default" && resolvedTodoListId
+        const executionParams = resolvedArtifactParams ? JSON.parse(resolvedArtifactParams) : name === "microsoft_todo_write" && semantic.listSelector === "default" && resolvedTodoListId
           ? { ...semantic, listSelector: undefined, listId: resolvedTodoListId }
           : semantic;
         value = await execute(executionParams, signal);
@@ -1492,9 +1493,9 @@ async function bindOneDriveWriteArtifact(toolName: string, params: Record<string
     const staged = await stageWorkspaceFile(stagingWorkspaceFor(context), params.sourceWorkspacePath, String(contentType), undefined, context.abortSignal, workspaceStagingStore, stateDir);
     onStaged(staged.lease);
     if (assertion && (assertion.sourceSha256 !== staged.sourceSha256 || assertion.sourceByteSize !== staged.sourceByteSize)) throw new Error("invalid_source_fingerprint");
-    // The host shallow-merges before_tool_call overrides into the original call.
-    // Keep this non-authoritative original field in our exact snapshot so the
-    // merged execution params match; only the verified private URI is transferred.
+    // Keep the original workspace selector in the private execution snapshot.
+    // Only the verified private URI is transferred; staging metadata is never
+    // returned as a native hook rewrite.
     params = { ...params, contentType, sourceMediaUri: staged.sourceMediaUri, sourceSha256: staged.sourceSha256, sourceByteSize: staged.sourceByteSize };
   }
   const source = await openProtectedMediaUploadSource(String(params.sourceMediaUri ?? ""), stagingWorkspaceFor(context));
@@ -3491,6 +3492,10 @@ export async function beforeMicrosoftGraphToolCall(
       params = { ...params, listSelector: undefined, listId: await resolveDefaultTodoList(runtimeConfig, ctx.agentId, ctx.abortSignal) };
     } catch (error) { return { block: true, blockReason: errorCode(error) }; }
   }
+  // Bind caller input separately from private, pre-approved staging metadata.
+  // Native Codex must execute the original input without any hook rewrite.
+  const originalArtifactParams = (event.toolName === "onedrive_upload" || event.toolName === "onedrive_update") ? params : undefined;
+  const hookParams = () => originalArtifactParams ? event.params as Record<string, unknown> : defaultTodoParams ?? params;
   let ownedLease: WorkspaceStagingLease | undefined;
   let leaseBound = false;
   const cleanupUnboundLease = async (): Promise<boolean> => {
@@ -3539,7 +3544,8 @@ export async function beforeMicrosoftGraphToolCall(
       agentId: ctx.agentId,
       sessionId: ctx.sessionId,
       toolName: event.toolName,
-      params: normalizedCriteria(defaultTodoParams ?? params),
+      params: normalizedCriteria(originalArtifactParams ?? defaultTodoParams ?? params),
+      ...(originalArtifactParams ? { resolvedArtifactParams: JSON.stringify(params) } : {}),
       ...(defaultTodoParams ? { resolvedTodoListId: String(params.listId) } : {}),
       ...(authorizedRoot ? { oneDriveRoot: authorizedRoot } : {}),
     });
@@ -3548,7 +3554,7 @@ export async function beforeMicrosoftGraphToolCall(
   if (severity === "critical") {
     const approval = mutationApprovalText(event.toolName, params);
     try { bindOwnedLease(); } catch (error) { return { block: true, blockReason: errorCode(error) }; }
-    return { params: defaultTodoParams ?? params, requireApproval: {
+    return { params: hookParams(), requireApproval: {
       ...approval,
       severity,
       allowedDecisions: ["allow-once", "deny"] as Array<"allow-once" | "deny">,
@@ -3595,12 +3601,12 @@ export async function beforeMicrosoftGraphToolCall(
   if (warningApprovalBypassed) {
     try { await bindExecutionSnapshot(); bindOwnedLease(); }
     catch (error) { approvalSnapshots.discard(event.toolCallId); return { block: true, blockReason: errorCode(error) }; }
-    return { params: defaultTodoParams ?? params };
+    return { params: hookParams() };
   }
   const approval = mutationApprovalText(event.toolName, params);
   try { bindOwnedLease(); } catch (error) { return { block: true, blockReason: errorCode(error) }; }
   return {
-    params: defaultTodoParams ?? params,
+    params: hookParams(),
     requireApproval: {
       title: approval.title,
       description: `${approval.description} Allow-always trusts only this agent, tool, and action until plugin reload or process restart.`,

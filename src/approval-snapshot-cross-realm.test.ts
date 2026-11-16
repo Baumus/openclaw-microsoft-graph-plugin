@@ -13,7 +13,7 @@ import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
  * it at build time.
  */
 describe("native approval snapshot store across module instances", () => {
-  const STORE_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-snapshots/v2");
+  const STORE_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-snapshots/v3");
   const ENTRY = "./index.js";
 
   const importRealm = async (realm: number): Promise<unknown> => {
@@ -22,7 +22,7 @@ describe("native approval snapshot store across module instances", () => {
   };
 
   it("does not reuse a pre-upgrade store without the resolved-target handoff protocol", async () => {
-    const legacyKey = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-snapshots");
+    const legacyKey = Symbol.for("@baumus/openclaw-microsoft-graph/native-approval-snapshots/v2");
     const previous = (globalThis as Record<symbol, unknown>)[legacyKey];
     const legacy = { consume: vi.fn(() => true) };
     (globalThis as Record<symbol, unknown>)[legacyKey] = legacy;
