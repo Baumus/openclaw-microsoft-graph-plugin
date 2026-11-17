@@ -47,6 +47,25 @@ describe("agent-facing Microsoft Graph contracts", () => {
     }
   });
 
+  it("accepts published 100-result list calls and still rejects invalid limits", async () => {
+    const { hooks, context, tools } = runtime();
+    for (const recursive of [undefined, true, false]) {
+      const params = { action: "list_folders", limit: 100, ...(recursive === undefined ? {} : { recursive }) };
+      expect(await hooks.before_tool_call({ toolName: "outlook_mail_read", params }, context)).not.toMatchObject({ block: true });
+    }
+    const params = { rootLabel: "synthetic", relativePath: "committees/2026", limit: 100 };
+    // Instructions/policy may refuse the synthetic root, but schema admission must succeed.
+    const gate = await hooks.before_tool_call({ toolName: "onedrive_list", params }, context);
+    expect(gate?.blockReason).not.toBe("invalid_tool_parameters");
+    for (const name of ["onedrive_list", "outlook_mail_read"]) {
+      expect(tools[name].parameters.properties.limit.maximum).toBe(100);
+      for (const limit of [0, 101, 1.5, "100"]) {
+        const invalid = name === "onedrive_list" ? { ...params, limit } : { action: "list_folders", limit };
+        expect(await hooks.before_tool_call({ toolName: name, params: invalid }, context)).toMatchObject({ block: true, blockReason: "invalid_tool_parameters" });
+      }
+    }
+  });
+
   it("rejects undocumented new actions and nested fields", () => {
     expect(() => check({ properties: { action: { description: "read: no ID", anyOf: [{ const: "read" }, { const: "new_action" }] } } }, "synthetic")).toThrow();
     expect(() => check({ properties: { operations: { description: "Batch entries", items: { properties: { newField: { type: "string" } } } } } }, "synthetic")).toThrow();
