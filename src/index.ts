@@ -21,6 +21,8 @@ import { ONEDRIVE_AGENTS_MAX_FILE_BYTES, ONEDRIVE_AGENTS_MAX_PARALLEL, OneDriveA
 import { MAX_REPLY_HISTORY_BYTES, prependReplyHtml, replyFragment } from "./mail-reply.js";
 
 const MAX_RESULTS = 50;
+// Public collection page limit; internal discovery/provider safety bounds remain separate.
+const MAX_COLLECTION_RESULTS = 100;
 const MAX_MAIL_FOLDERS = 200;
 const MAX_COLLECTION_PAGE_REQUESTS = 64;
 const MAX_EVENT_SCAN = 500;
@@ -840,7 +842,7 @@ const rootLabel = Type.String({ minLength: 1, maxLength: 160, pattern: "^[a-z0-9
 const relative = Type.String({ minLength: 1, maxLength: 1024 });
 const optionalRelative = Type.Optional(Type.String({ maxLength: 1024, default: "" }));
 const agentsInstructionAck = Type.Optional(Type.String({ minLength: 32, maxLength: 32, pattern: "^[A-Za-z0-9_-]{32}$", description: "Opaque session-bound AGENTS.md acknowledgement returned by an automatic OneDrive preflight. Never invent or reuse across sessions." }));
-const limit = Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_RESULTS, default: 25 }));
+const limit = Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_COLLECTION_RESULTS, default: 25 }));
 const continuation = Type.Optional(Type.String({ minLength: 48, maxLength: 48, pattern: "^mgc1_[A-Za-z0-9_-]{43}$", description: "Opaque short-lived continuation handle returned by the preceding call; repeat the exact original collection criteria." }));
 const resourceId = Type.String({ minLength: 1, maxLength: 512, pattern: "^[A-Za-z0-9._~!$&'()*+,;=:@%-]+$" });
 const calendarId = Type.String({ minLength: 1, maxLength: 512, pattern: "^[A-Za-z0-9._~!$&'()*+,;=:@%-]+$", description: "Exact calendar ID returned by list_calendars; display names are not accepted." });
@@ -910,7 +912,7 @@ function validHtml(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length > MAX_BODY || /<(script|form|iframe|object|embed)\b/i.test(value) || /<img\b[^>]*\bsrc\s*=\s*["']?https?:/i.test(value)) throw new Error("invalid_html_body");
   return value;
 }
-function boundedLimit(value: unknown, fallback = 25): number { return Number.isInteger(value) && Number(value) >= 1 && Number(value) <= MAX_RESULTS ? Number(value) : fallback; }
+function boundedLimit(value: unknown, fallback = 25): number { return Number.isInteger(value) && Number(value) >= 1 && Number(value) <= MAX_COLLECTION_RESULTS ? Number(value) : fallback; }
 type StrictDateTime = {
   value: string;
   year: number;

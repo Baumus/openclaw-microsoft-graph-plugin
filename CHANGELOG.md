@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.25.4
+
+- Accept bounded collection limits through 100 consistently in tool schemas, PreToolUse validation, and execution; document the range explicitly for agents.
+- Regress-test folder listing with recursive true/false and invalid limits.
+
 ## 3.25.3 - 2026-11-16
 
 - Fix workspace-source OneDrive uploads and updates when the host preflights the same call more than once. Reuse its exact bound staged artifact instead of creating a conflicting private copy.

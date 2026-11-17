@@ -17,7 +17,7 @@ const parameterGuidance: Readonly<Record<string, string>> = {
   "query": "Text to match in the selected collection; narrow the query when results are incomplete.",
   "search": "Text to match in the selected collection; narrow the query when results are incomplete.",
   "searchKql": "Microsoft mail KQL query, for example subject:invoice; combine only with supported filters.",
-  "limit": "Maximum results per page; follow the returned continuation to finish the collection.",
+  "limit": "Maximum results per page (integer 1–100, default 25); follow the returned continuation to finish the collection.",
   "searchFields": "Fields to inspect during client-side search; use the schema enum values.",
   "folder": "Well-known mail folder selector; use folderId/destinationFolderId for a discovered custom folder.",
   "destination": "Well-known mail folder selector; use folderId/destinationFolderId for a discovered custom folder.",
