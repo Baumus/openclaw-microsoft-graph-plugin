@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.25.5
+
+- Fix first-attempt workspace staging failures when concurrent cleanup removes a quota entry between directory enumeration and filesystem inspection. Skip only disappeared entries (ENOENT), without retrying provider writes or relaxing quota, path, integrity or approval checks.
+- Add phase-specific, allowlisted staging failure diagnostics without file paths, contents, raw exceptions or caller identities. Existing public error codes stay unchanged.
+- Regress-test concurrent file/directory removal, retained permission denial and private diagnostic redaction. No configuration or Microsoft permission changes.
+
 ## 3.25.4
 
 - Accept bounded collection limits through 100 consistently in tool schemas, PreToolUse validation, and execution; document the range explicitly for agents.

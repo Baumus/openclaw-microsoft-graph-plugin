@@ -6,7 +6,7 @@ import { Compile } from "typebox/compile";
 import { root as secureRoot, type OpenResult } from "@openclaw/fs-safe";
 import { readLocalFileFromRoots } from "@openclaw/fs-safe/advanced";
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
-import { stageWorkspaceFile, validateWorkspaceRelativeFilePath, workspaceFileContentType, workspaceStagingStore, type WorkspaceStagingLease } from "./stage-workspace-file.js";
+import { WorkspaceStagingError, stageWorkspaceFile, validateWorkspaceRelativeFilePath, workspaceFileContentType, workspaceStagingStore, type WorkspaceStagingLease } from "./stage-workspace-file.js";
 import { downloadOneDriveFile, downloadOutlookFileAttachment, publishPrivateMediaBytes } from "./attachment-download.js";
 import { exchangeRefreshToken, readCredential, selectScope, tokenForAuthorizedOperation } from "./credential.js";
 import { automaticServiceHealth, failureCategory, type Service } from "./service-health.js";
@@ -3614,6 +3614,7 @@ export async function beforeMicrosoftGraphToolCall(
       params = isMailAttachment(event.toolName, params) ? await bindMailAttachmentArtifact(params, ctx, (lease) => { ownedLease = lease; }) : await bindOneDriveWriteArtifact(event.toolName, params, ctx, (lease) => { ownedLease = lease; });
     }
   } catch (error) {
+    if (error instanceof WorkspaceStagingError) approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "staging_failed", { phase: error.phase, category: error.category });
     if (originalArtifactParams) { approvalSnapshots.discard(event.toolCallId); await cleanupBoundLease(); }
     const cleaned = await cleanupUnboundLease();
     return { block: true, blockReason: cleaned ? errorCode(error) : "workspace_file_unavailable" };

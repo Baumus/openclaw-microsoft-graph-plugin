@@ -87,6 +87,49 @@ describe("one-call workspace source staging", () => {
     await staged.lease.cleanup();
   });
 
+  it.each(["file", "directory", "reservation", "permission"] as const)("handles a disappearing quota %s without retrying or weakening denial", async (kind) => {
+    const directory = await workspace();
+    const stateDir = join(directory, "state");
+    await mkdir(stateDir);
+    await writeFile(join(directory, "reports", "catalog.json"), '{"items":["synthetic"]}');
+    const store = new WorkspaceStagingStore();
+    await store.ownRun(stateDir);
+    const namespace = join(stateDir, "media", "inbound", "baumus-msgraph-workspace-staging");
+    const disappearing = kind === "directory" ? join(namespace, randomUUID()) : join(namespace, store.runId,
+      kind === "reservation" ? `.workspace-staging-reservation-${randomUUID()}` : `${randomUUID()}.json`);
+    if (kind === "directory") await mkdir(disappearing);
+    else await writeFile(disappearing, kind === "reservation" ? "23" : "previous synthetic transfer");
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    let removed = false;
+    vi.mocked(fsPromises.lstat).mockImplementation((async (path: Parameters<typeof actual.lstat>[0], options?: any) => {
+      if (String(path) === disappearing && !removed) {
+        removed = true;
+        if (kind === "permission") throw Object.assign(new Error("private path must never be logged"), { code: "EACCES" });
+        const stat = await actual.lstat(path, options);
+        await rm(disappearing, { recursive: kind === "directory" });
+        if (kind === "directory" || kind === "reservation") return stat;
+        throw Object.assign(new Error("synthetic concurrent cleanup"), { code: "ENOENT" });
+      }
+      return actual.lstat(path, options);
+    }) as typeof actual.lstat);
+    const { save, calls } = saver(stateDir, "synthetic-id.json");
+    try {
+      if (kind === "permission") {
+        await expect(stageWorkspaceFile(directory, "reports/catalog.json", "application/json", save, undefined, store, stateDir))
+          .rejects.toMatchObject({ message: "workspace_file_unavailable", phase: "quota_reserve", category: "EACCES" });
+        expect(calls).not.toHaveBeenCalled();
+        return;
+      }
+      const staged = await stageWorkspaceFile(directory, "reports/catalog.json", "application/json", save, undefined, store, stateDir);
+      expect(removed).toBe(true);
+      expect(calls).toHaveBeenCalledTimes(1);
+      expect(staged.sourceByteSize).toBe(23);
+      await staged.lease.cleanup();
+    } finally {
+      vi.mocked(fsPromises.lstat).mockImplementation(actual.lstat);
+    }
+  });
+
   it("rejects absolute, traversal, and ambiguous paths before opening", () => {
     for (const value of ["/tmp/file.pdf", "../secret.pdf", "reports/../secret.pdf", "reports//file.pdf", "reports\\file.pdf", ""]) {
       expect(() => validateWorkspaceRelativeFilePath(value)).toThrow("invalid_workspace_relative_path");
