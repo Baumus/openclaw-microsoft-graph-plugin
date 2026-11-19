@@ -72,6 +72,24 @@ describe("trusted OneDrive workspace context across native module imports", { ti
     hooks.session_end({}, hookContext);
   });
 
+  it("logs only closed staging diagnostics when a source cannot be opened", async () => {
+    const { hooks, hookContext, params, logger } = await setup();
+    const result = await hooks.before_tool_call({
+      toolName: "onedrive_upload", toolCallId: "missing-source",
+      params: { ...params, sourceWorkspacePath: "private-missing-source.txt" },
+    }, hookContext);
+    expect(result).toEqual({ block: true, blockReason: "workspace_file_unavailable" });
+    const diagnostics = logger.info.mock.calls.map(([value]) => JSON.parse(value));
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      event: "microsoft_graph_approval_binding", stage: "staging_failed",
+      phase: "source_open", category: "not-found",
+    }));
+    expect(JSON.stringify(diagnostics)).not.toContain("private-missing-source");
+    expect(JSON.stringify(diagnostics)).not.toContain(directory);
+    expect(JSON.stringify(diagnostics)).not.toContain("missing-source");
+    hooks.session_end({}, hookContext);
+  });
+
   it("does not borrow another caller/session workspace or accept a caller-selected workspace", async () => {
     const { hooks, hookContext, params } = await setup();
     for (const context of [{ ...hookContext, sessionId: "unbound-session" }, { ...hookContext, agentId: "other" }]) {

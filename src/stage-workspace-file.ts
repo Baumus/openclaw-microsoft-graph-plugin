@@ -9,6 +9,20 @@ import { saveMediaStream } from "openclaw/plugin-sdk/media-store";
 import { sanitizeAttachmentName } from "./attachment-download.js";
 import { ONEDRIVE_WRITE_MAX_BYTES, validTransferContentType } from "./graph.js";
 
+type WorkspaceStagingPhase = "source_open" | "owner_init" | "quota_reserve" | "media_save" | "receipt_validate" | "quota_publish";
+
+export class WorkspaceStagingError extends Error {
+  readonly category: string;
+  constructor(readonly phase: WorkspaceStagingPhase, error: unknown) {
+    super("workspace_file_unavailable");
+    const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+    this.category = typeof code === "string" && [
+      "ENOENT", "EEXIST", "EACCES", "ENOSPC", "not-found", "path-mismatch",
+      "symlink-not-allowed", "hardlink-not-allowed",
+    ].includes(code) ? code : "other";
+  }
+}
+
 const CHUNK_BYTES = 4 * 1024 * 1024;
 export const WORKSPACE_STAGING_QUOTA_BYTES = 128 * 1024 * 1024;
 const WORKSPACE_STAGING_FILE_MAX_BYTES = 64 * 1024 * 1024;
@@ -92,14 +106,24 @@ async function stagingAncestors(stateDir: string): Promise<boolean> {
 async function quotaUsage(directory: string): Promise<{ bytes: number; count: number }> {
   const usage = { bytes: 0, count: 0 };
   async function walk(path: string, depth: number): Promise<void> {
-    for (const entry of await readdir(path, { withFileTypes: true })) {
+    // Cleanup can remove an entry after readdir: absent bytes consume no quota.
+    // Reservations and publication remain serialized by the existing quota lock.
+    const entries = await readdir(path, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (depth > 0 && error.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of entries) {
       if (depth === 0 && !RUN_ID.test(entry.name)) {
         if (entry.name === QUOTA_LOCK) continue;
         throw new Error("workspace_staging_quota_exceeded");
       }
       if (depth === 1 && entry.name === OWNER_FILE) continue;
       const file = join(path, entry.name);
-      const info = await lstat(file);
+      const info = await lstat(file).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (!info) continue;
       if (info.isSymbolicLink() || (info.isFile() && info.nlink !== 1)) throw new Error("workspace_staging_quota_exceeded");
       if (info.isDirectory() && depth < 2) {
         if (depth === 1) usage.count++;
@@ -108,7 +132,12 @@ async function quotaUsage(directory: string): Promise<{ bytes: number; count: nu
       else if (info.isFile() && depth > 0) {
         if (depth === 1 && RESERVATION_FILE.test(entry.name)) {
           if (info.size > 64) throw new Error("workspace_staging_quota_exceeded");
-          const value: unknown = JSON.parse(await readFile(file, "utf8"));
+          const content = await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") return undefined;
+            throw error;
+          });
+          if (content === undefined) continue;
+          const value: unknown = JSON.parse(content);
           if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > WORKSPACE_STAGING_FILE_MAX_BYTES) throw new Error("workspace_staging_quota_exceeded");
           usage.bytes += value as number;
         } else usage.bytes += info.size;
@@ -510,6 +539,7 @@ export async function stageWorkspaceFile(
   const relativePath = validateWorkspaceRelativeFilePath(sourceRelativePath);
   if (typeof workspaceDir !== "string" || !workspaceDir) throw new Error("workspace_context_unavailable");
   if (!validTransferContentType(contentType)) throw new Error("invalid_content_type");
+  let phase: WorkspaceStagingPhase = "source_open";
   let opened: OpenResult | undefined;
   let release: (() => Promise<void>) | undefined;
   let publish: (() => Promise<void>) | undefined;
@@ -522,7 +552,9 @@ export async function stageWorkspaceFile(
     if (!initial.isFile() || !Number.isSafeInteger(initial.size) || initial.size < 0) throw new Error("invalid_workspace_file");
     if (initial.size > ONEDRIVE_WRITE_MAX_BYTES) throw new Error("provider_file_too_large");
     if (stateDir) {
+      phase = "owner_init";
       await store.ownRun(stateDir);
+      phase = "quota_reserve";
       const reservation = await store.reserveShared(initial.size, stateDir);
       release = reservation.release;
       publish = reservation.publish;
@@ -552,7 +584,9 @@ export async function stageWorkspaceFile(
     }
     const name = sanitizeAttachmentName(basename(relativePath));
     signal?.throwIfAborted();
+    phase = "media_save";
     const saved = await save(chunks(), contentType, `${STAGING_SUBDIR}/${store.runId}`, ONEDRIVE_WRITE_MAX_BYTES, name, name);
+    phase = "receipt_validate";
     const runPath = join(resolve(stateDir ?? workspaceDir), "media", STAGING_SUBDIR, store.runId);
     if (typeof saved.path !== "string" || dirname(saved.path) !== runPath || resolve(saved.path) !== saved.path
       || !await stagingAncestors(stateDir ?? workspaceDir)) throw new Error("workspace_file_unavailable");
@@ -589,6 +623,7 @@ export async function stageWorkspaceFile(
     signal?.throwIfAborted();
     if (saved.size !== initial.size || count !== initial.size) throw new Error("workspace_file_changed");
     if (!sameIdentity(await opened.handle.stat())) throw new Error("workspace_file_changed");
+    phase = "quota_publish";
     await publish?.();
     return { sourceMediaUri: `media://${STAGING_SUBDIR}/${store.runId}/${saved.id}`, sourceSha256: hash.digest("hex"), sourceByteSize: saved.size, lease };
   } catch (error) {
@@ -596,7 +631,7 @@ export async function stageWorkspaceFile(
     else if (release) await release().catch(() => store.retryCleanup({ cleanup: release! }));
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     if (error instanceof Error && ["provider_file_too_large", "workspace_staging_quota_exceeded", "workspace_file_changed"].includes(error.message)) throw error;
-    throw new Error("workspace_file_unavailable");
+    throw new WorkspaceStagingError(phase, error);
   } finally {
     await opened?.handle.close().catch(() => undefined);
   }
