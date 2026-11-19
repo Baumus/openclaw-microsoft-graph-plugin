@@ -87,7 +87,7 @@
     "clawhub": "0.25.1",
     "esbuild": "^0.28.2",
     "happy-dom": "^21.0.4",
-    "openclaw": "2026.11.2",
+    "openclaw": "2026.11.5",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"
   },
@@ -115,8 +115,8 @@
     "controlUi": "./src/control-ui.ts"
   },
   "overrides": {
-    "clawhub": {
-      "undici": "7.29.1"
+    "openclaw": {
+      "npm": "12.2.3"
     }
   }
 }
