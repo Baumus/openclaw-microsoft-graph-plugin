@@ -1,3 +1,5 @@
+import { ensureDirectoryWithinRoot } from "@openclaw/fs-safe/advanced";
+import { accountStateDir, selectAccount, type AccountConfig } from "./accounts.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
@@ -9,7 +11,7 @@ import { validatePolicy, type GraphPolicy } from "./policy.js";
 import { DeviceCodeSignIn } from "./device-code.js";
 import { isMicrosoftDeviceVerificationUri } from "./device-verification.js";
 
-type CliConfig = CredentialBackendConfig & { policy?: GraphPolicy };
+type CliConfig = CredentialBackendConfig & AccountConfig;
 type Receipt = { result: string; generation?: number; keyId?: string; digest?: string; binding?: string; timestamp: string };
 type Dependencies = { readPass?: typeof readCredential; writePass?: typeof writePassCredential };
 type CliApi = {
@@ -202,6 +204,38 @@ function gatewayHandler<T>(action: (params: unknown) => Promise<T>, validate: (v
 }
 
 export function registerCredentialGatewayMethods(api: GatewayApi, config: CliConfig, stateDir: () => string, operations: GatewayOperations = {}): void {
+  const handlers = new Map<string, Map<string, Parameters<GatewayApi["registerGatewayMethod"]>[1]>>();
+  for (const accountId of Object.keys(config.accounts ?? {})) {
+    const selected = selectAccount(config, accountId);
+    const perAccount = new Map<string, Parameters<GatewayApi["registerGatewayMethod"]>[1]>();
+    registerCredentialHandlers({ registerGatewayMethod(method, handler) { perAccount.set(method, handler); } },
+      selected, () => accountStateDir(stateDir(), accountId), operations);
+    handlers.set(accountId, perAccount);
+  }
+  registerCredentialHandlers({
+    registerGatewayMethod(method, handler, options) {
+      api.registerGatewayMethod(method, async (context) => {
+        if (!context.params || typeof context.params !== "object" || Array.isArray(context.params) || !Object.hasOwn(context.params, "accountId")) {
+          return handler(context);
+        }
+        const { accountId, ...params } = context.params as Record<string, unknown>;
+        const selected = typeof accountId === "string" ? handlers.get(accountId)?.get(method) : undefined;
+        if (!selected) return context.respond(true, { ok: false, error: "invalid_rpc_parameters" });
+        if (method === CREDENTIAL_GATEWAY_METHODS.deviceStart) {
+          const rootDir = stateDir();
+          const directory = await ensureDirectoryWithinRoot({
+            rootDir, requestedPath: accountStateDir(rootDir, accountId as string),
+            scopeLabel: "Microsoft Graph connection storage", mode: 0o700,
+          }).catch(() => ({ ok: false }));
+          if (!directory.ok) return context.respond(true, { ok: false, error: "credential_vault_unavailable" });
+        }
+        return selected({ ...context, params });
+      }, options);
+    },
+  }, config, stateDir, operations);
+}
+
+function registerCredentialHandlers(api: GatewayApi, config: CliConfig, stateDir: () => string, operations: GatewayOperations): void {
   api.registerGatewayMethod(CREDENTIAL_GATEWAY_METHODS.status, gatewayHandler(async (input) => {
     exactParams(input, []);
     return (operations.status ?? credentialVaultStatus)(config, stateDir());
@@ -362,31 +396,31 @@ export function registerCredentialCli(api: CliApi, dependencies: CliDependencies
   const spawnProcess = dependencies.spawn ?? spawn;
   api.registerCli(({ program }) => {
     const credentials = program.command("microsoft-graph").description("Microsoft Graph operator commands").command("credentials").description("Manage the encrypted Microsoft Graph credential");
-    credentials.command("sign-in").description("Sign in with Microsoft device code and create the encrypted vault").requiredOption("--client-id <app-id>").requiredOption("--tenant <tenant-id>").action(async (options: { clientId: string; tenant: string }) => {
+    credentials.command("sign-in").description("Sign in with Microsoft device code and create the encrypted vault").requiredOption("--client-id <app-id>").requiredOption("--tenant <tenant-id>").option("--account <account-id>").action(async (options: { clientId: string; tenant: string; account?: string }) => {
       if (!process.stdin.isTTY || !process.stderr.isTTY) throw new Error("interactive_confirmation_required");
-      const started = await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.deviceStart, { clientId: options.clientId, tenant: options.tenant }, deviceStartResult, invocation, spawnProcess) as { sessionId: string; userCode: string; verificationUri: string; expiresAt: string; scopes: string[] };
+      const started = await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.deviceStart, { clientId: options.clientId, tenant: options.tenant, ...(options.account ? { accountId: options.account } : {}) }, deviceStartResult, invocation, spawnProcess) as { sessionId: string; userCode: string; verificationUri: string; expiresAt: string; scopes: string[] };
       process.stderr.write(`Requested scopes: ${started.scopes.join(" ")}\nOpen ${started.verificationUri} and enter code ${started.userCode}. Complete sign-in with the approved client.\n`);
       while (Date.now() < Date.parse(started.expiresAt) + 5000) {
         await new Promise<void>((resolve) => setTimeout(resolve, 5000));
-        const status = await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.deviceStatus, { sessionId: started.sessionId }, deviceStatusResult, invocation, spawnProcess) as { state: string; error?: string; scopes?: string[] };
+        const status = await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.deviceStatus, { sessionId: started.sessionId, ...(options.account ? { accountId: options.account } : {}) }, deviceStatusResult, invocation, spawnProcess) as { state: string; error?: string; scopes?: string[] };
         if (status.state === "created") { printSanitized({ result: "created", scopes: status.scopes }); return; }
         if (status.state === "failed") throw new Error(status.error ?? "device_authorization_failed");
       }
       throw new Error("device_authorization_expired");
     });
-    credentials.command("reauthorize").description("Renew the existing Microsoft grant for all current policy scopes without deleting the vault").requiredOption("--client-id <app-id>").requiredOption("--tenant <tenant-id>").action(async (options: { clientId: string; tenant: string }) => {
+    credentials.command("reauthorize").description("Renew the existing Microsoft grant for all current policy scopes without deleting the vault").requiredOption("--client-id <app-id>").requiredOption("--tenant <tenant-id>").option("--account <account-id>").action(async (options: { clientId: string; tenant: string; account?: string }) => {
       if (!process.stdin.isTTY || !process.stderr.isTTY) throw new Error("interactive_confirmation_required");
-      const started = await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.deviceReauthorizeStart, { clientId: options.clientId, tenant: options.tenant }, deviceStartResult, invocation, spawnProcess) as { sessionId: string; userCode: string; verificationUri: string; expiresAt: string; scopes: string[] };
+      const started = await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.deviceReauthorizeStart, { clientId: options.clientId, tenant: options.tenant, ...(options.account ? { accountId: options.account } : {}) }, deviceStartResult, invocation, spawnProcess) as { sessionId: string; userCode: string; verificationUri: string; expiresAt: string; scopes: string[] };
       process.stderr.write(`Requested scopes: ${started.scopes.join(" ")}\nUse the SAME Microsoft account as the existing connection. Open ${started.verificationUri} and enter code ${started.userCode}.\n`);
       while (Date.now() < Date.parse(started.expiresAt) + 5000) {
         await new Promise<void>((resolve) => setTimeout(resolve, 5000));
-        const status = await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.deviceStatus, { sessionId: started.sessionId }, deviceStatusResult, invocation, spawnProcess) as { state: string; error?: string; scopes?: string[] };
+        const status = await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.deviceStatus, { sessionId: started.sessionId, ...(options.account ? { accountId: options.account } : {}) }, deviceStatusResult, invocation, spawnProcess) as { state: string; error?: string; scopes?: string[] };
         if (status.state === "created") { printSanitized({ result: "reauthorized", scopes: status.scopes }); return; }
         if (status.state === "failed") throw new Error(status.error ?? "device_authorization_failed");
       }
       throw new Error("device_authorization_expired");
     });
-    credentials.command("status").description("Show sanitized credential status").action(async () => printSanitized(await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.status, {}, credentialStatusResult, invocation, spawnProcess)));
+    credentials.command("status").description("Show sanitized credential status").option("--account <account-id>").action(async (options: { account?: string }) => printSanitized(await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.status, options?.account ? { accountId: options.account } : {}, credentialStatusResult, invocation, spawnProcess)));
     credentials.command("restore-pass").requiredOption("--destination <pass-ref>").option("--dry-run").option("--apply").action(async (options: { destination: string; dryRun?: boolean; apply?: boolean }) => { const destination = cliPassRef(options.destination); const apply = mode(options); if (apply) await confirm("RESTORE MICROSOFT GRAPH CREDENTIAL"); printSanitized(await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.restore, { destination, apply }, (value) => receiptResult(value, ["ready", "complete", "unknown"], true), invocation, spawnProcess)); });
     credentials.command("recover-refresh").requiredOption("--expected-binding <binding>").option("--dry-run").option("--apply").action(async (options: { expectedBinding: string; dryRun?: boolean; apply?: boolean }) => { const expectedBinding = cliBinding(options.expectedBinding); const apply = mode(options); if (apply) await confirm("RECOVER MICROSOFT GRAPH REFRESH"); printSanitized(await credentialGatewayRequest(CREDENTIAL_GATEWAY_METHODS.recover, { expectedBinding, apply }, (value) => receiptResult(value, ["quarantined", "recovered"], true), invocation, spawnProcess)); });
   }, { commands: ["microsoft-graph"], descriptors: [{ name: "microsoft-graph", description: "Microsoft Graph operator commands", hasSubcommands: true, machineOutput: () => true }] });

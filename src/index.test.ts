@@ -126,7 +126,7 @@ describe("microsoft-graph plugin contract", () => {
     const metadata = getToolPluginMetadata(entry)!;
     const tool = metadata.tools.find((candidate) => candidate.name === "onedrive_agents_instructions")!;
     expect(tool.optional).toBe(true);
-    expect(Object.keys((tool.parameters as any).properties)).toEqual(["rootLabel", "relativeDirectory", "acknowledgement"]);
+    expect(Object.keys((tool.parameters as any).properties)).toEqual(["rootLabel", "relativeDirectory", "acknowledgement", "accountId"]);
     expect((tool.parameters as any).required).toEqual(["rootLabel"]);
     expect((tool.parameters as any).additionalProperties).toBe(false);
     expect((tool.parameters as any).properties.relativeDirectory).toMatchObject({ type: "string", maxLength: 1024, default: "" });
@@ -652,7 +652,7 @@ describe("microsoft-graph plugin contract", () => {
     const metadata = getToolPluginMetadata(entry)!;
     for (const [domain, toolName] of [["calendar", "outlook_calendar_write"], ["mail", "outlook_mail_write"], ["contacts", "outlook_contacts_write"], ["todo", "microsoft_todo_write"]] as const) {
       const schema = metadata.tools.find((tool) => tool.name === toolName)?.parameters as any;
-      const schemaFields = Object.keys(schema.properties).sort();
+      const schemaFields = Object.keys(schema.properties).filter((field) => field !== "accountId").sort();
       const matrixFields = [...new Set([...Object.values(WRITE_ACTION_FIELDS[domain]).flat(), "chatConfirmed", "chatConfirmationToken", "timeoutMs"])].sort();
       expect(matrixFields, domain).toEqual(schemaFields);
       for (const [action, allowed] of Object.entries(WRITE_ACTION_FIELDS[domain])) {
