@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.25.8
+
+- Match the approved Control UI layout with desktop sidebar, responsive mobile navigation, a dedicated account page, and a saved-access overview.
+
 ## 3.25.7
 
 - Group OneDrive and Microsoft service access by agent, add a searchable agent picker, and preview Windows Explorer paths before adding folders. Use native Control UI theme tokens and preserve per-calendar access.

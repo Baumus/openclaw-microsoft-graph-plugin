@@ -42,6 +42,18 @@ try {
     });
     const info = page.locator(".mg-instructions-info"); const inputs = page.locator(".mg-instructions-control input");
     const settleRender = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.getByRole("heading", { name: "Übersicht", exact: true }).waitFor();
+    assert.equal(await page.locator(".mg-summary-row").count(), 5);
+    assert.equal(await page.locator(".mg-add-folder").count(), 0);
+    assert.equal(await page.locator(".mg-account-context").count(), 1);
+    const layout = await page.locator(".mg-shell").evaluate(shell => {
+      const nav = shell.querySelector("nav").getBoundingClientRect();
+      const body = shell.querySelector(".mg-content").getBoundingClientRect();
+      return { sideBySide: nav.right <= body.left, stacked: nav.bottom <= body.top };
+    });
+    assert.equal(mobile ? layout.stacked : layout.sideBySide, true);
+    await page.screenshot({ path: path.join(output, name + "-overview.png") });
+    await page.getByRole("navigation", { name: "Microsoft Graph" }).getByRole("button", { name: "OneDrive", exact: true }).click();
     await inputs.first().waitFor(); await settleRender();
     assert.equal(await inputs.count(), 2); assert.equal(await inputs.nth(0).isChecked(), false); assert.equal(await inputs.nth(1).isChecked(), true);
     // R-001: these exact labels formerly aliased the first info button and

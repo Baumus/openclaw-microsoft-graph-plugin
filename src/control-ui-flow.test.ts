@@ -60,6 +60,7 @@ describe("guided Microsoft sign-in", () => {
     const view = renewalView();
     try {
       await view.settle();
+      if (!view.container.querySelector("#microsoft-connect")) clickByText(view.container, "Konten");
       clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
       const old = deferredReply();
       view.responses["microsoft-graph.credentials.device-status"] = old.promise;
@@ -67,6 +68,7 @@ describe("guided Microsoft sign-in", () => {
       expect(view.calls.at(-1)).toMatchObject({ method: "microsoft-graph.credentials.device-status", params: { sessionId: "11111111-1111-1111-1111-111111111111" } });
       clickByText(view.container, "Anmeldung abbrechen"); await view.settle();
       view.responses["microsoft-graph.credentials.reauthorize-start"] = secondSession;
+      if (!view.container.querySelector("#microsoft-connect")) clickByText(view.container, "Konten");
       clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
       const credentialReads = view.calls.filter(call => call.method === "microsoft-graph.credentials.status").length;
       if (outcome === "rejected") old.reject(new Error("synthetic delayed disconnect"));
@@ -92,7 +94,8 @@ describe("guided Microsoft sign-in", () => {
         const view = renewalView(); await view.settle();
         const old = deferredReply();
         if (phase === "start") view.responses["microsoft-graph.credentials.reauthorize-start"] = old.promise;
-        clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
+        if (!view.container.querySelector("#microsoft-connect")) clickByText(view.container, "Konten");
+      clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
         if (phase === "status") {
           view.responses["microsoft-graph.credentials.device-status"] = old.promise;
           await vi.advanceTimersByTimeAsync(4000); await view.settle();
@@ -109,7 +112,8 @@ describe("guided Microsoft sign-in", () => {
           clickByText(view.container, "Anmeldung abbrechen"); await view.settle();
         }
         view.responses["microsoft-graph.credentials.reauthorize-start"] = secondSession;
-        clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
+        if (!view.container.querySelector("#microsoft-connect")) clickByText(view.container, "Konten");
+      clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
         if (rejected) old.reject(new Error("synthetic stale response"));
         else old.resolve(phase === "start" ? view.responses["microsoft-graph.credentials.device-start"] : { ok: true, value: { state: "failed", error: "device_authorization_declined" } });
         await view.settle();
@@ -131,7 +135,8 @@ describe("guided Microsoft sign-in", () => {
         const view = renewalView(); await view.settle();
         const old = deferredReply();
         if (phase === "start") view.responses["microsoft-graph.credentials.reauthorize-start"] = old.promise;
-        clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
+        if (!view.container.querySelector("#microsoft-connect")) clickByText(view.container, "Konten");
+      clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
         if (phase === "status") {
           view.responses["microsoft-graph.credentials.device-status"] = old.promise;
           await vi.advanceTimersByTimeAsync(4000); await view.settle();
@@ -155,6 +160,7 @@ describe("guided Microsoft sign-in", () => {
     const view = renewalView();
     try {
       await view.settle();
+      if (!view.container.querySelector("#microsoft-connect")) clickByText(view.container, "Konten");
       clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
       expect(view.calls.find(call => call.method === "microsoft-graph.credentials.reauthorize-start")?.params).toEqual({});
       await vi.advanceTimersByTimeAsync(4000); await view.settle();
@@ -172,12 +178,14 @@ describe("guided Microsoft sign-in", () => {
     const view = mount();
     view.responses["microsoft-graph.credentials.status"] = { ok: true, value: { policyVersion: 2, credential: { result: "valid", missingScopes: ["Contacts.ReadWrite"] } } };
     await view.settle();
+    clickByText(view.container, "Konten");
     expect(view.container.textContent).toContain("Microsoft-Zugang erneut autorisieren");
     expect(view.container.textContent).not.toContain("openclaw microsoft-graph");
     expect(view.container.querySelector(".mg-auth input")).toBeNull();
     expect(view.container.textContent).not.toContain("Verbindung hergestellt");
     view.responses["microsoft-graph.credentials.reauthorize-start"] = view.responses["microsoft-graph.credentials.device-start"];
-    clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
+    if (!view.container.querySelector("#microsoft-connect")) clickByText(view.container, "Konten");
+      clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
     expect(view.calls.find(call => call.method === "microsoft-graph.credentials.reauthorize-start")?.params).toEqual({});
     expect(view.calls.some(call => call.method === "microsoft-graph.credentials.device-start")).toBe(false);
     expect(view.container.textContent).toContain("ABCD-EFGH");
@@ -187,6 +195,7 @@ describe("guided Microsoft sign-in", () => {
     const view = mount({ clientId, tenant });
     view.responses["microsoft-graph.credentials.status"] = { ok: true, value: { policyVersion: 2, credential: { result: "valid", missingScopes: [] } } };
     await view.settle();
+    clickByText(view.container, "Konten");
     expect(view.container.textContent).toContain("Microsoft-Berechtigungen erneuern");
     expect(view.container.textContent).not.toContain("openclaw microsoft-graph");
     const disclosure = view.container.querySelector<HTMLDetailsElement>(".mg-reauthorize-help")!;
@@ -195,7 +204,8 @@ describe("guided Microsoft sign-in", () => {
     expect(view.container.querySelector<HTMLDetailsElement>(".mg-reauthorize-help")!.open).toBe(true);
     expect(document.activeElement?.tagName).toBe("SUMMARY");
     view.responses["microsoft-graph.credentials.reauthorize-start"] = view.responses["microsoft-graph.credentials.device-start"];
-    clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
+    if (!view.container.querySelector("#microsoft-connect")) clickByText(view.container, "Konten");
+      clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
     expect(view.calls.find(call => call.method === "microsoft-graph.credentials.reauthorize-start")?.params).toEqual({});
     view.dispose();
   });
@@ -203,6 +213,7 @@ describe("guided Microsoft sign-in", () => {
     const view = mount({ clientId, tenant });
     view.responses["microsoft-graph.credentials.status"] = { ok: true, value: { policyVersion: 2, credential: { result: "valid", missingScopes: [] } } };
     await view.settle();
+    clickByText(view.container, "Konten");
     expect(view.container.textContent).toContain("Verbindung hergestellt");
     view.responses["microsoft-graph.credentials.status"] = new Error("gateway offline");
     clickByText(view.container, "Berechtigungen erneut prüfen"); await view.settle();
@@ -214,7 +225,7 @@ describe("guided Microsoft sign-in", () => {
     view.dispose();
   });
   it("shows Contacts as an optional default-deny service without changing legacy policy until selected", async () => {
-    const view = mount(); await view.settle();
+    const view = mount(); await view.settle(); if (view.container.querySelector(".mg-steps")) clickByText(view.container, "Konten");
     clickByText(view.container, "Agent-Zugriff");
     const card = [...view.container.querySelectorAll("fieldset")].find(fieldset => fieldset.querySelector("legend")?.textContent === "Kontakte");
     expect(card).toBeTruthy();
@@ -227,7 +238,7 @@ describe("guided Microsoft sign-in", () => {
     view.dispose();
   });
   it("uses saved identifiers without claiming they were verified, then shows the device-code steps", async () => {
-    const view = mount({ clientId, tenant }); await view.settle();
+    const view = mount({ clientId, tenant }); await view.settle(); if (view.container.querySelector(".mg-steps")) clickByText(view.container, "Konten");
     expect(view.container.textContent).toContain("Anmeldung und Freigabe prüfen wir beim Verbinden");
     expect(view.container.querySelector("input[placeholder^='0000']")).toBeNull();
     clickByText(view.container, "Mit Microsoft verbinden"); await view.settle();
@@ -240,7 +251,7 @@ describe("guided Microsoft sign-in", () => {
   it("shows a user-facing failure path and copies bounded diagnostics for an administrator", async () => {
     vi.useFakeTimers();
     try {
-      const view = mount({ clientId, tenant }); await view.settle();
+      const view = mount({ clientId, tenant }); await view.settle(); if (view.container.querySelector(".mg-steps")) clickByText(view.container, "Konten");
       clickByText(view.container, "Mit Microsoft verbinden"); await view.settle();
       await vi.advanceTimersByTimeAsync(4000); await view.settle();
       expect(view.container.textContent).toContain("Anmeldung nicht abgeschlossen");
@@ -254,7 +265,7 @@ describe("guided Microsoft sign-in", () => {
     } finally { vi.useRealTimers(); }
   });
   it("preserves expanded help, unfinished text, focus and caret on background updates", async () => {
-    const view = mount(); await view.settle();
+    const view = mount(); await view.settle(); if (view.container.querySelector(".mg-steps")) clickByText(view.container, "Konten");
     const help = view.container.querySelector<HTMLDetailsElement>(".mg-auth details")!;
     help.open = true;
     const client = view.container.querySelector<HTMLInputElement>(".mg-auth input")!;
@@ -280,6 +291,7 @@ describe("guided Microsoft sign-in", () => {
       view.responses["microsoft-graph.credentials.status"] = { ok: true, value: { policyVersion: 2, credential: { result: "valid", missingScopes: ["Mail.Read"] } } };
       await view.settle();
       view.responses["microsoft-graph.credentials.reauthorize-start"] = view.responses["microsoft-graph.credentials.device-start"];
+      if (!view.container.querySelector("#microsoft-connect")) clickByText(view.container, "Konten");
       clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
       expect(view.container.textContent).toContain("Microsoft-Anmeldung abschließen");
       view.responses["microsoft-graph.credentials.device-status"] = { ok: true, value: { state: "pending" } };
@@ -291,6 +303,7 @@ describe("guided Microsoft sign-in", () => {
       clickByText(view.container, "Anmeldung abbrechen"); await view.settle();
       expect(view.container.textContent).not.toContain("ABCD-EFGH");
       expect(view.container.textContent).toContain("Die Anmeldung wurde abgebrochen");
+      if (!view.container.querySelector("#microsoft-connect")) clickByText(view.container, "Konten");
       clickByText(view.container, "Microsoft-Berechtigungen erneuern"); await view.settle();
       view.responses["microsoft-graph.credentials.status"] = { ok: true, value: { policyVersion: 2, credential: { result: "valid", missingScopes: [] } } };
       view.responses["microsoft-graph.credentials.device-status"] = { ok: true, value: { state: "created", scopes: ["Mail.Read"] } };
@@ -301,7 +314,7 @@ describe("guided Microsoft sign-in", () => {
     } finally { vi.useRealTimers(); }
   });
   it("never offers credential actions to a non-admin, including after authority loss", async () => {
-    const view = mount({ clientId, tenant }); await view.settle();
+    const view = mount({ clientId, tenant }); await view.settle(); if (view.container.querySelector(".mg-steps")) clickByText(view.container, "Konten");
     view.host.connection.canAdmin = false; view.notify(); await view.settle();
     expect(view.container.textContent).toContain("Administratorrechte");
     expect(view.container.querySelector("button")).toBeNull();
@@ -309,7 +322,7 @@ describe("guided Microsoft sign-in", () => {
     view.dispose();
   });
   it("keeps admin setup separate and saves only valid identifiers after a successful start", async () => {
-    const view = mount(); await view.settle();
+    const view = mount(); await view.settle(); if (view.container.querySelector(".mg-steps")) clickByText(view.container, "Konten");
     expect(view.container.textContent).toContain("Bitte deinen Admin um Anwendungs-ID und Verzeichnis-ID");
     expect(view.container.querySelector("details")?.textContent).toContain("Einrichtung für Admin öffnen");
     const fields = [...view.container.querySelectorAll(".mg-auth input")];

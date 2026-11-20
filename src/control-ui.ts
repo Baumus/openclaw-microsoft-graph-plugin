@@ -415,38 +415,45 @@ class ConfigurationPage {
     setLocale(this.host.locale);
     if (this.dirty && this.operation?.phase === "applied") { operationsByHost.delete(this.host); this.operation = undefined; }
     const main = el("main", "mg-ui"); main.dir = isRtl() ? "rtl" : "ltr"; const header = el("header", "mg-header");
-    append(header, el("div", "mg-eyebrow", "Plugins / Connect Microsoft 365 to OpenClaw"), el("h1", "", "Connect Microsoft 365 to OpenClaw"), el("p", "mg-lead", "Lege fest, welcher Agent auf welche Microsoft-Daten zugreifen darf und wann eine Freigabe nötig ist."));
+    append(header, el("strong", "", "OpenClaw / Integrationen"));
     append(main, header);
     if (!this.host.connection.connected) { append(main, el("p", "mg-message", this.operation ? "Verbindung unterbrochen. Der Status wird nach Wiederverbindung geprüft." : "Verbinde dich mit dem Gateway, um die Regeln zu bearbeiten.")); this.container.replaceChildren(main); return; }
     if (!this.host.connection.canAdmin) { append(main, el("p", "mg-message", "Zum Anzeigen und Ändern dieser Regeln brauchst du Administratorrechte.")); this.container.replaceChildren(main); return; }
     if (!this.snapshot) { append(main, el("p", "mg-message", this.error || "Regeln werden geladen…")); this.container.replaceChildren(main); return; }
-    const account = el("div", "mg-account-context");
-    append(account, el("strong", "", "Microsoft Graph"), el("span", "mg-hint", "Aktuell verbundenes Microsoft-Konto"));
-    append(main, account);
-    this.renderSetup(main);
-    if (this.step >= 4) this.renderSignIn(main);
-    const rail = el("nav", "mg-steps"); rail.setAttribute("aria-label", localize("Konfigurationsschritte"));
-    const pages = [["Übersicht", 4], ["Konten", 5], ["Agent-Zugriff", 1], ["Freigaben", 2], ["OneDrive", 0], ["Prüfen", 3]] as const;
+    const shell = el("div", "mg-shell");
+    const content = el("div", "mg-content");
+    const rail = el("nav", "mg-steps"); rail.setAttribute("aria-label", "Microsoft Graph");
+    const pages = [["Übersicht", 4], ["Konten", 5], ["Agent-Zugriff", 1], ["Freigaberegeln", 2], ["OneDrive", 0], ["Prüfen", 3]] as const;
     for (const [name, index] of pages) {
       const tab = this.action(name, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost");
       tab.disabled = this.locked;
       if (index === this.step) tab.setAttribute("aria-current", "page");
       append(rail, tab);
-    } append(main, rail);
-    if (this.included && (this.dirty || !!this.error)) append(main, el("p", "mg-banner", format("Konfigurationsquelle: {name}. Änderungen werden beim Speichern in diese Datei geschrieben.", { name: this.includeName.slice(this.includeName.indexOf(":") + 1) })));
-    this.renderSaveStatus(main);
+    }
+    append(shell, rail, content); append(main, shell);
+    const account = el("div", "mg-account-context");
+    const product = el("div");
+    append(product, el("small", "mg-hint", "Integration"), el("strong", "", "Microsoft Graph"));
+    const accountStatus = this.credential?.result === "valid" ? "Microsoft-Konto verbunden"
+      : this.credential?.result === "missing" ? "Kein Microsoft-Konto verbunden" : "Microsoft-Kontostatus nicht bestätigt";
+    append(account, product, el("span", "mg-hint", accountStatus));
+    append(content, account, el("h1", "mg-page-title", pages.find(([, index]) => index === this.step)?.[0] ?? "Übersicht"));
+    this.renderSetup(content);
+    if (this.step === 5 || this.authState === "pending") this.renderSignIn(content);
+    if (this.included && (this.dirty || !!this.error)) append(content, el("p", "mg-banner", format("Konfigurationsquelle: {name}. Änderungen werden beim Speichern in diese Datei geschrieben.", { name: this.includeName.slice(this.includeName.indexOf(":") + 1) })));
+    this.renderSaveStatus(content);
     const body = el("section", "mg-body");
-    if (this.step === 0 || this.step === 4) this.renderOneDrive(body);
+    if (this.step === 4) this.renderOverview(body);
+    else if (this.step === 0) this.renderOneDrive(body);
     else if (this.step === 1) this.renderServices(body);
     else if (this.step === 2) this.renderApprovals(body);
     else if (this.step === 3) this.renderReview(body);
-    else append(body, el("h2", "", "Microsoft-Konto"), el("p", "", "Diese Installation verwendet eine Microsoft-Verbindung."));
-    append(main, body);
-    if (this.error) append(main, el("p", "mg-error", this.error)); if (this.success) append(main, el("p", "mg-success", this.success));
+    else append(body, el("p", "mg-hint", "Diese Installation verwendet eine Microsoft-Verbindung."));
+    append(content, body);
+    if (this.error) append(content, el("p", "mg-error", this.error)); if (this.success) append(content, el("p", "mg-success", this.success));
     const footer = el("footer", "mg-footer"); append(footer, el("span", "mg-dirty", this.dirty ? "Ungespeicherte Änderungen" : "Keine ungespeicherten Änderungen"));
     if (this.dirty) append(footer, this.action("Änderungen verwerfen", () => { if (window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { this.policy = clone(this.initial!); this.error = ""; this.success = ""; this.render(); } }, "ghost"));
-    if (this.step > 0 && this.step < 4) append(footer, this.action("Zurück", () => { this.step--; this.render(); }));
-    if (this.step < 3) append(footer, this.action("Weiter", () => { this.step++; this.render(); if (this.step === 3) void this.validate(); }, "primary"));
+    if (this.step !== 3 && this.dirty) append(footer, this.action("Änderungen prüfen", () => { this.step = 3; this.render(); void this.validate(); }, "primary"));
     if (this.step === 3 && this.dirty) { const save = this.action(this.operation?.phase === "validating" || this.operation?.phase === "saving" ? "Speichert …" : "Speichern und anwenden", () => { void this.save(); }, "primary"); save.disabled = this.authBusy || this.authState === "pending"; append(footer, save); }
     if (this.step === 3 && this.dirty && !this.operation) append(footer, el("p", "mg-save-hint", "Wir speichern die Regeln und wenden sie automatisch an. Die Verbindung kann dabei kurz unterbrochen werden."));
     if (this.operation && !["failed", "applied"].includes(this.operation.phase)) {
@@ -454,7 +461,7 @@ class ConfigurationPage {
       append(footer, el("span", "mg-footer-status", saving ? "Speichert …" : this.operation.phase === "applying" ? "Wendet an …" : "Status noch nicht bestätigt"));
       if (["pending", "unknown", "conflict"].includes(this.operation.phase)) this.appendStatusButton(footer);
     }
-    append(main, footer);
+    append(content, footer);
     main.setAttribute("aria-busy", String(this.busy || this.operation?.phase === "saving" || this.operation?.phase === "applying"));
     if (this.locked) for (const control of main.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>("button:not([data-safe-status]), input, select, textarea")) control.disabled = true;
     const focused = this.container.contains(document.activeElement) ? (document.activeElement as HTMLElement) : undefined;
@@ -605,6 +612,25 @@ class ConfigurationPage {
     } catch { this.error = "Der Vorgang konnte nicht beendet werden. Prüfe Verbindung und aktuellen Stand."; }
     finally { this.busy = false; this.render(); }
   }
+  private renderOverview(body: HTMLElement) {
+    const section = el("section", "mg-section mg-overview");
+    append(section, el("h2", "", "Dienste und Zugriff"));
+    const policy = this.initial ?? blankPolicy();
+    const rows = el("dl", "mg-service-summary");
+    const roots = policy.services.onedrive.allowed_roots.filter(root =>
+      Object.values(root.agents).some(grant => Object.values(grant.permissions).some(Boolean)));
+    for (const service of ["onedrive", "mail", "calendar", "todo", "contacts"] as const) {
+      const count = service === "onedrive" ? roots.length : Object.keys(policy.services[service]?.agents ?? {}).length;
+      const row = el("div", "mg-summary-row");
+      const description = count === 0 ? "Nicht freigegeben" : service === "onedrive"
+        ? format("{count} Ordner mit Freigabe", { count }) : format("{count} Agenten mit Freigabe", { count });
+      append(row, el("dt", "", serviceNames[service]), el("dd", "mg-count", description));
+      append(rows, row);
+    }
+    append(section, rows, el("p", "mg-hint", "Gezeigt werden gespeicherte Regeln. Ein Zugriffstest ist damit nicht bestätigt."));
+    append(body, section);
+  }
+
   private renderSetup(main: HTMLElement) {
     const configured = this.snapshot?.config?.plugins?.entries?.[id]?.config?.credentialVaultKey !== undefined;
     const savedPolicy = this.initial ?? blankPolicy();
@@ -652,7 +678,7 @@ class ConfigurationPage {
     if (!configured) { const link = el("a", "mg-button secondary", "Vault-Anleitung öffnen"); link.href = "https://clawhub.ai/packages/@baumus/openclaw-microsoft-graph"; link.target = "_blank"; link.rel = "noopener noreferrer"; append(card, link); }
     else if (!grants && !this.dirty) append(card, this.action("Zugriff festlegen", () => { this.step = 1; this.render(); }, "primary"));
     else if (this.dirty) append(card, this.action("Zum Prüfen", () => { this.step = 3; this.render(); void this.validate(); }, "primary"));
-    else if (grants && this.applicationStatus === "applied" && !connected && this.credential?.result === "missing") append(card, this.action("Mit Microsoft verbinden", () => { this.container.querySelector("#microsoft-connect")?.scrollIntoView({ behavior: "smooth", block: "start" }); }, "primary"));
+    else if (grants && this.applicationStatus === "applied" && !connected && this.credential?.result === "missing") append(card, this.action("Mit Microsoft verbinden", () => { this.step = 5; this.render(); }, "primary"));
     else if (this.credential?.result === "unavailable") append(card, this.action("Berechtigungen erneut prüfen", () => { void this.refreshCredential().then(() => this.render()); }, "secondary"));
     append(main, card);
   }
