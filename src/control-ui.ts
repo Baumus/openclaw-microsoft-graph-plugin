@@ -115,7 +115,7 @@ class ConfigurationPage {
   private policy = blankPolicy();
   private included = false;
   private includeName = "";
-  private step = 0;
+  private step = 4;
   private selectedAgent = "";
   private scopes: string[] = [];
   private initialScopes: string[] = [];
@@ -420,17 +420,32 @@ class ConfigurationPage {
     if (!this.host.connection.connected) { append(main, el("p", "mg-message", this.operation ? "Verbindung unterbrochen. Der Status wird nach Wiederverbindung geprüft." : "Verbinde dich mit dem Gateway, um die Regeln zu bearbeiten.")); this.container.replaceChildren(main); return; }
     if (!this.host.connection.canAdmin) { append(main, el("p", "mg-message", "Zum Anzeigen und Ändern dieser Regeln brauchst du Administratorrechte.")); this.container.replaceChildren(main); return; }
     if (!this.snapshot) { append(main, el("p", "mg-message", this.error || "Regeln werden geladen…")); this.container.replaceChildren(main); return; }
+    const account = el("div", "mg-account-context");
+    append(account, el("strong", "", "Microsoft Graph"), el("span", "mg-hint", "Aktuell verbundenes Microsoft-Konto"));
+    append(main, account);
     this.renderSetup(main);
-    this.renderSignIn(main);
+    if (this.step >= 4) this.renderSignIn(main);
     const rail = el("nav", "mg-steps"); rail.setAttribute("aria-label", localize("Konfigurationsschritte"));
-    ["OneDrive", "Dienste", "Freigaben", "Prüfen"].forEach((name, index) => { const tab = this.action(`${index + 1}  ${localize(name)}`, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost"); tab.disabled = this.locked; tab.setAttribute("aria-current", index === this.step ? "step" : "false"); append(rail, tab); }); append(main, rail);
+    const pages = [["Übersicht", 4], ["Konten", 5], ["Agent-Zugriff", 1], ["Freigaben", 2], ["OneDrive", 0], ["Prüfen", 3]] as const;
+    for (const [name, index] of pages) {
+      const tab = this.action(name, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost");
+      tab.disabled = this.locked;
+      if (index === this.step) tab.setAttribute("aria-current", "page");
+      append(rail, tab);
+    } append(main, rail);
     if (this.included && (this.dirty || !!this.error)) append(main, el("p", "mg-banner", format("Konfigurationsquelle: {name}. Änderungen werden beim Speichern in diese Datei geschrieben.", { name: this.includeName.slice(this.includeName.indexOf(":") + 1) })));
     this.renderSaveStatus(main);
-    const body = el("section", "mg-body"); if (this.step === 0) this.renderOneDrive(body); else if (this.step === 1) this.renderServices(body); else if (this.step === 2) this.renderApprovals(body); else this.renderReview(body); append(main, body);
+    const body = el("section", "mg-body");
+    if (this.step === 0 || this.step === 4) this.renderOneDrive(body);
+    else if (this.step === 1) this.renderServices(body);
+    else if (this.step === 2) this.renderApprovals(body);
+    else if (this.step === 3) this.renderReview(body);
+    else append(body, el("h2", "", "Microsoft-Konto"), el("p", "", "Diese Installation verwendet eine Microsoft-Verbindung."));
+    append(main, body);
     if (this.error) append(main, el("p", "mg-error", this.error)); if (this.success) append(main, el("p", "mg-success", this.success));
     const footer = el("footer", "mg-footer"); append(footer, el("span", "mg-dirty", this.dirty ? "Ungespeicherte Änderungen" : "Keine ungespeicherten Änderungen"));
     if (this.dirty) append(footer, this.action("Änderungen verwerfen", () => { if (window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { this.policy = clone(this.initial!); this.error = ""; this.success = ""; this.render(); } }, "ghost"));
-    if (this.step > 0) append(footer, this.action("Zurück", () => { this.step--; this.render(); }));
+    if (this.step > 0 && this.step < 4) append(footer, this.action("Zurück", () => { this.step--; this.render(); }));
     if (this.step < 3) append(footer, this.action("Weiter", () => { this.step++; this.render(); if (this.step === 3) void this.validate(); }, "primary"));
     if (this.step === 3 && this.dirty) { const save = this.action(this.operation?.phase === "validating" || this.operation?.phase === "saving" ? "Speichert …" : "Speichern und anwenden", () => { void this.save(); }, "primary"); save.disabled = this.authBusy || this.authState === "pending"; append(footer, save); }
     if (this.step === 3 && this.dirty && !this.operation) append(footer, el("p", "mg-save-hint", "Wir speichern die Regeln und wenden sie automatisch an. Die Verbindung kann dabei kurz unterbrochen werden."));
@@ -570,7 +585,7 @@ class ConfigurationPage {
       append(status, el("p", "mg-hint", "Dabei werden nur die gespeicherten Regeln übernommen, nicht erneut gespeichert. Laufende Arbeit wird nicht abgebrochen."));
     }
     if (phase === "pending") {
-      const overview = button("Übersicht anzeigen", () => { this.step = 0; this.render(); }); overview.dataset.safeStatus = "true"; append(status, overview);
+      const overview = button("Übersicht anzeigen", () => { this.step = 4; this.render(); }); overview.dataset.safeStatus = "true"; append(status, overview);
     }
     if (phase === "conflict" || phase === "failed" && this.operation?.policyPrepared || phase === "unknown" && this.operation?.intent?.state === "issued") {
       const reload = button("Aktuellen Stand laden", () => { if (window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) void this.abandonOperation(); });
@@ -802,30 +817,142 @@ class ConfigurationPage {
     if (this.authError && (this.authState !== "failed" || this.authFailureCode === "device_authorization_cancelled")) append(card, el("p", "mg-error", this.authError));
     append(main, card);
   }
+  private recentAgents: string[] = [];
+
   private renderAgentPicker(body: HTMLElement): string {
     const roster = this.host.agents.rows;
-    const pick = el("label", "mg-field"); append(pick, el("span", "mg-label", "Agent auswählen"));
-    const select = el("select");
-    for (const agent of roster) { const option = el("option", "", agent.name ?? agent.id); option.value = agent.id; option.selected = agent.id === this.selectedAgent; append(select, option); }
-    select.addEventListener("change", () => { this.selectedAgent = select.value; this.render(); }); append(pick, select); append(body, pick);
-    return this.selectedAgent || roster[0]?.id || "";
+    const current = roster.find(agent => agent.id === this.selectedAgent) ?? roster[0];
+    if (!current) return "";
+    const context = el("div", "mg-agent-context");
+    const identity = el("div");
+    append(identity, el("span", "mg-hint", "Ausgewählter Agent"), el("strong", "", current.name ?? current.id));
+    const dialog = el("dialog", "mg-agent-picker");
+    dialog.setAttribute("aria-label", localize("Agent auswählen"));
+    const search = el("input");
+    search.type = "search";
+    search.setAttribute("aria-label", localize("Agent suchen"));
+    search.placeholder = localize("Agent suchen");
+    const count = el("p", "mg-hint");
+    count.setAttribute("role", "status");
+    const list = el("div", "mg-agent-options");
+    const populate = () => {
+      const query = search.value.trim().toLocaleLowerCase();
+      const ordered = [...new Set([...this.recentAgents, ...roster.map(agent => agent.id)])];
+      const matches = ordered.flatMap(id => {
+        const agent = roster.find(entry => entry.id === id);
+        return agent && [agent.id, agent.name ?? ""].some(value => value.toLocaleLowerCase().includes(query)) ? [agent] : [];
+      });
+      count.textContent = matches.length ? format("{count} Agenten", { count: matches.length }) : localize("Keine Agenten gefunden.");
+      list.replaceChildren(...matches.map(agent => {
+        const option = this.action(agent.name ?? agent.id, () => {
+          this.selectedAgent = agent.id;
+          this.recentAgents = [agent.id, ...this.recentAgents.filter(id => id !== agent.id)].slice(0, 4);
+          dialog.close();
+          this.render();
+          this.container.querySelector<HTMLButtonElement>(".mg-switch-agent")?.focus();
+        });
+        option.setAttribute("aria-pressed", String(agent.id === current.id));
+        if (agent.name && agent.name !== agent.id) append(option, el("small", "mg-hint", agent.id));
+        return option;
+      }));
+    };
+    search.addEventListener("input", populate);
+    const open = this.action("Agent wechseln", () => {
+      search.value = "";
+      populate();
+      dialog.showModal();
+      search.focus();
+    }, "mg-switch-agent");
+    dialog.addEventListener("close", () => open.focus());
+    append(dialog, search, count, list, this.action("Schließen", () => dialog.close()));
+    append(context, identity, open, dialog);
+    append(body, context);
+    return current.id;
   }
+
+  private renderAgentFolders(body: HTMLElement, agentId: string) {
+    const section = el("section", "mg-section");
+    append(section, el("h3", "", "OneDrive"), el("p", "mg-hint", "Freigaben gelten für den Ordner und seine Unterordner."));
+    const roots = this.policy.services.onedrive.allowed_roots;
+    for (const root of roots) {
+      const row = el("fieldset", "mg-agent-folder");
+      append(row, el("legend", "mg-root-path", root.path.replaceAll("/", "\\")));
+      for (const [right, label] of [["read", "Lesen"], ["write", "Schreiben"], ["delete", "Löschen"]] as const) {
+        const restricted = !root.permissions[right] && Object.entries(root.agents)
+          .some(([id, grant]) => id !== agentId && grant.permissions[right]);
+        const control = this.checkbox(row, label, root.agents[agentId]?.permissions[right] === true, checked => {
+          const grant = root.agents[agentId] ?? { permissions: { read: false, write: false, delete: false } };
+          grant.permissions[right] = checked;
+          if (Object.values(grant.permissions).some(Boolean)) root.agents[agentId] = grant;
+          else delete root.agents[agentId];
+          if (checked) root.permissions[right] = true;
+        });
+        if (restricted) {
+          control.disabled = true;
+          control.title = localize("Durch die Ordnerregel begrenzt.");
+        }
+      }
+      append(section, row);
+    }
+    if (!roots.length) append(section, el("p", "mg-hint", "Noch kein OneDrive-Ordner freigegeben."));
+    this.renderFolderInput(section);
+    append(body, section);
+  }
+
+  private folderPreview?: { path: string; drive_id: string; item_id: string };
+
   private async addFolder() {
     if (this.locked) return;
-    const path = this.newFolderPath.trim();
-    if (!path.startsWith("/")) { this.error = "Bitte einen Ordnerpfad ab / eingeben."; this.render(); return; }
+    let path = this.newFolderPath.trim().replace(/^"(.*)"$/, "$1").replaceAll("\\", "/");
+    if (/^[a-z]:\//i.test(path)) {
+      const parts = path.slice(3).split("/");
+      const root = parts.findIndex(part => /^OneDrive(?: - .+)?$/i.test(part));
+      path = root < 0 ? "" : "/" + parts.slice(root + 1).join("/");
+    }
+    if (!path.startsWith("/") || path.startsWith("//") || path === "/" || path.split("/").some(part => part === "." || part === "..")) { this.error = "Bitte einen OneDrive-Ordnerpfad eingeben."; this.render(); return; }
+    this.folderPreview = undefined;
     this.busy = true; this.error = ""; this.render();
     try {
       const resolved = await this.host.request<{ path: string; drive_id: string; item_id: string }>("microsoft-graph.configuration.resolveFolder", { path });
-      const roots = this.policy.services.onedrive.allowed_roots;
-      if (roots.some(root => root.drive_id === resolved.drive_id && root.item_id === resolved.item_id)) { this.error = "Dieser Ordner ist bereits freigegeben. Wähle in der Ordnerkachel die Rechte für den Agenten."; return; }
-      let label = "folder_" + (roots.length + 1); let suffix = roots.length + 1;
-      while (roots.some(root => root.label === label)) label = "folder_" + ++suffix;
-      roots.push({ label, path: resolved.path, drive_id: resolved.drive_id, item_id: resolved.item_id, include_descendants: true, permissions: { read: false, write: false, delete: false }, agents: {} });
-      this.newFolderPath = ""; this.success = "Ordner geprüft. Wähle jetzt die Rechte für den Agenten.";
+      if (this.disposed || this.signal.aborted || !this.host.connection.connected || !this.host.connection.canAdmin) return;
+      this.folderPreview = resolved;
     } catch { this.error = "Ordner nicht gefunden oder nicht prüfbar. Prüfe den Pfad und die OneDrive-Verbindung."; }
     finally { this.busy = false; this.render(); }
   }
+
+  private acceptFolder() {
+    const resolved = this.folderPreview;
+    if (!resolved || this.locked) return;
+    this.folderPreview = undefined;
+    const roots = this.policy.services.onedrive.allowed_roots;
+    if (roots.some(root => root.drive_id === resolved.drive_id && root.item_id === resolved.item_id)) { this.error = "Dieser Ordner ist bereits freigegeben. Wähle in der Ordnerkachel die Rechte für den Agenten."; this.render(); return; }
+    let label = "folder_" + (roots.length + 1); let suffix = roots.length + 1;
+    while (roots.some(root => root.label === label)) label = "folder_" + ++suffix;
+    roots.push({ label, path: resolved.path, drive_id: resolved.drive_id, item_id: resolved.item_id, include_descendants: true, permissions: { read: false, write: false, delete: false }, agents: {} });
+    this.newFolderPath = ""; this.success = "Ordner geprüft. Wähle jetzt die Rechte für den Agenten.";
+    this.render();
+  }
+
+  private renderFolderInput(body: HTMLElement) {
+    const add = el("section", "mg-add-folder");
+    append(add, el("h3", "", "Ordner hinzufügen"), el("p", "mg-hint", "Windows-Explorer-Pfad einfügen. Geprüft wird der Pfad im verbundenen OneDrive."));
+    const input = this.field(add, "Ordnerpfad", this.newFolderPath, value => {
+      this.newFolderPath = value;
+      this.folderPreview = undefined;
+      add.querySelector(".mg-folder-preview")?.remove();
+    });
+    input.placeholder = "\\Projects\\Clients";
+    const check = () => { this.newFolderPath = input.value.trim(); void this.addFolder(); };
+    input.addEventListener("keydown", event => { if (event.key === "Enter" && !this.locked) { event.preventDefault(); check(); } });
+    append(add, this.action("Pfad prüfen", check));
+    if (this.folderPreview) {
+      const preview = el("div", "mg-folder-preview mg-status");
+      append(preview, el("p", "", format("Im verbundenen OneDrive gefunden: {path}", { path: this.folderPreview.path })), this.action("Ordner übernehmen", () => this.acceptFolder(), "primary"));
+      append(add, preview);
+    }
+    append(body, add);
+  }
+
   private renderOneDrive(body: HTMLElement) {
     const roots = this.policy.services.onedrive.allowed_roots;
     const assignments = roots.reduce((total, root) => total + Object.values(root.agents).filter(grant => Object.values(grant.permissions).some(Boolean)).length, 0);
@@ -834,13 +961,7 @@ class ConfigurationPage {
     append(title, el("p", "mg-kicker", "OneDrive-Zugriff"), el("h2", "", "Wer darf auf welche OneDrive-Bereiche zugreifen?"), el("p", "mg-hint", "Klicke auf ein Recht, um es zu ändern. Ohne aktives Recht wird der Agent entfernt. Änderungen werden erst nach Prüfen und Speichern wirksam."));
     append(heading, title, el("span", "mg-count", format("{count} Zuweisungen", { count: assignments })));
     append(body, heading);
-    const add = el("section", "mg-add-folder");
-    append(add, el("h3", "", "Ordner hinzufügen"), el("p", "mg-hint", "Pfad in deinem OneDrive. Der Ordner wird vor dem Hinzufügen geprüft."));
-    const input = this.field(add, "Ordnerpfad", this.newFolderPath, value => { this.newFolderPath = value; });
-    input.placeholder = "/Projects/Clients";
-    input.addEventListener("keydown", event => { if (event.key === "Enter" && !this.locked) { event.preventDefault(); this.newFolderPath = input.value.trim(); void this.addFolder(); } });
-    const addButton = this.action("Ordner prüfen und hinzufügen", () => { this.newFolderPath = input.value.trim(); void this.addFolder(); }, "primary"); addButton.disabled = this.busy;
-    append(add, addButton); append(body, add);
+    this.renderFolderInput(body);
     if (!roots.length) { append(body, el("p", "mg-message", "Noch kein OneDrive-Ordner freigegeben.")); return; }
     const grid = el("div", "mg-root-grid");
     for (const [index, root] of roots.entries()) {
@@ -1008,6 +1129,7 @@ class ConfigurationPage {
     append(body, el("h2", "", "Microsoft-Dienste"), el("p", "", "Wähle, welche Dienste der Agent nutzen darf. Ein neuer Zugang umfasst alle Funktionen des Dienstes. Bestehende eingeschränkte Zugänge bleiben unverändert."));
     const agentId = this.renderAgentPicker(body);
     if (!agentId) { append(body, el("p", "mg-message", "Keine Agenten gefunden.")); return; }
+    this.renderAgentFolders(body, agentId);
     for (const service of ["calendar", "mail", "contacts", "todo"] as const) {
       const card = el("fieldset", "mg-section"); append(card, el("legend", "", serviceNames[service]));
       const grants = this.policy.services[service]?.agents ?? {}; const existing = grants[agentId];
@@ -1094,6 +1216,20 @@ class ConfigurationPage {
       for (const [agentId, entry] of Object.entries(exposure.expected)) append(body, el("p", "mg-status", format("{agent}: zusätzliche Microsoft-Graph-Tools · {tools}", { agent: agentId, tools: entry.value.filter(name => !this.snapshot?.config?.agents?.entries?.[agentId]?.tools?.[entry.key]?.includes(name)).join(", ") })));
     } catch { append(body, el("p", "mg-warning", "Microsoft-Graph-Tool-Freigabe ist mit der aktuellen Agent-Policy nicht vereinbar. Speichern wird verhindert.")); }
     append(body, el("p", "mg-status", policySummary(this.policy).join(" · ")));
+    const previousRoots = this.initial?.services.onedrive.allowed_roots ?? [];
+    const nextRoots = this.policy.services.onedrive.allowed_roots;
+    for (const label of new Set([...previousRoots, ...nextRoots].map(root => root.label))) {
+      const before = previousRoots.find(root => root.label === label);
+      const after = nextRoots.find(root => root.label === label);
+      for (const agentId of new Set([...Object.keys(before?.agents ?? {}), ...Object.keys(after?.agents ?? {})])) {
+        const name = this.host.agents.rows.find(agent => agent.id === agentId)?.name ?? agentId;
+        for (const [right, rightLabel] of [["read", "Lesen"], ["write", "Schreiben"], ["delete", "Löschen"]] as const) {
+          const had = before?.agents[agentId]?.permissions[right] === true;
+          const has = after?.agents[agentId]?.permissions[right] === true;
+          if (had !== has) append(body, el("p", "mg-calendar-review", format(has ? "{agent} · {path}: {right} erlaubt" : "{agent} · {path}: {right} entzogen", { agent: name, path: after?.path ?? before!.path, right: localize(rightLabel) })));
+        }
+      }
+    }
     for (const agentId of new Set([...Object.keys(this.initial?.services.calendar.agents ?? {}), ...Object.keys(this.policy.services.calendar.agents)])) {
       const before = this.initial?.services.calendar.agents[agentId]?.resources ?? (this.initial?.services.calendar.agents[agentId] ? ["me"] : []);
       const after = this.policy.services.calendar.agents[agentId]?.resources ?? (this.policy.services.calendar.agents[agentId] ? ["me"] : []);

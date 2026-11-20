@@ -40,7 +40,7 @@ function mount(locale = "de", roots?: Root[]) {
   const settle = async () => { for (let i = 0; i < 100; i++) await Promise.resolve(); };
   const click = (text: string) => { const node = [...container.querySelectorAll("button")].find(button => button.textContent?.includes(text)); expect(node, text).toBeTruthy(); node!.click(); };
   const toggle = (index: number) => { const input = container.querySelectorAll<HTMLInputElement>(".mg-instructions-control input")[index]!; input.focus(); input.click(); };
-  const candidate = async () => { click(locale === "en" ? "Review" : "Prüfen"); await settle(); return (calls.filter(call => call.method === "microsoft-graph.configuration.validate").at(-1)!.params as { policy: Policy }).policy; };
+  const candidate = async () => { click(locale === "en" ? "Check" : "Prüfen"); await settle(); return (calls.filter(call => call.method === "microsoft-graph.configuration.validate").at(-1)!.params as { policy: Policy }).policy; };
   return { container, calls, baseline, settle, click, toggle, candidate, notify: () => listener(), saved: () => structuredClone(saved) };
 }
 
@@ -134,7 +134,7 @@ describe("OneDrive root instruction opt-in", () => {
   it("leaves newly added roots unchecked without writing the optional property", async () => {
     const h = mount(); await h.settle();
     const path = h.container.querySelector<HTMLInputElement>(".mg-add-folder input")!; path.value = "/Synthetic/New"; path.dispatchEvent(new Event("input", { bubbles: true }));
-    h.click("Ordner prüfen und hinzufügen"); await h.settle();
+    h.click("Pfad prüfen"); await h.settle(); h.click("Ordner übernehmen"); await h.settle();
     expect(h.container.querySelectorAll<HTMLInputElement>(".mg-instructions-control input")[2]!.checked).toBe(false);
     expect((await h.candidate()).services.onedrive.allowed_roots[2]).not.toHaveProperty("agents_instructions");
   });

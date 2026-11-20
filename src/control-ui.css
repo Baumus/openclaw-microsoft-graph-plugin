@@ -159,3 +159,53 @@
 .mg-save-hint { flex-basis: 100%; margin: 4px 0; color: var(--mg-muted); font-size: .83rem; line-height: 1.45; }
 .mg-save-status .mg-button { margin-inline-end: 8px; margin-block-start: 8px; }
 @media (max-width: 650px) { .mg-save-status .mg-button { width: 100%; margin-inline-end: 0; } .mg-footer-status { flex-basis: 100%; } }
+
+.mg-ui { --mg-accent: var(--accent, #b84432); }
+.mg-ui .mg-button.primary, .mg-ui .mg-button.active { color: var(--accent-foreground, #fff); }
+.mg-ui .mg-button.primary:hover:not(:disabled), .mg-ui .mg-button.active:hover:not(:disabled) {
+  background: var(--accent-hover, #963626);
+  border-color: var(--accent-hover, #963626);
+}
+.mg-agent-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  border: 1px solid var(--mg-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--mg-accent) 8%, var(--mg-panel));
+}
+.mg-agent-context strong, .mg-agent-options small { display: block; }
+.mg-agent-picker {
+  width: min(480px, 92vw);
+  background: var(--mg-panel);
+  color: var(--mg-text);
+  border: 1px solid var(--mg-border);
+  border-radius: 12px;
+  padding: 16px;
+}
+.mg-agent-picker::backdrop { background: #0e1015a6; }
+.mg-agent-picker input {
+  width: 100%;
+  padding: 10px;
+  background: var(--mg-bg);
+  color: var(--mg-text);
+  border: 1px solid var(--mg-border);
+  border-radius: 8px;
+  font: inherit;
+}
+.mg-agent-options { display: grid; gap: 5px; max-height: min(360px, 42vh); overflow: auto; padding: 4px; margin-bottom: 12px; }
+.mg-ui .mg-agent-options .mg-button { display: block; text-align: start; overflow-wrap: anywhere; }
+.mg-ui .mg-agent-options [aria-pressed="true"] { border-color: var(--mg-accent); }
+.mg-agent-folder { min-width: 0; margin: 12px 0; border: 1px solid var(--mg-border); border-radius: 8px; }
+.mg-agent-folder .mg-check { margin-inline-end: 16px; }
+.mg-account-context {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
