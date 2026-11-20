@@ -78,7 +78,7 @@ function harness(mode: Mode = "active", pluginsInclude = false, oneDriveGrant = 
   mount();
   const settle = async () => { for (let i=0;i<100;i++) await Promise.resolve(); };
   const click = (text: string) => { const node = [...container.querySelectorAll("button")].find(b => b.textContent === text); expect(node, text + "\n" + container.textContent).toBeTruthy(); node!.click(); };
-  const edit = async () => { click("3  Freigaben"); const input = container.querySelector<HTMLInputElement>(".mg-body input[type=checkbox]")!; input.checked=false; input.dispatchEvent(new Event("change", { bubbles: true })); click("4  Prüfen"); await settle(); const confirm = container.querySelector<HTMLInputElement>(".mg-body input[type=checkbox]")!; confirm.checked=true; confirm.dispatchEvent(new Event("change", { bubbles: true })); };
+  const edit = async () => { click("Freigaben"); const input = container.querySelector<HTMLInputElement>(".mg-body input[type=checkbox]")!; input.checked=false; input.dispatchEvent(new Event("change", { bubbles: true })); click("Prüfen"); await settle(); const confirm = container.querySelector<HTMLInputElement>(".mg-body input[type=checkbox]")!; confirm.checked=true; confirm.dispatchEvent(new Event("change", { bubbles: true })); };
   return { agentEntries, enableHealing: () => { healing=true; }, setBackendUnavailable: (v: boolean) => { backendUnavailable=v; }, loseClaim: () => { loseClaimReply=true; }, clearIntent: () => { intent=null; }, host, calls, container, settle, click, edit, patch, reload, snapshot, setInactive: () => { active=hash(initial); }, setMode: (next: Mode) => { mode=next; }, hardReload: () => { mounted.dispose(); controller.abort(); host={...host}; mount(); }, setGet: (fn?: () => Promise<unknown>) => { getOverride=fn; }, notify: () => listener(), setActive: () => { active=hash(saved); globalApplied=true; }, changeRevision: () => { revision="unrelated"; }, persistTarget: () => { saved.rules = { ...saved.rules, warningApprovalsByService: { onedrive: false } } as never; revision="late"; }, restoreBaseline: () => { saved = clone(initial); revision="rollback"; }, changeSaved: () => { saved.services.mail.agents.main.operations.push("draft"); revision="external"; }, remount: () => { mounted.dispose(); controller.abort(); mount(); }, dispose: () => { mounted.dispose(); controller.abort(); if (typeof stop === "function") stop(); container.remove(); } };
 }
 const cleanup: (() => void)[] = [];
@@ -93,11 +93,11 @@ describe("policy save and application lifecycle", () => {
     expect(h.container.textContent).toContain("Microsoft-Regeln aktiv. Agent-Tools weichen ab.");
   });
   async function calendarDraft(h: ReturnType<typeof view>) {
-    h.click("2  Dienste"); await h.settle();
+    h.click("Agent-Zugriff"); await h.settle();
     const calendar = [...h.container.querySelectorAll("fieldset")].find(x => x.querySelector("legend")?.textContent === "Kalender")!;
     const input = calendar.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
     input.checked=true; input.dispatchEvent(new Event("change", { bubbles: true }));
-    h.click("4  Prüfen"); await h.settle();
+    h.click("Prüfen"); await h.settle();
     const confirm=h.container.querySelector<HTMLInputElement>(".mg-body input[type=checkbox]")!; confirm.checked=true; confirm.dispatchEvent(new Event("change", {bubbles:true}));
   }
   it("saves a real calendar grant across include ownership without touching unrelated OneDrive agents", async () => {
@@ -200,7 +200,7 @@ describe("policy save and application lifecycle", () => {
   it("recovers missing selected calendar tools after hard refresh without rewriting policy or backfilling peers", async () => {
     const h=view("persist-hang", true, true); await h.settle(); await calendarDraft(h); h.click("Speichern und anwenden"); await h.settle();
     expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1);
-    h.clearIntent(); h.setActive(); h.hardReload(); await h.settle(); expect(h.container.textContent).not.toContain("Gespeichert und aktiv"); expect(h.container.textContent).toContain("Microsoft-Regeln aktiv. Agent-Tools weichen ab."); h.click("2  Dienste"); await h.settle();
+    h.clearIntent(); h.setActive(); h.hardReload(); await h.settle(); expect(h.container.textContent).not.toContain("Gespeichert und aktiv"); expect(h.container.textContent).toContain("Microsoft-Regeln aktiv. Agent-Tools weichen ab."); h.click("Agent-Zugriff"); await h.settle();
     expect(h.container.textContent).toContain("Benötigte Agent-Tools fehlen noch");
     h.setMode("active"); h.click("Agent-Tools aktivieren"); await h.settle();
     const writes=h.calls.filter(c=>c.method==="config.patch"); expect(writes).toHaveLength(2);
@@ -213,25 +213,25 @@ describe("policy save and application lifecycle", () => {
     const h=view("tools-reject", true); await h.settle(); await calendarDraft(h); h.click("Speichern und anwenden"); await h.settle(); await vi.advanceTimersByTimeAsync(1000); await h.settle();
     expect(h.container.textContent).toContain("Zugang noch nicht vollständig aktiv");
     const previousConfirm=window.confirm; window.confirm=()=>true;
-    h.click("Aktuellen Stand laden"); await h.settle(); window.confirm=previousConfirm; h.click("2  Dienste"); await h.settle();
+    h.click("Aktuellen Stand laden"); await h.settle(); window.confirm=previousConfirm; h.click("Agent-Zugriff"); await h.settle();
     h.setMode("active"); h.click("Agent-Tools aktivieren"); await h.settle();
     expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(3);
     expect(h.container.textContent).toContain("Gespeichert und aktiv");
   });
   it("does not repair selected tools until the exact saved policy is active", async () => {
     const h=view("persist-hang", true); await h.settle(); await calendarDraft(h); h.click("Speichern und anwenden"); await h.settle();
-    h.clearIntent(); h.setActive(); h.hardReload(); await h.settle(); h.click("2  Dienste"); await h.settle();
+    h.clearIntent(); h.setActive(); h.hardReload(); await h.settle(); h.click("Agent-Zugriff"); await h.settle();
     h.setInactive(); h.click("Agent-Tools aktivieren"); await h.settle();
     expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1);
     expect(h.container.textContent).toContain("Agent-Tools konnten nicht aktiviert werden");
     expect(h.container.textContent).not.toContain("Gespeichert und aktiv");
   });
   it("permits a new scope grant to save before reauthorization while the old credential remains", async () => {
-    const h=view(); await h.settle(); h.click("2  Dienste");
+    const h=view(); await h.settle(); h.click("Agent-Zugriff");
     const contacts = [...h.container.querySelectorAll("fieldset")].find(fieldset => fieldset.querySelector("legend")?.textContent === "Kontakte")!;
     const toggle = contacts.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
     toggle.checked = true; toggle.dispatchEvent(new Event("change", { bubbles: true }));
-    h.click("4  Prüfen"); await h.settle();
+    h.click("Prüfen"); await h.settle();
     expect(h.container.textContent).toContain("benötigen nach dem Speichern eine Reautorisierung");
     const confirm = h.container.querySelector<HTMLInputElement>(".mg-body input[type=checkbox]")!;
     confirm.checked=true; confirm.dispatchEvent(new Event("change", { bubbles: true }));
@@ -249,7 +249,7 @@ describe("policy save and application lifecycle", () => {
   it("bounds unknown late outcomes and never repeats a write", async () => { const h=view("hang"); await h.settle(); await h.edit(); h.click("Speichern und anwenden"); await h.settle(); await vi.advanceTimersByTimeAsync(70000); await h.settle(); expect(h.container.textContent).toContain("Speichern noch nicht bestätigt"); const reads=h.calls.filter(c=>c.method==="config.get").length; await vi.advanceTimersByTimeAsync(120000); expect(h.calls.filter(c=>c.method==="config.get")).toHaveLength(reads); expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1); expect(h.calls.some(c=>c.method==="plugins.reload")).toBe(false); });
   it("recognizes persisted timeout and remounts without losing the target or writing twice", async () => { const h=view("persist-hang"); await h.settle(); await h.edit(); h.click("Speichern und anwenden"); await h.settle(); await vi.advanceTimersByTimeAsync(15000); await h.settle(); expect(h.container.textContent).toContain("Gespeichert"); h.remount(); await h.settle(); expect(h.container.textContent).toContain("Verbindung hergestellt"); h.setActive(); h.notify(); await vi.advanceTimersByTimeAsync(250); await h.settle(); expect(h.container.textContent).toContain("Gespeichert und aktiv"); expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1); });
   it("reconciles disconnection and manually retries the exact saved target without resaving", async () => { const h=view("pending"); await h.settle(); await h.edit(); h.click("Speichern und anwenden"); await h.settle(); h.host.connection.connected=false; h.notify(); await h.settle(); expect(h.container.textContent).toContain("Verbindung unterbrochen"); h.host.connection.connected=true; h.notify(); await h.settle(); await vi.advanceTimersByTimeAsync(70000); await h.settle(); expect(h.container.textContent).toContain("Aktivierung noch nicht bestätigt"); h.click("Gespeicherte Regeln anwenden"); await h.settle(); expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1); expect(h.calls.filter(c=>c.method==="plugins.reload")).toHaveLength(1); expect(h.calls.filter(c=>c.method==="plugins.reload")[0]?.params).toEqual({ plugins: [{ pluginId: "microsoft-graph" }], waitForDrain: true }); });
-  it("offers safe overview navigation while pending and refuses to apply a changed target", async () => { const h=view("pending"); await h.settle(); await h.edit(); h.click("Speichern und anwenden"); await h.settle(); await vi.advanceTimersByTimeAsync(70000); await h.settle(); h.click("Übersicht anzeigen"); expect(h.container.querySelector(".mg-steps [aria-current=step]")?.textContent).toBe("1  OneDrive"); expect([...h.container.querySelectorAll(".mg-steps button")].every(b=>(b as HTMLButtonElement).disabled)).toBe(true); h.changeSaved(); h.click("Gespeicherte Regeln anwenden"); await h.settle(); expect(h.container.textContent).toContain("anderswo geändert"); expect(h.calls.filter(c=>c.method==="plugins.reload")).toHaveLength(0); expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1); });
+  it("offers safe overview navigation while pending and refuses to apply a changed target", async () => { const h=view("pending"); await h.settle(); await h.edit(); h.click("Speichern und anwenden"); await h.settle(); await vi.advanceTimersByTimeAsync(70000); await h.settle(); h.click("Übersicht anzeigen"); expect(h.container.querySelector(".mg-steps [aria-current=page]")?.textContent).toBe("Übersicht"); expect([...h.container.querySelectorAll(".mg-steps button")].every(b=>(b as HTMLButtonElement).disabled)).toBe(true); h.changeSaved(); h.click("Gespeicherte Regeln anwenden"); await h.settle(); expect(h.container.textContent).toContain("anderswo geändert"); expect(h.calls.filter(c=>c.method==="plugins.reload")).toHaveLength(0); expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1); });
   it("does not dispatch manual reload after a delayed preflight when the page is disposed and administration revoked", async () => { const h=view("pending"); await h.settle(); await h.edit(); h.click("Speichern und anwenden"); await h.settle(); const preflight=deferred<unknown>(); const before=h.calls.filter(c=>c.method==="config.get").length; h.setGet(()=>preflight.promise); h.click("Gespeicherte Regeln anwenden"); await h.settle(); expect(h.calls.filter(c=>c.method==="config.get")).toHaveLength(before+1); expect(h.calls.filter(c=>c.method==="plugins.reload")).toHaveLength(0); const fresh=h.snapshot(); h.dispose(); h.host.connection.canAdmin=false; preflight.resolve(fresh); await h.settle(); expect(h.calls.filter(c=>c.method==="plugins.reload")).toHaveLength(0); expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1); });
   it("discards a stale status response that began before saving", async () => { const h=view(); await h.settle(); await h.edit(); const old=h.snapshot(); const pending=deferred<unknown>(); h.setGet(()=>pending.promise); h.notify(); await h.settle(); h.click("Speichern und anwenden"); h.setGet(); pending.resolve(old); await h.settle(); await vi.advanceTimersByTimeAsync(5000); await h.settle(); expect(h.calls.filter(c=>c.method==="config.patch")).toHaveLength(1); expect(h.container.textContent).toContain("Gespeichert und aktiv"); expect(h.container.textContent).not.toContain("anderswo geändert"); });
   it("rebases an unchanged Graph draft onto the fresh revision without overwriting unrelated config", async () => {

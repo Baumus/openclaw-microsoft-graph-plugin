@@ -38,7 +38,7 @@ function toggle(container: HTMLElement, text: string) {
 }
 describe("agent calendar access editor", () => {
   it("shows the effective default-only fallback, selects another calendar for only the chosen agent, and reviews the change", async () => {
-    const view = mount(); await view.settle(); click(view.container, "Dienste"); await view.settle();
+    const view = mount(); await view.settle(); click(view.container, "Agent-Zugriff"); await view.settle();
     expect(view.container.textContent).toContain("Eingeschränkt · nur Standardkalender");
     expect(view.container.textContent).toContain("Team");
     toggle(view.container, "Team");
@@ -52,7 +52,7 @@ describe("agent calendar access editor", () => {
   });
   it("keeps unresolvable configured IDs visible and preserves them when another calendar is selected", async () => {
     const policy = structuredClone(initial); policy.services.calendar.agents.main.resources = ["me", "old-id"];
-    const view = mount(policy); await view.settle(); click(view.container, "Dienste"); await view.settle();
+    const view = mount(policy); await view.settle(); click(view.container, "Agent-Zugriff"); await view.settle();
     expect(view.container.textContent).toContain("Kalender-ID: old-id · nicht verifizierbar");
     toggle(view.container, "Team"); click(view.container, "Prüfen"); await view.settle();
     const candidate = view.calls.filter(call => call.method === "microsoft-graph.configuration.validate").at(-1)!.params as { policy: typeof initial };
@@ -60,7 +60,7 @@ describe("agent calendar access editor", () => {
     view.dispose();
   });
   it("shows an honest fallback when discovery fails and retains the effective scope", async () => {
-    const view = mount(initial, new Error("offline")); await view.settle(); click(view.container, "Dienste"); await view.settle();
+    const view = mount(initial, new Error("offline")); await view.settle(); click(view.container, "Agent-Zugriff"); await view.settle();
     expect(view.container.textContent).toContain("Eingeschränkt · nur Standardkalender");
     expect(view.container.textContent).toContain("Kalenderliste nicht ladbar");
     expect(view.container.textContent).not.toContain("von 3 Kalendern");
@@ -69,14 +69,14 @@ describe("agent calendar access editor", () => {
   it("shows loading while the admin lookup is pending", async () => {
     let finish!: (value: unknown) => void;
     const pending = new Promise<unknown>(resolve => { finish = resolve; });
-    const view = mount(initial, pending); await view.settle(); click(view.container, "Dienste"); await view.settle();
+    const view = mount(initial, pending); await view.settle(); click(view.container, "Agent-Zugriff"); await view.settle();
     expect(view.container.textContent).toContain("Verfügbare Kalender werden geladen");
     finish({ defaultCalendarId: "default-id", calendars: [] }); await view.settle(); view.dispose();
   });
   it("recognizes the exact default-calendar ID as verified and localizes labels", async () => {
     const policy = structuredClone(initial); policy.services.calendar.agents.main.resources = ["default-id", "old-id"];
     const view = mount(policy, { defaultCalendarId: "default-id", calendars: [{ id: "default-id", name: "Primary" }] }, "en");
-    await view.settle(); click(view.container, "Services"); await view.settle();
+    await view.settle(); click(view.container, "Agent access"); await view.settle();
     expect(view.container.textContent).toContain("Default calendar (direct calendar ID)");
     expect(view.container.textContent).toContain("Calendar ID: old-id · cannot be verified");
     expect(view.container.textContent).not.toContain("default-id · cannot be verified");

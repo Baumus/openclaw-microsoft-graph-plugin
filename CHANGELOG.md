@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.25.7
+
+- Group OneDrive and Microsoft service access by agent, add a searchable agent picker, and preview Windows Explorer paths before adding folders. Use native Control UI theme tokens and preserve per-calendar access.
+
 ## 3.25.6
 
 - Fix native Outlook file attachments by preserving original tool inputs and binding staged content privately, including repeated approval preflights. Approval, fingerprint, path and tamper checks remain enforced.
