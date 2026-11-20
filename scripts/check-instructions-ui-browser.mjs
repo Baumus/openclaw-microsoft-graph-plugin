@@ -30,11 +30,18 @@ try {
       const second = structuredClone(policy);
       second.services.onedrive.allowed_roots = [root("private-folder")];
       const calls = [];
+      const accountConfig = { credentialVaultKey: "synthetic-ref", policy, accounts: { privat: second } };
       let pageDefinition; let listener; let delayedStatus;
       const host = { locale: "de", connection: { connected: true, canAdmin: true }, agents: { rows: [{ id: "reader", name: "Reader" }, { id: "editor", name: "Editor" }] }, subscribe: fn => { listener = fn; return () => {}; },
         request: async (method, params) => {
           calls.push({ method, params });
-          if (method === "config.get") return { hash: "fixture", configRevisionHash: "fixture", appliedConfigHash: "fixture", config: { plugins: { entries: { "microsoft-graph": { enabled: true, config: { credentialVaultKey: "synthetic-ref", policy, accounts: { privat: second } } } } } } };
+          if (method === "config.get") return { hash: "fixture", configRevisionHash: "fixture", appliedConfigHash: "fixture", config: { plugins: { entries: { "microsoft-graph": { enabled: true, config: structuredClone(accountConfig) } } } } };
+          if (method === "config.patch") {
+            const change = JSON.parse(params.raw).plugins.entries["microsoft-graph"].config;
+            Object.assign(accountConfig.accounts, change.accounts);
+            accountConfig.accountLabels = change.accountLabels;
+            return { ok: true };
+          }
           if (method === "microsoft-graph.credentials.status") return { ok: true, value: { policyVersion: 2, credential: { result: params?.accountId ? "missing" : "valid" } } };
           if (method === "microsoft-graph.updateStatus") return { updateAvailable: false };
           if (method === "microsoft-graph.configuration.applicationStatus") { if (delayedStatus) await delayedStatus; return { activePolicyHash: null }; }
@@ -160,6 +167,16 @@ try {
     assert.ok(await page.locator(".mg-root-card").first().innerText().then(text => text.includes("Noch kein Agent berechtigt.")));
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.screenshot({ path: path.join(output, `${name}-agent-removed.png`), fullPage: true });
+    await navigation.getByRole("button", { name: "Konten", exact: true }).click();
+    page.once("dialog", dialog => dialog.accept());
+    await page.getByRole("button", { name: "Änderungen verwerfen", exact: true }).click();
+    const displayName = page.getByLabel("Anzeigename");
+    await displayName.fill("Büro");
+    await displayName.press("Enter");
+    await page.locator(".mg-account-context strong").filter({ hasText: "Büro" }).waitFor();
+    await page.getByRole("button", { name: "Zugriff festlegen", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Änderungen prüfen" }).count(), 0);
+    assert.equal(await page.evaluate(() => window.fixture.calls.filter(call => call.method === "config.patch").length), 1);
     assert.deepEqual(errors, []);
     report.push({ viewport: name, checks: "default/preexisting; native Enter/Space/Escape; outside/same-button/touch; persistence; correct-root/delayed focus; R-001 foo/help-foo all-control focus; bounded top layer; short viewport scrolling", screenshots: [`${name}-closed.png`, `${name}-open.png`, `${name}-agent-menu.png`, `${name}-agent-removed.png`], agentRemoval: "ArrowDown/Escape/Tab/outside dismissal; cancel/confirm with ancestor wording; exact agent removal; last-agent empty root; add-agent focus; no overflow", consoleErrors: errors });
     await page.evaluate(() => window.fixture.dispose()); await context.close();

@@ -24,13 +24,17 @@ async function oauthPost(url: string, body: URLSearchParams, fetchFn: typeof fet
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("device_authorization_failed");
   return { status: response.status, value: value as Record<string, unknown> };
 }
-function checkedScopes(policy: GraphPolicy): string[] { return [...new Set([...requiredPolicyScopes(validatePolicy(policy)), "offline_access"])].sort(); }
+function checkedScopes(policy: GraphPolicy, allowFolderSetup: boolean): string[] {
+  const required = requiredPolicyScopes(validatePolicy(policy));
+  if (allowFolderSetup && required.length === 0) required.push("Files.Read");
+  return [...new Set([...required, "offline_access"])].sort();
+}
 function endpoint(tenant: string, suffix: string): string { return `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/${suffix}`; }
 
 export class DeviceCodeSignIn {
   private session?: DeviceSession;
   private starting = false;
-  constructor(private readonly config: { policy?: GraphPolicy; credentialVaultKey?: unknown }, private readonly stateDir: () => string, private readonly fetchFn: typeof fetch = fetch, private readonly wait: (ms: number) => Promise<void> = sleep) {}
+  constructor(private readonly config: { policy?: GraphPolicy; credentialVaultKey?: unknown }, private readonly stateDir: () => string, private readonly fetchFn: typeof fetch = fetch, private readonly wait: (ms: number) => Promise<void> = sleep, private readonly allowFolderSetup = false) {}
 
   async start(clientId: string, tenant: string): Promise<StartResult> {
     return this.startMode(clientId, tenant, "create");
@@ -50,7 +54,7 @@ export class DeviceCodeSignIn {
       if (typeof key !== "string") throw new Error("credential_vault_unavailable");
       decodeVaultKey(key);
       const policy = validatePolicy(this.config.policy);
-      const scopes = checkedScopes(policy);
+      const scopes = checkedScopes(policy, mode === "create" && this.allowFolderSetup);
       if (scopes.length < 2) throw new Error("invalid_policy");
       let expectedBinding: string | undefined;
       if (mode === "create") {
@@ -74,7 +78,7 @@ export class DeviceCodeSignIn {
       }
       if (typeof clientId !== "string" || typeof tenant !== "string" || !validClientId(clientId) || !validTenant(tenant)) throw new Error("invalid_rpc_parameters");
       if (this.session?.state === "pending" && this.session.expiresAt > Date.now()) {
-        if (this.session.clientId !== clientId || this.session.tenant !== tenant || this.session.mode !== mode) throw new Error("device_authorization_in_progress");
+        if (this.session.clientId !== clientId || this.session.tenant !== tenant || this.session.mode !== mode || JSON.stringify(this.session.scopes) !== JSON.stringify(scopes)) throw new Error("device_authorization_in_progress");
         return { sessionId: this.session.id, userCode: this.session.userCode, verificationUri: this.session.verificationUri, expiresAt: new Date(this.session.expiresAt).toISOString(), scopes: this.session.scopes };
       }
       const result = await oauthPost(endpoint(tenant, "devicecode"), new URLSearchParams({ client_id: clientId, scope: scopes.join(" ") }), this.fetchFn);
@@ -127,7 +131,7 @@ export class DeviceCodeSignIn {
         const granted = [...new Set(value.scope.split(/\s+/).filter(Boolean))];
         const credential = { clientId: session.clientId, tenant: session.tenant, refreshToken: value.refresh_token, scopes: granted.some((scope) => scope.toLowerCase() === "offline_access") ? granted : [...granted, "offline_access"] };
         for (const scope of session.scopes.filter((scope) => scope !== "offline_access")) selectScope(credential, [scope]);
-        if (JSON.stringify(checkedScopes(validatePolicy(this.config.policy))) !== JSON.stringify(session.scopes)) throw new Error("credential_vault_conflict_policy_changed");
+        if (JSON.stringify(checkedScopes(validatePolicy(this.config.policy), session.mode === "create" && this.allowFolderSetup)) !== JSON.stringify(session.scopes)) throw new Error("credential_vault_conflict_policy_changed");
         session.committing = true;
         if (session.mode === "reauthorize") {
           await replaceVaultCredentialAfterReauthorization(this.stateDir(), key, session.expectedBinding!, credential);

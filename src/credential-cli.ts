@@ -209,7 +209,7 @@ export function registerCredentialGatewayMethods(api: GatewayApi, config: CliCon
     const selected = selectAccount(config, accountId);
     const perAccount = new Map<string, Parameters<GatewayApi["registerGatewayMethod"]>[1]>();
     registerCredentialHandlers({ registerGatewayMethod(method, handler) { perAccount.set(method, handler); } },
-      selected, () => accountStateDir(stateDir(), accountId), operations);
+      selected, () => accountStateDir(stateDir(), accountId), operations, true);
     handlers.set(accountId, perAccount);
   }
   registerCredentialHandlers({
@@ -235,7 +235,7 @@ export function registerCredentialGatewayMethods(api: GatewayApi, config: CliCon
   }, config, stateDir, operations);
 }
 
-function registerCredentialHandlers(api: GatewayApi, config: CliConfig, stateDir: () => string, operations: GatewayOperations): void {
+function registerCredentialHandlers(api: GatewayApi, config: CliConfig, stateDir: () => string, operations: GatewayOperations, allowFolderSetup = false): void {
   api.registerGatewayMethod(CREDENTIAL_GATEWAY_METHODS.status, gatewayHandler(async (input) => {
     exactParams(input, []);
     return (operations.status ?? credentialVaultStatus)(config, stateDir());
@@ -250,7 +250,7 @@ function registerCredentialHandlers(api: GatewayApi, config: CliConfig, stateDir
     if (typeof params.expectedBinding !== "string" || !BINDING.test(params.expectedBinding)) throw new Error("invalid_rpc_parameters");
     return (operations.recover ?? recoverCredential)(config, stateDir(), params.expectedBinding, applyParam(params.apply));
   }, (value) => receiptResult(value, ["quarantined", "recovered"], true)), { scope: "operator.admin" });
-  const device = new DeviceCodeSignIn(config, stateDir);
+  const device = new DeviceCodeSignIn(config, stateDir, undefined, undefined, allowFolderSetup);
   api.registerGatewayMethod(CREDENTIAL_GATEWAY_METHODS.deviceStart, gatewayHandler(async (input) => {
     const params = exactParams(input, ["clientId", "tenant"]);
     if (typeof params.clientId !== "string" || typeof params.tenant !== "string") throw new Error("invalid_rpc_parameters");

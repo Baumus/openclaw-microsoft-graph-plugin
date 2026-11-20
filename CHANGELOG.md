@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.27.1
+
+- Save named connections by display name and distinguish persisted configuration, active rules, and Microsoft sign-in.
+- Set up OneDrive with read-only Microsoft consent before granting any agent access.
+
 ## 3.27.0
 
 - Manage named Microsoft Graph connections in the Control UI, with account-scoped sign-in, grants, calendar and folder lookup, and activation status.

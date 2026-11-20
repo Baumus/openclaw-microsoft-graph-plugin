@@ -125,8 +125,15 @@ class ConfigurationPage {
   private includeName = "";
   private step = 4;
   private accountId?: string;
-  private newAccountId = "";
-  private get accountName() { return this.accountId ?? "Standardverbindung"; }
+  private newAccountName = "";
+  private accountCreationError = "";
+  private accountCreationUnconfirmed = false;
+  private accountLabel(accountId?: string): string {
+    if (accountId === undefined) return localize("Standardverbindung");
+    const labels = this.snapshot?.config.plugins?.entries?.[id]?.config?.accountLabels as Record<string, string> | undefined;
+    return labels && Object.hasOwn(labels, accountId) ? labels[accountId]! : accountId;
+  }
+  private get accountName() { return this.accountLabel(this.accountId); }
   private get accountOptions() {
     const entry = this.snapshot?.config.plugins?.entries?.[id]?.config;
     const named = Object.keys(entry?.accounts ?? {}).sort();
@@ -294,12 +301,15 @@ class ConfigurationPage {
   }
   private get dirty() { return !!this.initial && canonicalPolicy(this.initial) !== canonicalPolicy(this.policy); }
   private get authorized() { return this.host.connection.connected && this.host.connection.canAdmin; }
+  private get hasSavedGrants() {
+    const policy = this.initial;
+    return !!policy && (policy.services.onedrive.allowed_roots.some(root => Object.values(root.agents).some(agent => Object.values(agent.permissions).some(Boolean)))
+      || (["calendar", "mail", "contacts", "todo"] as const).some(service => Object.keys(policy.services[service]?.agents ?? {}).length > 0));
+  }
+  private get folderSetup() { return this.accountId !== undefined && this.credential?.result === "missing" && !this.hasSavedGrants; }
   private get signInReady() {
     const entry = this.snapshot?.config?.plugins?.entries?.[id]?.config;
-    const policy = this.initial;
-    const grants = !!policy && (policy.services.onedrive.allowed_roots.some(root => Object.values(root.agents).some(agent => Object.values(agent.permissions).some(Boolean)))
-      || (["calendar", "mail", "contacts", "todo"] as const).some(service => Object.keys(policy.services[service]?.agents ?? {}).length > 0));
-    return !!entry?.credentialVaultKey && grants && !this.dirty && !this.statusError && this.applicationStatus === "applied";
+    return !!entry?.credentialVaultKey && (this.hasSavedGrants || this.folderSetup) && !this.dirty && !this.statusError && this.applicationStatus === "applied";
   }
   private get applicationStatus(): "applied" | "pending" | "unknown" {
     if (this.savedPolicyHash && this.activePolicyHash) return this.savedPolicyHash === this.activePolicyHash ? "applied" : "pending";
@@ -494,13 +504,14 @@ class ConfigurationPage {
     append(shell, rail, content); append(main, shell);
     const account = el("div", "mg-account-context");
     const product = el("div");
-    append(product, el("small", "mg-hint", "Microsoft Graph"), el("strong", "", this.accountName));
+    const accountTitle = el("strong"); accountTitle.textContent = this.accountName;
+    append(product, el("small", "mg-hint", "Microsoft Graph"), accountTitle);
     const accountStatus = this.credential?.result === "valid" && !this.credential.missingScopes?.length ? "Microsoft-Konto verbunden"
       : this.credential?.result === "missing" ? "Kein Microsoft-Konto verbunden" : "Microsoft-Kontostatus nicht bestätigt";
     const selector = el("select", "mg-account-select");
     selector.setAttribute("aria-label", localize("Microsoft-Konto"));
     for (const [index, optionId] of this.accountOptions.entries()) {
-      const option = el("option", "", optionId ?? "Standardverbindung");
+      const option = el("option"); option.textContent = this.accountLabel(optionId);
       option.value = String(index); option.selected = optionId === this.accountId;
       append(selector, option);
     }
@@ -520,8 +531,11 @@ class ConfigurationPage {
     if (this.error) append(content, el("p", "mg-error", this.error)); if (this.success) append(content, el("p", "mg-success", this.success));
     const footer = el("footer", "mg-footer"); append(footer, el("span", "mg-dirty", this.dirty ? "Ungespeicherte Änderungen" : "Keine ungespeicherten Änderungen"));
     if (this.dirty) append(footer, this.action("Änderungen verwerfen", () => { if (window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { this.policy = clone(this.initial!); this.error = ""; this.success = ""; this.render(); } }, "ghost"));
-    if (this.step !== 3) append(footer, this.action("Änderungen prüfen", () => { this.step = 3; this.render(); void this.validate(); }, "primary"));
-    if (this.step === 3) append(footer, this.action("Zurück zum Zugriff", () => { this.step = 1; this.render(); }));
+    if (this.step !== 3 && (this.step !== 5 || this.dirty)) append(footer, this.action("Änderungen prüfen", () => { this.step = 3; this.render(); void this.validate(); }, "primary"));
+    if (this.step === 3) {
+      append(footer, this.action("Zurück zum Zugriff", () => { this.step = 1; this.render(); }));
+      if (!this.dirty && this.accountId !== undefined) append(footer, this.action("Zu den Konten", () => { this.step = 5; this.render(); }, "primary"));
+    }
     if (this.step === 3 && this.dirty) { const save = this.action(this.operation?.phase === "validating" || this.operation?.phase === "saving" ? "Speichert …" : "Speichern und anwenden", () => { void this.save(); }, "primary"); save.disabled = this.authBusy || this.authState === "pending"; append(footer, save); }
     if (this.step === 3 && this.dirty && !this.operation) append(footer, el("p", "mg-save-hint", "Wir speichern die Regeln und wenden sie automatisch an. Die Verbindung kann dabei kurz unterbrochen werden."));
     if (this.operation && !["failed", "applied"].includes(this.operation.phase)) {
@@ -529,7 +543,7 @@ class ConfigurationPage {
       append(footer, el("span", "mg-footer-status", saving ? "Speichert …" : this.operation.phase === "applying" ? "Wendet an …" : "Status noch nicht bestätigt"));
       if (["pending", "unknown", "conflict"].includes(this.operation.phase)) this.appendStatusButton(footer);
     }
-    append(content, footer);
+    if (this.step !== 5 || this.dirty || this.operation) append(content, footer);
     main.setAttribute("aria-busy", String(this.busy || this.operation?.phase === "saving" || this.operation?.phase === "applying"));
     if (this.locked) for (const control of main.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>("button:not([data-safe-status]), input, select, textarea")) control.disabled = true;
     const focused = this.container.contains(document.activeElement) ? (document.activeElement as HTMLElement) : undefined;
@@ -685,51 +699,98 @@ class ConfigurationPage {
     const list = el("section", "mg-section mg-service-summary");
     for (const accountId of this.accountOptions) {
       const row = el("div", "mg-summary-row");
-      append(row, el("strong", "", accountId ?? "Standardverbindung"), accountId === this.accountId
+      const label = el("strong"); label.textContent = this.accountLabel(accountId);
+      append(row, label, accountId === this.accountId
         ? el("span", "mg-count", "Ausgewählt")
         : this.action("Konto öffnen", () => void this.switchAccount(accountId)));
       append(list, row);
     }
     append(body, list);
-    this.renderSetup(body);
-    this.renderSignIn(body);
-    const add = el("section", "mg-section");
+    if (this.accountId !== undefined && !this.activeProofAvailable && this.credential?.result === "unavailable") {
+      append(body, el("p", "mg-banner", "Verbindung gespeichert. Das Gateway hat die Aktivierung noch nicht bestätigt."),
+        this.action("Kontostatus erneut prüfen", () => void this.load()));
+    } else {
+      this.renderSetup(body);
+      this.renderSignIn(body);
+    }
+    const add = el("form", "mg-section");
     append(add, el("h2", "", "Weiteres Konto"));
-    this.field(add, "Verbindungs-ID", this.newAccountId, value => { this.newAccountId = value; }, "Beispiel: arbeit oder privat. Die ID bleibt mit diesem Microsoft-Konto verbunden.");
-    const create = this.action("Konto hinzufügen", () => void this.createAccount(), "primary");
-    create.disabled = this.authBusy || this.authState === "pending" || this.statusInFlight;
-    append(add, create); append(body, add);
+    const name = this.field(add, "Anzeigename", this.newAccountName, value => { this.newAccountName = value; },
+      "Zum Beispiel Büro oder Privat. Dieser Name erscheint in der Kontenliste und im Kontowähler.");
+    name.required = true;
+    name.maxLength = 80;
+    name.disabled = this.authBusy || this.authState === "pending" || this.statusInFlight;
+    const create = this.action("Verbindung anlegen", () => {}, "primary");
+    create.type = "submit";
+    create.disabled = name.disabled || this.accountCreationUnconfirmed;
+    add.addEventListener("submit", event => { event.preventDefault(); void this.createAccount(); });
+    append(add, el("p", "mg-hint", "Legt die Verbindung ohne Zugriffsrechte an. Danach legst du den Agentenzugriff fest und meldest dich bei Microsoft an."), create);
+    if (this.accountCreationError) {
+      const error = el("p", "mg-error", this.accountCreationError);
+      error.setAttribute("role", "alert");
+      append(add, error);
+      if (this.accountCreationUnconfirmed) append(add, this.action("Kontenliste neu laden", () => {
+        void this.load().then(() => {
+          if (this.error || !this.authorized) return;
+          this.accountCreationUnconfirmed = false;
+          this.accountCreationError = "";
+          this.render();
+        });
+      }));
+    }
+    append(body, add);
   }
 
   private async createAccount() {
-    if (this.locked || this.authBusy || this.authState === "pending" || this.statusInFlight || !this.snapshot) return;
-    const accountId = this.newAccountId.trim();
-    if (!/^[a-z][a-z0-9-]{0,62}$/.test(accountId) || this.accountOptions.includes(accountId)) {
-      this.error = "Gib eine freie Verbindungs-ID aus Kleinbuchstaben, Ziffern und Bindestrichen ein."; this.render(); return;
+    if (!this.authorized || this.locked || this.authBusy || this.authState === "pending" || this.statusInFlight || this.accountCreationUnconfirmed || !this.snapshot) return;
+    const label = this.newAccountName.trim();
+    if (!label || label.length > 80 || /[\u0000-\u001f\u007f]/.test(label)) {
+      this.accountCreationError = "Gib einen Anzeigenamen mit 1 bis 80 Zeichen ein."; this.render(); return;
     }
-    if (this.dirty) { this.error = "Speichere oder verwirf zuerst die aktuellen Änderungen."; this.render(); return; }
-    this.busy = true; this.error = ""; this.render();
-    let created = false;
+    if (this.dirty) { this.accountCreationError = "Speichere oder verwirf zuerst die aktuellen Änderungen."; this.render(); return; }
+    this.busy = true; this.accountCreationError = ""; this.render();
+    let createdAccountId: string | undefined;
     try {
       const fresh = await this.read<ConfigSnapshot>("config.get");
-      if (!this.authorized || this.disposed || this.signal.aborted || policyAt(fresh.config.plugins?.entries?.[id]?.config, accountId)) throw Error("account_conflict");
+      if (!this.authorized || this.disposed || this.signal.aborted) return;
+      const entry = fresh.config.plugins?.entries?.[id]?.config;
+      this.snapshot = fresh;
+      if (this.accountOptions.some(option => this.accountLabel(option).toLowerCase() === label.toLowerCase())) {
+        this.accountCreationError = "Dieser Anzeigename wird bereits verwendet. Öffne die vorhandene Verbindung oder wähle einen anderen Namen.";
+        return;
+      }
+      const stem = label.normalize("NFKD").replace(/\p{Mark}/gu, "").toLowerCase().replace(/[^a-z0-9]+/g, "-")
+        .replace(/^[^a-z]+|-+$/g, "").slice(0, 56) || "konto";
+      let accountId = stem;
+      for (let suffix = 2; accountId === "constructor" || policyAt(entry, accountId); suffix++) accountId = stem + "-" + suffix;
       const target = blankPolicy();
       try {
         await this.host.request("config.patch", {
-          baseHash: fresh.hash, raw: JSON.stringify({ plugins: { entries: { [id]: { config: { accounts: { [accountId]: target } } } } } }),
+          baseHash: fresh.hash,
+          raw: JSON.stringify({ plugins: { entries: { [id]: { config: { accounts: { [accountId]: target }, accountLabels: { [accountId]: label } } } } } }),
           note: "Microsoft Graph: add named connection",
+          response: "summary",
         });
-      } catch { /* Read back before allowing another creation attempt. */ }
+      } catch (error) {
+        if (isPreCommitRejection(error)) {
+          this.accountCreationError = "Die Verbindung wurde nicht gespeichert. Lade den aktuellen Stand und prüfe die Gateway-Konfiguration.";
+          return;
+        }
+        // A reconnect can interrupt the response after the write was persisted.
+      }
       const saved = await this.read<ConfigSnapshot>("config.get");
-      if (!this.authorized || this.disposed || this.signal.aborted) return;
+      if (!this.authorized || this.disposed || this.signal.aborted) throw Error("account_unconfirmed");
       this.snapshot = saved;
-      created = canonicalPolicy(policyAt(saved.config.plugins?.entries?.[id]?.config, accountId)) === canonicalPolicy(target);
-      if (!created) throw Error("account_unconfirmed");
-      this.newAccountId = "";
-    } catch { this.error = "Das neue Konto konnte nicht bestätigt werden. Prüfe die Kontenliste vor einem erneuten Versuch."; }
-    finally { this.busy = false; }
-    if (created) { await this.switchAccount(accountId); this.step = 5; }
-    this.render();
+      if (this.accountLabel(accountId) !== label || canonicalPolicy(policyAt(saved.config.plugins?.entries?.[id]?.config, accountId)) !== canonicalPolicy(target)) throw Error("account_unconfirmed");
+      createdAccountId = accountId;
+      this.newAccountName = "";
+    } catch {
+      this.accountCreationUnconfirmed = true;
+      this.accountCreationError = "Speichern nicht bestätigt. Lade die Kontenliste neu, bevor du es erneut versuchst.";
+    } finally {
+      this.busy = false; this.render();
+    }
+    if (createdAccountId) await this.switchAccount(createdAccountId);
   }
 
   private renderOverview(body: HTMLElement) {
@@ -923,9 +984,11 @@ class ConfigurationPage {
     const card = el("section", "mg-section mg-auth"); card.id = "microsoft-connect";
     const result = this.credential?.result;
     if (result === "quarantined" || result === "unavailable" || !result) return;
+    if (this.accountId !== undefined && result === "missing" && this.authState !== "pending" && !this.signInReady) return;
     append(card, el("p", "mg-kicker", "MICROSOFT-KONTO VERBINDEN"));
     if (this.authState === "pending" && this.device) {
       append(card, el("h2", "", "Microsoft-Anmeldung abschließen"), el("p", "mg-hint", "Öffne die Microsoft-Seite, gib den Code ein und kehre hierher zurück."));
+      if (this.accountId !== undefined && !this.authRenewal) append(card, el("p", "mg-hint", "Wähle bei Microsoft ausdrücklich das Konto für diese Verbindung. Der Anzeigename in OpenClaw ist keine Microsoft-Kontobestätigung."));
       const link = el("a", "mg-button primary", "Microsoft-Anmeldeseite öffnen"); link.href = this.device.verificationUri; link.target = "_blank"; link.rel = "noopener noreferrer"; append(card, link);
       append(card, el("p", "mg-hint", "Öffnet einen neuen Tab. Diese Seite bleibt offen."));
       const code = el("p", "mg-auth-code", this.device.userCode); code.setAttribute("aria-label", localize("Microsoft-Anmeldecode"));
@@ -959,7 +1022,8 @@ class ConfigurationPage {
         append(card, el("h2", "", "Konto verbinden"), el("p", "mg-lead", "Bitte deinen Admin um Anwendungs-ID und Verzeichnis-ID. Ein Client Secret, Kennwort oder Einmalcode gehört nicht hierher."));
         const client = this.field(card, "Anwendungs-ID (Client-ID)", this.authClientId, value => { this.authClientId = value; }); client.placeholder = "00000000-0000-0000-0000-000000000000";
         const tenant = this.field(card, "Verzeichnis-ID (Mandant) oder Domain", this.authTenant, value => { this.authTenant = value; }); tenant.placeholder = "example.onmicrosoft.com";
-        const start = this.action("Anmeldung starten", () => { this.authClientId = client.value.trim(); this.authTenant = tenant.value.trim(); void this.startAuth(); }, "primary"); start.disabled = this.authBusy || !this.signInReady; append(card, start);
+        if (this.folderSetup) append(card, el("p", "mg-hint", "Für die OneDrive-Einrichtung wird bei Microsoft nur Lesezugriff angefragt. Agenten erhalten erst Zugriff, wenn du einen Ordner freigibst."));
+        const start = this.action(this.folderSetup ? "OneDrive-Anmeldung starten" : "Anmeldung starten", () => { this.authClientId = client.value.trim(); this.authTenant = tenant.value.trim(); void this.startAuth(); }, "primary"); start.disabled = this.authBusy || !this.signInReady; append(card, start);
         const admin = el("details", "mg-admin-details");
         append(admin, el("summary", "", "Hinweis für Admins · App einrichten"));
         append(admin, el("p", "mg-hint", "Microsoft Entra Admin Center → Entra ID → App-Registrierungen → vorhandene App → Übersicht. „Anwendungs-ID (Client-ID)“ ist die App-ID; „Verzeichnis-ID (Mandant)“ ist die Tenant-ID. Nicht die Objekt-ID verwenden. Bei mehreren Verzeichnissen zuerst zum richtigen Mandanten wechseln."));

@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "./control-ui.js";
+import { createHash } from "node:crypto";
+import { canonicalPolicy } from "./config-policy-identity.js";
 
 type Page = { mount(container: HTMLElement, context: { host: unknown; signal: AbortSignal }): { dispose(): void } };
 const clientId = "12345678-1234-1234-1234-123456789012";
@@ -331,4 +333,79 @@ describe("guided Microsoft sign-in", () => {
     expect(JSON.parse(localStorage.getItem("microsoft-graph.app-ids.v1") ?? "null")).toEqual({ clientId, tenant });
     view.dispose();
   });
+});
+
+
+it("guides a new named connection from saving through scoped Microsoft sign-in", async () => {
+  vi.useFakeTimers();
+  const view = mount();
+  try {
+    const snapshot = view.responses["config.get"] as { config: { agents?: unknown } };
+    snapshot.config.agents = { entries: { main: { tools: { alsoAllow: ["microsoft_graph_capabilities", "outlook_contacts_read", "outlook_contacts_write"] } } } };
+    const request = view.host.request;
+    const hash = (value: unknown) => createHash("sha256").update(canonicalPolicy(value)).digest("hex");
+    const entry = (view.responses["config.get"] as { config: { plugins: { entries: Record<string, { config: { policy: typeof policy; accounts?: Record<string, typeof policy>; accountLabels?: Record<string, string> } }> } } }).config.plugins.entries["microsoft-graph"]!.config;
+    let connected = false;
+    let active = false;
+    view.host.request = async (method, raw) => {
+      const params = raw as { accountId?: string; raw?: string; policy?: typeof policy };
+      if (method === "config.patch") {
+        view.calls.push({ method, params });
+        const change = JSON.parse(params.raw!).plugins.entries["microsoft-graph"].config;
+        if (change.accountLabels) {
+          entry.accounts = change.accounts;
+          entry.accountLabels = change.accountLabels;
+          throw new Error("connection lost after write");
+        }
+        Object.assign(entry.accounts!.buro!.services, change.accounts.buro.services);
+        return { ok: true };
+      }
+      if (method === "microsoft-graph.configuration.validate") return { valid: true, policyHash: hash(params.policy), requiredScopes: ["Contacts.ReadWrite"] };
+      if (method === "microsoft-graph.configuration.applicationStatus") {
+        if (params.accountId && !active) throw new Error("account not active");
+        return { activePolicyHash: hash(params.accountId ? entry.accounts?.[params.accountId] : policy) };
+      }
+      if (method === "microsoft-graph.credentials.status" && params.accountId)
+        return { ok: true, value: { credential: { result: !active ? "unavailable" : connected ? "valid" : "missing" } } };
+      if (method === "microsoft-graph.credentials.device-status") {
+        expect(params.accountId).toBe("buro");
+        connected = true;
+        return { ok: true, value: { state: "created" } };
+      }
+      return request(method, raw);
+    };
+    await view.settle();
+    clickByText(view.container, "Konten");
+    const form = view.container.querySelector("form")!;
+    const name = form.querySelector("input")!;
+    name.value = "Büro"; name.dispatchEvent(new Event("input", { bubbles: true }));
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await view.settle();
+    expect(entry.accountLabels).toEqual({ buro: "Büro" });
+    expect(view.container.querySelector<HTMLSelectElement>(".mg-account-select")?.selectedOptions[0]?.textContent).toBe("Büro");
+    expect(view.container.textContent).toContain("Das Gateway hat die Aktivierung noch nicht bestätigt.");
+    active = true;
+    clickByText(view.container, "Kontostatus erneut prüfen"); await view.settle();
+    clickByText(view.container, "Zugriff festlegen");
+    const contacts = [...view.container.querySelectorAll("fieldset")].find(item => item.querySelector("legend")?.textContent === "Kontakte")!;
+    const toggle = contacts.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    toggle.checked = true; toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    clickByText(view.container, "Änderungen prüfen"); await view.settle();
+    const confirm = view.container.querySelector<HTMLInputElement>(".mg-body input[type=checkbox]")!;
+    confirm.checked = true; confirm.dispatchEvent(new Event("change", { bubbles: true }));
+    clickByText(view.container, "Speichern und anwenden"); await view.settle();
+    expect(view.calls.filter(call => call.method === "config.patch")).toHaveLength(2);
+    expect(view.container.textContent).toContain("Zu den Konten");
+    clickByText(view.container, "Zu den Konten");
+    const client = view.container.querySelector<HTMLInputElement>('input[placeholder^="0000"]')!;
+    const directory = view.container.querySelector<HTMLInputElement>('input[placeholder="example.onmicrosoft.com"]')!;
+    client.value = clientId; directory.value = tenant;
+    clickByText(view.container, "Anmeldung starten"); await view.settle();
+    expect(view.calls.find(call => call.method.endsWith(".device-start"))?.params).toEqual({ clientId, tenant, accountId: "buro" });
+    expect(view.container.textContent).toContain("ABCD-EFGH");
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(view.container.textContent).toContain("Verbindung hergestellt");
+    expect(entry.policy).toEqual(policy);
+    expect(view.calls.filter(call => call.method === "config.patch")).toHaveLength(2);
+  } finally { view.dispose(); vi.useRealTimers(); }
 });
