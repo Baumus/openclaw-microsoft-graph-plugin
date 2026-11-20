@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.25.6
+
+- Fix native Outlook file attachments by preserving original tool inputs and binding staged content privately, including repeated approval preflights. Approval, fingerprint, path and tamper checks remain enforced.
+
 ## 3.25.5
 
 - Fix first-attempt workspace staging failures when concurrent cleanup removes a quota entry between directory enumeration and filesystem inspection. Skip only disappeared entries (ENOENT), without retrying provider writes or relaxing quota, path, integrity or approval checks.

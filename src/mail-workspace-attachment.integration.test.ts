@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, writeFile, rm, symlink, link, truncate, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -17,6 +16,11 @@ afterEach(async () => {
   if (previous === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = previous;
   if (dir) await rm(dir, { recursive: true, force: true });
 });
+async function stagedFiles(stateDir: string): Promise<string[]> {
+  const root = join(stateDir, "media");
+  const entries = await readdir(root, { recursive: true, withFileTypes: true });
+  return entries.filter(entry => entry.isFile() && !entry.name.startsWith(".")).map(entry => join(entry.parentPath, entry.name));
+}
 async function setup(warnings = true) {
   dir = await mkdtemp(join(tmpdir(), "mg-mail-workspace-"));
   const workspaceDir = join(dir, "workspace"), stateDir = join(dir, "state");
@@ -29,7 +33,7 @@ async function setup(warnings = true) {
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     on: (n: string, h: any) => hooks[n] = h, registerTool: (f: any) => factories.push(f),
   } as never);
-  const ctx = { agentId: "main", sessionId: "mail-workspace", workspaceDir };
+  const ctx = { agentId: "main", sessionId: dir, workspaceDir };
   const tool = factories.map(f => f(ctx)).find(t => t.name === "outlook_mail_write");
   const original = { action: "add_attachment", messageId: "synthetic-draft", attachmentName: "file.pdf", sourceWorkspacePath: "file.pdf" };
   const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected_network"));
@@ -40,7 +44,7 @@ it.each([true, false])("preserves actual Host merge and reaches credential gate 
   const result = await x.hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: "mail-ok", params: x.original }, x.ctx);
   expect(result.block).not.toBe(true);
   expect(result.params.sourceWorkspacePath).toBe("file.pdf");
-  expect(result.params.sourceSha256).toBe(createHash("sha256").update("synthetic attachment").digest("hex"));
+  expect(result.params).toEqual(x.original);
   if (result.requireApproval) await result.requireApproval.onResolution("allow-once");
   await x.tool.execute("mail-ok", { ...x.original, ...result.params });
   expect(tokenForAuthorizedOperation).toHaveBeenCalled();
@@ -73,8 +77,7 @@ it("transfers approved snapshot bytes after original source edits and cleans the
   const response = await x.tool.execute("mail-transfer", { ...x.original, ...result.params });
   expect(response.details.ok).toBe(true);
   expect(x.fetch).toHaveBeenCalledTimes(1);
-  const run = result.params.attachmentMediaUri.slice("media://".length);
-  expect(await readdir(join(x.stateDir, "media", run.slice(0, run.lastIndexOf("/"))))).not.toContain(run.slice(run.lastIndexOf("/") + 1));
+  expect(await stagedFiles(x.stateDir)).toEqual([]);
 });
 
 it.each(["oversize", "no-workspace", "other-session"])("fails closed for %s before credentials", async kind => {
@@ -90,7 +93,7 @@ it.each(["oversize", "no-workspace", "other-session"])("fails closed for %s befo
 it("rejects staged mutation between staging and approval", async () => {
   const x = await setup();
   const result = await x.hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: "mail-before-approval", params: x.original }, x.ctx);
-  await writeFile(join(x.stateDir, "media", result.params.attachmentMediaUri.slice("media://".length)), "changed");
+  await writeFile((await stagedFiles(x.stateDir))[0], "changed");
   await result.requireApproval.onResolution("allow-once");
   expect((await x.tool.execute("mail-before-approval", { ...x.original, ...result.params })).details.ok).toBe(false);
   expect(tokenForAuthorizedOperation).not.toHaveBeenCalled(); expect(x.fetch).not.toHaveBeenCalled();
@@ -103,8 +106,28 @@ it.each(["source-param", "staged-bytes"])("rejects changed %s after approval bef
   await result.requireApproval.onResolution("allow-once");
   const merged = { ...x.original, ...result.params };
   if (mutation === "source-param") merged.sourceWorkspacePath = "other.pdf";
-  else await writeFile(join(x.stateDir, "media", result.params.attachmentMediaUri.slice("media://".length)), "changed staged content");
+  else await writeFile((await stagedFiles(x.stateDir))[0], "changed staged content");
   const response = await x.tool.execute("mail-changed", merged);
   expect(response.details.ok).toBe(false);
   expect(tokenForAuthorizedOperation).not.toHaveBeenCalled(); expect(readCredential).not.toHaveBeenCalled(); expect(x.fetch).not.toHaveBeenCalled();
+});
+
+it.each([true, false])("keeps native attachment input byte-stable and executes original params (approval=%s)", async warnings => {
+  const x = await setup(warnings);
+  const first = await x.hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: `native-mail-${warnings}`, params: x.original }, x.ctx);
+  expect(first.block).not.toBe(true);
+  expect(first.params).toEqual(x.original);
+  if (first.requireApproval) await first.requireApproval.onResolution("allow-once");
+  await rm(join(x.workspaceDir, "file.pdf"));
+  const second = await x.hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: `native-mail-${warnings}`, params: x.original }, x.ctx);
+  expect(second.block).not.toBe(true);
+  expect(second.params).toEqual(x.original);
+  if (second.requireApproval) await second.requireApproval.onResolution("allow-once");
+  vi.mocked(tokenForAuthorizedOperation).mockResolvedValueOnce("synthetic-access-token");
+  x.fetch.mockImplementationOnce(async (_url, init) => {
+    expect(Buffer.from(JSON.parse(String(init?.body)).contentBytes, "base64").toString()).toBe("synthetic attachment");
+    return Response.json({ id: "synthetic-attachment", name: "file.pdf", size: 20 });
+  });
+  expect((await x.tool.execute(`native-mail-${warnings}`, x.original)).details.ok).toBe(true);
+  expect(x.fetch).toHaveBeenCalledTimes(1);
 });
