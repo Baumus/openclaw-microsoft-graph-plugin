@@ -4,6 +4,15 @@ export const hostLocales = ["en", "ar", "de", "es", "fa", "fr", "hi", "id", "it"
 export type HostLocale = typeof hostLocales[number];
 const catalogs: Record<string, Record<string, string>> = {
   "en": {
+    "Zurück zum Zugriff": "Back to access",
+    "Standardverbindung": "Default connection",
+    "Ordner verwalten": "Manage folders",
+    "Microsoft-Konto": "Microsoft account",
+    "Weiteres Konto": "Additional account",
+    "Konto öffnen": "Open account",
+    "Konto hinzufügen": "Add account",
+    "Verbindungs-ID": "Connection ID",
+    "Ausgewählt": "Selected",
     "Ordnerfreigabe entfernen": "Remove folder sharing",
     "Zugriff entfernen…": "Remove access…",
     "Aktionen für {agent} auf {path}": "Actions for {agent} on {path}",
@@ -296,6 +305,15 @@ const catalogs: Record<string, Record<string, string>> = {
     "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Status check interrupted. Check the connection; this page will retry."
   },
   "de": {
+    "Zurück zum Zugriff": "Zurück zum Zugriff",
+    "Standardverbindung": "Standardverbindung",
+    "Ordner verwalten": "Ordner verwalten",
+    "Microsoft-Konto": "Microsoft-Konto",
+    "Weiteres Konto": "Weiteres Konto",
+    "Konto öffnen": "Konto öffnen",
+    "Konto hinzufügen": "Konto hinzufügen",
+    "Verbindungs-ID": "Verbindungs-ID",
+    "Ausgewählt": "Ausgewählt",
     "Ordnerfreigabe entfernen": "Ordnerfreigabe entfernen",
     "Zugriff entfernen…": "Zugriff entfernen…",
     "Aktionen für {agent} auf {path}": "Aktionen für {agent} auf {path}",

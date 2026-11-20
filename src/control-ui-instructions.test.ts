@@ -40,7 +40,7 @@ function mount(locale = "de", roots?: Root[]) {
   const settle = async () => { for (let i = 0; i < 100; i++) await Promise.resolve(); };
   const click = (text: string) => { const node = [...container.querySelectorAll("button")].find(button => button.textContent?.includes(text)); expect(node, text).toBeTruthy(); node!.click(); };
   const toggle = (index: number) => { const input = container.querySelectorAll<HTMLInputElement>(".mg-instructions-control input")[index]!; input.focus(); input.click(); };
-  const candidate = async () => { click(locale === "en" ? "Check" : "Prüfen"); await settle(); return (calls.filter(call => call.method === "microsoft-graph.configuration.validate").at(-1)!.params as { policy: Policy }).policy; };
+  const candidate = async () => { click(locale === "en" ? "Check changes" : "Änderungen prüfen"); await settle(); return (calls.filter(call => call.method === "microsoft-graph.configuration.validate").at(-1)!.params as { policy: Policy }).policy; };
   return { container, calls, baseline, settle, click, toggle, candidate, notify: () => listener(), saved: () => structuredClone(saved) };
 }
 
@@ -48,7 +48,7 @@ describe("OneDrive per-agent access removal", () => {
   const menu = (h: ReturnType<typeof mount>, index = 0) => h.container.querySelectorAll<HTMLButtonElement>(".mg-agent-menu-trigger")[index]!;
   const remove = (h: ReturnType<typeof mount>, index = 0) => h.container.querySelectorAll<HTMLButtonElement>(".mg-agent-menu [role=menuitem]")[index]!;
   it("removes only the selected explicit assignment and preserves root caps, other roots/services and grants", async () => {
-    const h = mount(); await h.settle(); h.click("OneDrive"); await h.settle();
+    const h = mount(); await h.settle(); h.click(h.container.querySelector("main")?.textContent?.includes("Agent-Zugriff") ? "Agent-Zugriff" : "Agent access"); h.container.querySelector<HTMLDetailsElement>(".mg-folder-settings")!.open = true; await h.settle();
     const confirm = vi.fn(() => true); vi.stubGlobal("confirm", confirm);
     remove(h).click();
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Reader (reader) auf /Synthetic/Documents"));
@@ -63,7 +63,7 @@ describe("OneDrive per-agent access removal", () => {
   it("preserves restrictive root caps and effective parent grants through review and save", async () => {
     const parent = root("parent"); parent.path = "/Synthetic";
     const child = root("child", true); child.permissions.write = false;
-    const h = mount("de", [child, parent]); await h.settle(); h.click("OneDrive"); await h.settle(); vi.stubGlobal("confirm", vi.fn(() => true));
+    const h = mount("de", [child, parent]); await h.settle(); h.click(h.container.querySelector("main")?.textContent?.includes("Agent-Zugriff") ? "Agent-Zugriff" : "Agent access"); h.container.querySelector<HTMLDetailsElement>(".mg-folder-settings")!.open = true; await h.settle(); vi.stubGlobal("confirm", vi.fn(() => true));
     remove(h).click();
     const expected = structuredClone(h.baseline); delete expected.services.onedrive.allowed_roots[0]!.agents.reader;
     const candidate = await h.candidate(); expect(candidate).toEqual(expected);
@@ -77,13 +77,13 @@ describe("OneDrive per-agent access removal", () => {
     expect(h.calls.some(call => call.method === "plugins.reload")).toBe(false);
   });
   it("cancel leaves the whole draft unchanged and restores the trigger focus", async () => {
-    const h = mount(); await h.settle(); h.click("OneDrive"); await h.settle(); vi.stubGlobal("confirm", vi.fn(() => false));
+    const h = mount(); await h.settle(); h.click(h.container.querySelector("main")?.textContent?.includes("Agent-Zugriff") ? "Agent-Zugriff" : "Agent access"); h.container.querySelector<HTMLDetailsElement>(".mg-folder-settings")!.open = true; await h.settle(); vi.stubGlobal("confirm", vi.fn(() => false));
     remove(h).click(); expect(document.activeElement).toBe(menu(h));
     expect(await h.candidate()).toEqual(h.baseline);
   });
   it("last assignment removal retains an empty deny-by-default root and the add-agent workflow", async () => {
     const only = root("Only", true); delete only.agents.editor;
-    const h = mount("de", [only]); await h.settle(); h.click("OneDrive"); await h.settle(); vi.stubGlobal("confirm", vi.fn(() => true));
+    const h = mount("de", [only]); await h.settle(); h.click(h.container.querySelector("main")?.textContent?.includes("Agent-Zugriff") ? "Agent-Zugriff" : "Agent access"); h.container.querySelector<HTMLDetailsElement>(".mg-folder-settings")!.open = true; await h.settle(); vi.stubGlobal("confirm", vi.fn(() => true));
     remove(h).click();
     expect(h.container.textContent).toContain("Noch kein Agent berechtigt.");
     expect(document.activeElement).toBe(h.container.querySelector(".mg-add-agent"));
@@ -95,7 +95,7 @@ describe("OneDrive per-agent access removal", () => {
     expect(() => authorizeRoot(validatePolicy(candidate), "editor", "only", "write")).toThrow("access_denied");
   });
   it("exposes bounded native light-dismiss menus with keyboard dismissal and no policy mutation", async () => {
-    const h = mount(); await h.settle(); h.click("OneDrive"); await h.settle();
+    const h = mount(); await h.settle(); h.click(h.container.querySelector("main")?.textContent?.includes("Agent-Zugriff") ? "Agent-Zugriff" : "Agent access"); h.container.querySelector<HTMLDetailsElement>(".mg-folder-settings")!.open = true; await h.settle();
     const trigger = menu(h), action = remove(h), panel = action.parentElement!;
     expect(trigger.textContent).toBe("⋯");
     expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
@@ -113,7 +113,7 @@ describe("OneDrive per-agent access removal", () => {
     expect(await h.candidate()).toEqual(h.baseline);
   });
   it("keeps whole-folder removal distinct and localized, with inherited-access wording in English", async () => {
-    const h = mount("en"); await h.settle(); h.click("OneDrive"); await h.settle();
+    const h = mount("en"); await h.settle(); h.click(h.container.querySelector("main")?.textContent?.includes("Agent-Zugriff") ? "Agent-Zugriff" : "Agent access"); h.container.querySelector<HTMLDetailsElement>(".mg-folder-settings")!.open = true; await h.settle();
     expect(remove(h).textContent).toBe("Remove access…");
     expect(h.container.textContent).toContain("Remove folder sharing");
     const confirm = vi.fn(() => false); vi.stubGlobal("confirm", confirm); remove(h).click();
@@ -124,7 +124,7 @@ describe("OneDrive per-agent access removal", () => {
 
 describe("OneDrive root instruction opt-in", () => {
   it("renders one root-wide checkbox per card, defaults off, and preserves preexisting trusted values", async () => {
-    const h = mount(); await h.settle(); h.click("OneDrive"); await h.settle();
+    const h = mount(); await h.settle(); h.click(h.container.querySelector("main")?.textContent?.includes("Agent-Zugriff") ? "Agent-Zugriff" : "Agent access"); h.container.querySelector<HTMLDetailsElement>(".mg-folder-settings")!.open = true; await h.settle();
     expect([...h.container.querySelectorAll<HTMLInputElement>(".mg-instructions-control input")].map(input => input.checked)).toEqual([false, true]);
     expect(h.container.querySelectorAll(".mg-root-card .mg-instructions-control")).toHaveLength(2);
     expect(h.container.querySelectorAll(".mg-instructions-control label")[0]!.textContent).toBe("AGENTS.md als Arbeitsanweisungen verwenden");
@@ -132,14 +132,14 @@ describe("OneDrive root instruction opt-in", () => {
     expect(h.calls.some(call => call.method === "config.patch")).toBe(false);
   });
   it("leaves newly added roots unchecked without writing the optional property", async () => {
-    const h = mount(); await h.settle(); h.click("OneDrive"); await h.settle();
+    const h = mount(); await h.settle(); h.click(h.container.querySelector("main")?.textContent?.includes("Agent-Zugriff") ? "Agent-Zugriff" : "Agent access"); h.container.querySelector<HTMLDetailsElement>(".mg-folder-settings")!.open = true; await h.settle();
     const path = h.container.querySelector<HTMLInputElement>(".mg-add-folder input")!; path.value = "/Synthetic/New"; path.dispatchEvent(new Event("input", { bubbles: true }));
     h.click("Pfad prüfen"); await h.settle(); h.click("Ordner übernehmen"); await h.settle();
     expect(h.container.querySelectorAll<HTMLInputElement>(".mg-instructions-control input")[2]!.checked).toBe(false);
     expect((await h.candidate()).services.onedrive.allowed_roots[2]).not.toHaveProperty("agents_instructions");
   });
   it("roundtrips on/off without dirty state or unrelated grant changes and retains focus on the correct root", async () => {
-    const h = mount(); await h.settle(); h.click("OneDrive"); await h.settle(); const confirm = vi.fn(); vi.stubGlobal("confirm", confirm);
+    const h = mount(); await h.settle(); h.click(h.container.querySelector("main")?.textContent?.includes("Agent-Zugriff") ? "Agent-Zugriff" : "Agent access"); h.container.querySelector<HTMLDetailsElement>(".mg-folder-settings")!.open = true; await h.settle(); const confirm = vi.fn(); vi.stubGlobal("confirm", confirm);
     h.toggle(1); h.toggle(1); h.toggle(0); h.toggle(0);
     expect(document.activeElement).toBe(h.container.querySelector(".mg-instructions-control input"));
     expect(h.container.textContent).toContain("Keine ungespeicherten Änderungen");
@@ -147,7 +147,7 @@ describe("OneDrive root instruction opt-in", () => {
     expect(confirm).not.toHaveBeenCalled();
   });
   it("restores each checkbox and info button for the collision labels foo and help-foo", async () => {
-    const h = mount("de", [root("foo"), root("help-foo")]); await h.settle(); h.click("OneDrive"); await h.settle();
+    const h = mount("de", [root("foo"), root("help-foo")]); await h.settle(); h.click(h.container.querySelector("main")?.textContent?.includes("Agent-Zugriff") ? "Agent-Zugriff" : "Agent access"); h.container.querySelector<HTMLDetailsElement>(".mg-folder-settings")!.open = true; await h.settle();
     for (const index of [0, 1]) {
       for (const selector of [".mg-instructions-control input", ".mg-instructions-info"]) {
         const control = h.container.querySelectorAll<HTMLElement>(selector)[index]!;
@@ -161,7 +161,7 @@ describe("OneDrive root instruction opt-in", () => {
     expect(document.activeElement).toBe(h.container.querySelectorAll(".mg-instructions-control input")[1]);
   });
   it.each([0, 1])("saves root %i through the existing review flow with exact property and grant preservation", async index => {
-    const h = mount(); await h.settle(); h.click("OneDrive"); await h.settle(); h.toggle(index);
+    const h = mount(); await h.settle(); h.click(h.container.querySelector("main")?.textContent?.includes("Agent-Zugriff") ? "Agent-Zugriff" : "Agent access"); h.container.querySelector<HTMLDetailsElement>(".mg-folder-settings")!.open = true; await h.settle(); h.toggle(index);
     expect(h.calls.some(call => call.method === "config.patch")).toBe(false);
     const expected = structuredClone(h.baseline);
     if (index === 0) expected.services.onedrive.allowed_roots[0]!.agents_instructions = "trusted";
@@ -178,7 +178,7 @@ describe("OneDrive root instruction opt-in", () => {
     expect(h.calls.some(call => call.method === "plugins.reload")).toBe(false);
   });
   it("associates each info button with unique native light-dismiss help and preserves the approved boundary wording", async () => {
-    const h = mount(); await h.settle(); h.click("OneDrive"); await h.settle();
+    const h = mount(); await h.settle(); h.click(h.container.querySelector("main")?.textContent?.includes("Agent-Zugriff") ? "Agent-Zugriff" : "Agent access"); h.container.querySelector<HTMLDetailsElement>(".mg-folder-settings")!.open = true; await h.settle();
     const buttons = [...h.container.querySelectorAll(".mg-instructions-info")];
     const ids = buttons.map(button => button.getAttribute("aria-controls")); expect(new Set(ids).size).toBe(2);
     for (const button of buttons) {
@@ -192,7 +192,7 @@ describe("OneDrive root instruction opt-in", () => {
     }
   });
   it("provides English fallback without altering the German label", async () => {
-    const h = mount("en"); await h.settle(); h.click("OneDrive"); await h.settle();
+    const h = mount("en"); await h.settle(); h.click(h.container.querySelector("main")?.textContent?.includes("Agent-Zugriff") ? "Agent-Zugriff" : "Agent access"); h.container.querySelector<HTMLDetailsElement>(".mg-folder-settings")!.open = true; await h.settle();
     expect(h.container.querySelector(".mg-instructions-control label")!.textContent).toBe("Use AGENTS.md as working instructions");
     expect(h.container.querySelector(".mg-instructions-help")!.textContent).toContain("Acknowledgement does not guarantee full compliance.");
   });

@@ -11,16 +11,18 @@ import { planChangedToolExposure, planPolicyToolReconciliation, requiredPolicyTo
 
 type Entries = Parameters<typeof planToolExposure>[1];
 type Expected = ReturnType<typeof planToolExposure>["expected"];
-type Snapshot = { hash: string; config: { tools?: { deny?: string[] }; agents?: { entries?: Entries }; plugins?: { entries?: Record<string, { config?: { policy?: unknown } }> } }; parsed?: unknown };
+type Snapshot = { hash: string; config: { tools?: { deny?: string[] }; agents?: { entries?: Entries }; plugins?: { entries?: Record<string, { config?: { policy?: unknown; accounts?: Record<string, unknown> } }> } }; parsed?: unknown };
 export type ActivationIntent = { version: 1; id: string; createdAt: number; targetHash: string; ownerHash: string; sourceHash: string; beforeToolsHash: string; required: Record<string, string[]>; state: "prepared" | "issued" | "complete" | "cancelled"; expected?: Expected };
 const digest = (v: unknown) => createHash("sha256").update(canonicalPolicy(v)).digest("hex");
 const policyHash = (v: unknown) => digest(validatePolicy(v));
-const savedPolicy = (s: Snapshot) => s.config.plugins?.entries?.["microsoft-graph"]?.config?.policy;
-function sourceHash(s: Snapshot) {
+const configEntry = (s: Snapshot) => s.config.plugins?.entries?.["microsoft-graph"]?.config;
+const savedPolicy = (s: Snapshot, accountId?: string) => accountId === undefined ? configEntry(s)?.policy : configEntry(s)?.accounts?.[accountId];
+function sourceHash(s: Snapshot, accountId?: string) {
   // Bind authored include ownership without persisting paths or the policy.
-  const plugins = (s.parsed as { plugins?: { $include?: unknown; entries?: Record<string, { config?: { policy?: unknown } }> } } | undefined)?.plugins;
-  const policy = plugins?.entries?.["microsoft-graph"]?.config?.policy;
-  return digest({ pluginsInclude: plugins?.$include ?? null, policyInclude: policy && typeof policy === "object" && "$include" in policy ? policy.$include : null });
+  const plugins = (s.parsed as { plugins?: { $include?: unknown; entries?: Record<string, { config?: { policy?: unknown; accounts?: Record<string, unknown> } }> } } | undefined)?.plugins;
+  const config = plugins?.entries?.["microsoft-graph"]?.config;
+  const policy = accountId === undefined ? config?.policy : config?.accounts?.[accountId];
+  return digest({ ...(accountId === undefined ? {} : { accountId, accountsInclude: config?.accounts?.$include ?? null }), pluginsInclude: plugins?.$include ?? null, policyInclude: policy && typeof policy === "object" && "$include" in policy ? policy.$include : null });
 }
 function toolsHash(s: Snapshot, required: Record<string, string[]>) {
   return digest({ deny: s.config.tools?.deny ?? [], agents: Object.fromEntries(Object.keys(required).map(id => [id, s.config.agents?.entries?.[id] ?? null])) });
@@ -45,10 +47,10 @@ export class ActivationJournal {
   private readonly file: string;
   private readonly directory: string;
   private readonly ownerHash: string;
-  constructor(private stateDir: string, private snapshot: () => Promise<Snapshot> = async () => (await readConfigFileSnapshotForWrite()).snapshot as unknown as Snapshot, owner: string = "", private projectHash: (rawHash: string) => string = hash => hash) {
+  constructor(private stateDir: string, private snapshot: () => Promise<Snapshot> = async () => (await readConfigFileSnapshotForWrite()).snapshot as unknown as Snapshot, owner: string = "", private projectHash: (rawHash: string) => string = hash => hash, private accountId?: string) {
     if (!owner) throw Error("activation_identity_required");
     this.ownerHash = digest({ authority: "operator.admin", owner });
-    this.directory = join(stateDir, "plugin-data", "microsoft-graph", "activation"); this.file = join(this.directory, "pending.json");
+    this.directory = join(stateDir, "plugin-data", "microsoft-graph", "activation", ...(accountId === undefined ? [] : ["accounts", accountId])); this.file = join(this.directory, "pending.json");
   }
   private async read(): Promise<ActivationIntent | null> {
     try {
@@ -74,11 +76,11 @@ export class ActivationJournal {
     return this.transaction(async (current, write) => {
       if (current && current.ownerHash !== this.ownerHash && ["prepared", "issued"].includes(current.state) && Date.now() - current.createdAt <= 24 * 3600000) throw Error("activation_owner_conflict");
       const s = await this.snapshot();
-      if (this.projectHash(s.hash) !== baseHash || policyHash(savedPolicy(s)) !== policyHash(before)) throw Error("activation_conflict");
+      if (this.projectHash(s.hash) !== baseHash || policyHash(savedPolicy(s, this.accountId)) !== policyHash(before)) throw Error("activation_conflict");
       const plan = planChangedToolExposure(before, after, s.config.agents?.entries, s.config.tools?.deny);
       const required = Object.fromEntries(Object.entries(plan.expected).map(([id, e]) => [id, e.value.filter(n => !(s.config.agents?.entries?.[id]?.tools?.[e.key] ?? []).includes(n))]));
       if (!Object.keys(required).length) throw Error("activation_no_tools");
-      const record: ActivationIntent = { version: 1, ownerHash: this.ownerHash, id: randomUUID(), createdAt: Date.now(), targetHash: policyHash(after), sourceHash: sourceHash(s), beforeToolsHash: toolsHash(s, required), required, state: "prepared" };
+      const record: ActivationIntent = { version: 1, ownerHash: this.ownerHash, id: randomUUID(), createdAt: Date.now(), targetHash: policyHash(after), sourceHash: sourceHash(s, this.accountId), beforeToolsHash: toolsHash(s, required), required, state: "prepared" };
       await write(record); return record;
     });
   }
@@ -88,13 +90,13 @@ export class ActivationJournal {
     return this.transaction(async (current, write) => {
       if (current && ["prepared", "issued"].includes(current.state) && Date.now() - current.createdAt <= 24 * 3600000) throw Error("activation_pending");
       const s = await this.snapshot();
-      const policy = validatePolicy(savedPolicy(s)); const targetHash = policyHash(policy);
+      const policy = validatePolicy(savedPolicy(s, this.accountId)); const targetHash = policyHash(policy);
       if (this.projectHash(s.hash) !== baseHash || activeHash !== targetHash) throw Error("activation_conflict");
-      const plan = planPolicyToolReconciliation(policy, s.config.agents?.entries, s.config.tools?.deny);
+      const plan = planPolicyToolReconciliation(policy, s.config.agents?.entries, s.config.tools?.deny, this.accountId !== undefined || Object.keys(configEntry(s)?.accounts ?? {}).length > 0);
       if (!Object.keys(plan.patch).length) return null;
       const desired = requiredPolicyTools(policy);
       const required = Object.fromEntries(Object.keys(plan.patch).map(agent => [agent, desired[agent] ?? []]));
-      const record: ActivationIntent = { version: 1, ownerHash: this.ownerHash, id: randomUUID(), createdAt: Date.now(), targetHash, sourceHash: sourceHash(s), beforeToolsHash: toolsHash(s, required), required, expected: plan.expected, state: "issued" };
+      const record: ActivationIntent = { version: 1, ownerHash: this.ownerHash, id: randomUUID(), createdAt: Date.now(), targetHash, sourceHash: sourceHash(s, this.accountId), beforeToolsHash: toolsHash(s, required), required, expected: plan.expected, state: "issued" };
       await write(record);
       return { record, patch: plan.patch, expected: plan.expected, baseHash };
     });
@@ -103,14 +105,14 @@ export class ActivationJournal {
     const record = await this.read();
     if (!record || record.ownerHash !== this.ownerHash || ["complete", "cancelled"].includes(record.state) || Date.now() - record.createdAt > 24 * 3600000) return null;
     const s = await this.snapshot();
-    if (policyHash(savedPolicy(s)) !== record.targetHash || sourceHash(s) !== record.sourceHash) return null;
+    if (policyHash(savedPolicy(s, this.accountId)) !== record.targetHash || sourceHash(s, this.accountId) !== record.sourceHash) return null;
     return record;
   }
   async claim(id: string, activeHash: string | undefined) {
     return this.transaction(async (record, write) => {
       if (!record || record.ownerHash !== this.ownerHash || record.id !== id || record.state !== "prepared" || Date.now() - record.createdAt > 24 * 3600000) throw Error("activation_not_claimable");
       const s = await this.snapshot();
-      if (activeHash !== record.targetHash || policyHash(savedPolicy(s)) !== record.targetHash || sourceHash(s) !== record.sourceHash || toolsHash(s, record.required) !== record.beforeToolsHash) throw Error("activation_conflict");
+      if (activeHash !== record.targetHash || policyHash(savedPolicy(s, this.accountId)) !== record.targetHash || sourceHash(s, this.accountId) !== record.sourceHash || toolsHash(s, record.required) !== record.beforeToolsHash) throw Error("activation_conflict");
       const plan = planToolExposure(record.required, s.config.agents?.entries, s.config.tools?.deny);
       const baseHash = this.projectHash(s.hash);
       record.state = "issued"; record.expected = plan.expected;
@@ -129,7 +131,7 @@ export class ActivationJournal {
     return this.transaction(async (record, write) => {
       if (!record || record.ownerHash !== this.ownerHash || record.id !== id || record.state !== "issued" || !record.expected) throw Error("activation_conflict");
       const s = await this.snapshot();
-      if (activeHash !== record.targetHash || policyHash(savedPolicy(s)) !== record.targetHash || !oneDriveToolExposureSaved(s.config.agents?.entries, record.expected)) throw Error("activation_conflict");
+      if (activeHash !== record.targetHash || policyHash(savedPolicy(s, this.accountId)) !== record.targetHash || !oneDriveToolExposureSaved(s.config.agents?.entries, record.expected)) throw Error("activation_conflict");
       record.state = "complete"; await write(record); return { complete: true };
     });
   }

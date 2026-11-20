@@ -1,3 +1,5 @@
+import { accountStateDir, selectAccount } from "./accounts.js";
+import { ensureDirectoryWithinRoot } from "@openclaw/fs-safe/advanced";
 import { ActivationJournal } from "./config-activation.js";
 import { createHash } from "node:crypto";
 import { canonicalPolicy } from "./config-policy-identity.js";
@@ -7,7 +9,7 @@ import { tokenForAuthorizedOperation } from "./credential.js";
 import { canonicalGraphContinuation, graphRequest, safeId } from "./graph.js";
 
 type ActivationClient = { authenticatedUserId?: string; connect?: { device?: { id?: string } } };
-type HandlerContext = { client?: ActivationClient | null; context?: { configRevisionProjector?: { projectRawHash(rawHash: string): string } }; params: unknown; respond(ok: boolean, payload?: unknown, error?: unknown): void };
+type HandlerContext = { client?: ActivationClient | null; context?: { configRevisionProjector?: { projectRawHash(rawHash: string): string } }; accountId?: string; params: unknown; respond(ok: boolean, payload?: unknown, error?: unknown): void };
 type GatewayApi = { version?: string; registerGatewayMethod(method: string, handler: (context: HandlerContext) => void | Promise<void>, options: { scope: "operator.admin" }): void };
 
 /** Only host-authenticated handshake fields, never RPC parameters or a client class name.
@@ -20,21 +22,44 @@ export function activationOwner(client?: ActivationClient | null): string {
 }
 
 /** Admin-only validation and bounded activation intent. Never returns credential material. */
-export function registerConfigurationUiMethods(api: GatewayApi, config?: { policy?: unknown; credentialVaultKey?: unknown; requestTimeoutMs?: number }, stateDir?: () => string): void {
+export function registerConfigurationUiMethods(api: GatewayApi, config?: { policy?: unknown; accounts?: import("./accounts.js").AccountConfig["accounts"]; credentialVaultKey?: unknown; requestTimeoutMs?: number }, stateDir?: () => string): void {
+  const named = new Map<string, Map<string, Parameters<GatewayApi["registerGatewayMethod"]>[1]>>();
+  for (const accountId of Object.keys(config?.accounts ?? {})) {
+    const selected = selectAccount({ ...config!, policy: undefined }, accountId);
+    const methods = new Map<string, Parameters<GatewayApi["registerGatewayMethod"]>[1]>();
+    registerConfigurationHandlers({ version: api.version, registerGatewayMethod(method, handler) { methods.set(method, handler); } }, selected, stateDir);
+    named.set(accountId, methods);
+  }
+  registerConfigurationHandlers({
+    version: api.version,
+    registerGatewayMethod(method, handler, options) {
+      api.registerGatewayMethod(method, context => {
+        const params = context.params;
+        if (!params || typeof params !== "object" || Array.isArray(params) || !Object.hasOwn(params, "accountId")) return handler(context);
+        const { accountId, ...rest } = params as Record<string, unknown>;
+        const selected = typeof accountId === "string" ? named.get(accountId)?.get(method) : undefined;
+        if (!selected) return context.respond(false, undefined, { code: "INVALID_REQUEST", message: "Microsoft Graph connection is not active" });
+        return selected({ ...context, accountId: accountId as string, params: rest });
+      }, options);
+    },
+  }, config, stateDir);
+}
+
+function registerConfigurationHandlers(api: GatewayApi, config?: { policy?: unknown; credentialVaultKey?: unknown; requestTimeoutMs?: number }, stateDir?: () => string): void {
   // Capture this generation, not a later mutated config object. No policy or
   // credential values leave this method, and no provider access is performed.
   const activeVersion = api.version ?? null;
   const digest = (value: unknown) => createHash("sha256").update(canonicalPolicy(validatePolicy(value))).digest("hex");
   let activePolicyHash: string | undefined;
   try { if (config?.policy) activePolicyHash = digest(config.policy); } catch { /* Invalid/missing active policy stays unconfirmed. */ }
-  api.registerGatewayMethod("microsoft-graph.configuration.activation", async ({ params, respond, client, context }) => {
+  api.registerGatewayMethod("microsoft-graph.configuration.activation", async ({ params, respond, client, context, accountId }) => {
     try {
       if (!stateDir || !params || typeof params !== "object" || Array.isArray(params) || JSON.stringify(params).length > 512_000) throw Error("invalid_activation_parameters");
       const p = params as Record<string, unknown>;
       const owner = activationOwner(client);
       // 2026.10.8 projects public CAS revisions; older hosts use raw hashes.
       const projector = context?.configRevisionProjector;
-      const journal = new ActivationJournal(stateDir(), undefined, owner, projector ? hash => projector.projectRawHash(hash) : undefined);
+      const journal = new ActivationJournal(stateDir(), undefined, owner, projector ? hash => projector.projectRawHash(hash) : undefined, accountId);
       let result: unknown;
       if (p.action === "status" && Object.keys(p).length === 1) result = await journal.status();
       else if (p.action === "reconcile" && Object.keys(p).length === 2 && typeof p.baseHash === "string") result = await journal.reconcile(p.baseHash, activePolicyHash);
@@ -64,7 +89,7 @@ export function registerConfigurationUiMethods(api: GatewayApi, config?: { polic
       respond(false, undefined, { code: "INVALID_REQUEST", message: "Invalid Microsoft Graph policy" });
     }
   }, { scope: "operator.admin" });
-  api.registerGatewayMethod("microsoft-graph.configuration.resolveFolder", async ({ params, respond }) => {
+  api.registerGatewayMethod("microsoft-graph.configuration.resolveFolder", async ({ params, respond, accountId }) => {
     try {
       if (!config?.policy || !stateDir || !params || typeof params !== "object" || Array.isArray(params) || Object.keys(params).length !== 1) throw new Error("invalid_rpc_parameters");
       const raw = (params as { path?: unknown }).path;
@@ -76,7 +101,10 @@ export function registerConfigurationUiMethods(api: GatewayApi, config?: { polic
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 15000);
       try {
-        const token = await tokenForAuthorizedOperation({ config, policy, allowedScopes: ["Files.Read"], stateDir: stateDir(), signal: controller.signal, requestTimeoutMs: config.requestTimeoutMs ?? 5000 });
+        const rootDir = stateDir();
+        const connectionDir = accountStateDir(rootDir, accountId);
+        if (accountId && !(await ensureDirectoryWithinRoot({ rootDir, requestedPath: connectionDir, scopeLabel: "Microsoft Graph connection storage", mode: 0o700 })).ok) throw Error("connection_storage_unavailable");
+        const token = await tokenForAuthorizedOperation({ config, policy, allowedScopes: ["Files.Read"], stateDir: connectionDir, signal: controller.signal, requestTimeoutMs: config.requestTimeoutMs ?? 5000 });
         const selector = segments.length ? `/me/drive/root:/${segments.map(encodeURIComponent).join("/")}:` : "/me/drive/root";
         const item = await graphRequest(token, `${selector}?$select=id,name,folder,parentReference`, { signal: controller.signal, maxBytes: 16_384 });
         if (typeof item?.id !== "string" || !item.id || !item.folder || typeof item?.parentReference?.driveId !== "string" || !item.parentReference.driveId) throw new Error("not_folder");
@@ -84,14 +112,17 @@ export function registerConfigurationUiMethods(api: GatewayApi, config?: { polic
       } finally { clearTimeout(timer); }
     } catch { respond(false, undefined, { code: "INVALID_REQUEST", message: "OneDrive folder could not be verified" }); }
   }, { scope: "operator.admin" });
-  api.registerGatewayMethod("microsoft-graph.configuration.calendars", async ({ params, respond }) => {
+  api.registerGatewayMethod("microsoft-graph.configuration.calendars", async ({ params, respond, accountId }) => {
     try {
       if (!config?.policy || !stateDir || !params || typeof params !== "object" || Array.isArray(params) || Object.keys(params).length) throw new Error("invalid_rpc_parameters");
       const policy = validatePolicy(config.policy);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 15000);
       try {
-        const token = await tokenForAuthorizedOperation({ config, policy, allowedScopes: ["Calendars.Read"], stateDir: stateDir(), signal: controller.signal, requestTimeoutMs: config.requestTimeoutMs ?? 5000 });
+        const rootDir = stateDir();
+        const connectionDir = accountStateDir(rootDir, accountId);
+        if (accountId && !(await ensureDirectoryWithinRoot({ rootDir, requestedPath: connectionDir, scopeLabel: "Microsoft Graph connection storage", mode: 0o700 })).ok) throw Error("connection_storage_unavailable");
+        const token = await tokenForAuthorizedOperation({ config, policy, allowedScopes: ["Calendars.Read"], stateDir: connectionDir, signal: controller.signal, requestTimeoutMs: config.requestTimeoutMs ?? 5000 });
         const primary = await graphRequest(token, "/me/calendar?$select=id,name", { signal: controller.signal, maxBytes: 16_384 });
         if (typeof primary?.id !== "string" || !primary.id || typeof primary?.name !== "string") throw new Error("invalid_provider_response");
         const calendars: Array<{ id: string; name: string }> = [];
