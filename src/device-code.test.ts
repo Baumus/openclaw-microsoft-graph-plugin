@@ -30,6 +30,30 @@ async function terminal(signIn: DeviceCodeSignIn, sessionId: string) {
 }
 
 describe("gateway-side device-code sign-in", () => {
+  it("allows named OneDrive setup before grants without changing the policy", async () => {
+    const { state, config } = await setup();
+    config.policy.services.onedrive.allowed_roots = [];
+    for (const service of ["calendar", "contacts", "mail", "todo"] as const) {
+      const policy = config.policy.services[service];
+      if (policy) policy.agents = {};
+    }
+    const fetchFn = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const body = new URLSearchParams(init?.body as URLSearchParams);
+      if (body.has("scope")) {
+        expect(body.get("scope")).toBe("Files.Read offline_access");
+        return response(deviceResponse);
+      }
+      return response({ refresh_token: "synthetic-refresh", scope: "Files.Read offline_access" });
+    });
+    const legacy = new DeviceCodeSignIn(config, () => state, fetchFn);
+    await expect(legacy.start(clientId, tenant)).rejects.toThrow("invalid_policy");
+    expect(fetchFn).not.toHaveBeenCalled();
+    const named = new DeviceCodeSignIn(config, () => state, fetchFn, async () => undefined, true);
+    const started = await named.start(clientId, tenant);
+    expect(await terminal(named, started.sessionId)).toEqual({ state: "created", scopes: ["Files.Read", "offline_access"] });
+    expect(requiredPolicyScopes(config.policy)).toEqual([]);
+  });
+
   it("stores the exact granted workload scopes and refresh token only in the vault", async () => {
     const { state, key, config } = await setup();
     let requested = ""; let deviceRequests = 0;

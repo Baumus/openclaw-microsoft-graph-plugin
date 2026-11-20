@@ -25,8 +25,16 @@ let rejected=false;
 try {await change("both")} catch(e){rejected=String(e).includes("$include");console.log("combined",e.code,String(e.message).slice(0,180));}
 if(!rejected) throw Error("combined must reject");
 await change("policy");await change("tools");
+const {snapshot,writeOptions}=await readConfigFileSnapshotForWrite();
+const next=structuredClone(snapshot.sourceConfig);
+const graph=next.plugins.entries["microsoft-graph"].config;
+graph.accounts={work:{version:2,rules:{default:"deny"},services:{onedrive:{allowed_roots:[]},calendar:{agents:{}},mail:{agents:{}},todo:{agents:{}}}}};
+graph.accountLabels={work:"Büro"};
+await replaceConfigFile({sourceConfig:next,baseHash:snapshot.hash,writeOptions:{...writeOptions,skipOutputLogs:true},afterWrite:{mode:"none",reason:"synthetic account creation"}});
+
 const root=JSON.parse(await fs.readFile(process.env.OPENCLAW_CONFIG_PATH));
 const include=JSON.parse(await fs.readFile(path.join(dir,'plugins.json')));
 if(root.plugins.$include!=="plugins.json" || include.entries["microsoft-graph"].config.policy.services.calendar.agents.synthetic.operations[0]!=="read" || !root.agents.entries.synthetic.tools.alsoAllow.includes("outlook_calendar_read"))throw Error("bad result");
-console.log("split writes PASS: include retained; exact calendar tools and policy persisted");
+if(include.entries["microsoft-graph"].config.accountLabels.work!=="Büro" || include.entries["microsoft-graph"].config.accounts.work.rules.default!=="deny") throw Error("account creation not saved");
+console.log("account creation and split writes PASS: include retained; exact calendar tools and policy persisted");
 await fs.rm(dir,{recursive:true,force:true});
