@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.26.0
+
+- Support named Microsoft Graph connections with independent encrypted OAuth state and per-agent resource policies. Existing calls without an account ID continue to use the legacy connection.
+
 ## 3.25.8
 
 - Match the approved Control UI layout with desktop sidebar, responsive mobile navigation, a dedicated account page, and a saved-access overview.

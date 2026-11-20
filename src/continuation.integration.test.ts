@@ -215,7 +215,7 @@ describe("opaque continuation tool integration", () => {
     ] as const;
     for (const [service, toolName] of shared) {
       const schema = metadata.tools.find((tool) => tool.name === toolName)!.parameters as any;
-      const schemaFields = Object.keys(schema.properties).sort();
+      const schemaFields = Object.keys(schema.properties).filter((field) => field !== "accountId").sort();
       const routedFields = [...new Set(Object.values(READ_ACTION_FIELDS[service]).flat())].sort();
       expect(routedFields, service).toEqual(schemaFields);
     }
@@ -228,7 +228,7 @@ describe("opaque continuation tool integration", () => {
     };
     for (const [toolName, fields] of Object.entries(oneDriveSchemas)) {
       const schema = metadata.tools.find((tool) => tool.name === toolName)!.parameters as any;
-      expect(Object.keys(schema.properties), toolName).toEqual(fields);
+      expect(Object.keys(schema.properties), toolName).toEqual([...fields, "accountId"]);
     }
     const searchTool = metadata.tools.find((tool) => tool.name === "onedrive_search")!;
     const searchSchema = searchTool.parameters as any;

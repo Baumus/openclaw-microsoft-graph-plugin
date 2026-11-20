@@ -97,3 +97,72 @@ describe("vault authorization ordering", () => {
     await rm(workspaceDir, { recursive: true, force: true });
   });
 });
+
+describe("named connections", () => {
+  function runtime() {
+    const factories: Array<(context: any) => any> = [];
+    const hooks: Record<string, (...args: any[]) => Promise<any>> = {};
+    const first = graphPolicyFixture();
+    const denied = graphPolicyFixture();
+    denied.services.calendar.agents = {};
+    denied.services.mail.agents = {};
+    denied.services.contacts = { agents: {} };
+    denied.services.todo.agents = {};
+    denied.services.onedrive.allowed_roots = [];
+    entry.register({
+      pluginConfig: {
+        enabled: true, credentialVaultKey: key(), policy: first,
+        accounts: { work: first, personal: first, private: denied },
+      },
+      runtime: { state: { resolveStateDir: () => "/synthetic-graph-state" } },
+      registerTool: (factory: any) => factories.push(factory),
+      on: (name: string, handler: any) => { hooks[name] = handler; },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    } as any);
+    const context = { agentId: "main", sessionId: "account-session" };
+    const tools = Object.fromEntries(factories.map((factory) => {
+      const tool = factory(context);
+      return [tool.name, tool];
+    }));
+    return { tools, hooks, context };
+  }
+
+  it("discovers only granted connections and isolates concurrent credentials including legacy", async () => {
+    const { tools } = runtime();
+    const discovered = await tools.microsoft_graph_capabilities.execute("discover", {});
+    expect(discovered.details.accounts.map((account: { accountId: string }) => account.accountId)).toEqual(["work", "personal"]);
+    const calendar = tools.outlook_calendar_read;
+    for (const accountId of ["private", "missing", "../work"]) {
+      const response = await calendar.execute("denied", { action: "list_calendars", accountId });
+      expect(response.details).toMatchObject({ ok: false, error: "access_denied" });
+    }
+    expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
+    mocks.tokenForAuthorizedOperation.mockResolvedValue("synthetic-token");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ value: [] })));
+    try {
+      const results = await Promise.all(["work", "personal", undefined].map((accountId) =>
+        calendar.execute(`read-${accountId ?? "legacy"}`, { action: "list_calendars", accountId })));
+      for (const response of results) expect(response.details).toMatchObject({ ok: true });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+    expect(mocks.tokenForAuthorizedOperation.mock.calls.map(([input]) => input.stateDir).sort()).toEqual([
+      "/synthetic-graph-state",
+      "/synthetic-graph-state/plugin-data/microsoft-graph/accounts/personal",
+      "/synthetic-graph-state/plugin-data/microsoft-graph/accounts/work",
+    ]);
+  });
+
+  it("does not let an unchanged mutation reuse a native approval from another connection", async () => {
+    const { tools, hooks, context } = runtime();
+    const toolName = "outlook_mail_write";
+    const toolCallId = "cross-account-approval";
+    const params = { action: "send_draft", messageId: "synthetic", accountId: "work" };
+    const gate = await hooks.before_tool_call({ toolName, toolCallId, params }, context);
+    expect(gate.requireApproval.description).toContain("Connection: work");
+    await gate.requireApproval.onResolution("allow-once");
+    const result = await tools[toolName].execute(toolCallId, { ...params, accountId: "personal" });
+    expect(result.details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
+    expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
+  });
+});
