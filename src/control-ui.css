@@ -209,3 +209,73 @@
   flex-wrap: wrap;
   margin-top: 16px;
 }
+
+/* The integration owns its navigation, not the surrounding Control UI shell. */
+.mg-ui {
+  padding: 0;
+  overflow: clip;
+  border: 1px solid var(--mg-border);
+  border-radius: 16px;
+  background: var(--mg-bg);
+}
+.mg-ui .mg-header {
+  padding: 15px 22px;
+  background: var(--mg-panel);
+}
+.mg-shell {
+  display: grid;
+  grid-template-columns: 177px minmax(0, 1fr);
+  min-height: 565px;
+}
+.mg-ui .mg-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 20px 12px;
+  border-inline-end: 1px solid var(--mg-border);
+  background: var(--bg-content, var(--mg-bg));
+}
+.mg-ui .mg-steps .mg-button {
+  justify-content: flex-start;
+  text-align: start;
+  min-width: 0;
+}
+.mg-ui .mg-steps .mg-button.active {
+  color: var(--mg-text);
+  background: color-mix(in srgb, var(--mg-accent) 11%, var(--mg-panel));
+  border-color: transparent;
+  border-inline-start-color: var(--mg-accent);
+}
+.mg-content { min-width: 0; padding: 24px; }
+.mg-content .mg-account-context {
+  margin: 0 0 16px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid var(--mg-border);
+}
+.mg-account-context strong { display: block; }
+.mg-page-title { margin: 0; font-size: clamp(25px, 3vw, 30px); letter-spacing: -.026em; }
+.mg-overview h2 { margin: 0 0 8px; font-size: 1.1rem; }
+.mg-service-summary { margin: 0; }
+.mg-summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 0;
+}
+.mg-summary-row + .mg-summary-row { border-top: 1px solid var(--mg-border); }
+.mg-summary-row dt { font-weight: 650; }
+.mg-summary-row dd { margin: 0; white-space: normal; }
+@media (max-width: 680px) {
+  .mg-shell { display: block; min-height: 0; }
+  .mg-ui .mg-steps {
+    flex-direction: row;
+    flex-wrap: wrap;
+    padding: 8px;
+    border-inline-end: 0;
+    border-bottom: 1px solid var(--mg-border);
+  }
+  .mg-content { padding: 15px; }
+}
