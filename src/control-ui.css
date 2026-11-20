@@ -279,3 +279,29 @@
   }
   .mg-content { padding: 15px; }
 }
+
+
+.mg-ui .mg-account-select {
+  max-width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--mg-border);
+  border-radius: 8px;
+  color: var(--mg-text);
+  background: var(--mg-panel);
+}
+.mg-account-context { flex-wrap: wrap; }
+.mg-access-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.mg-access-grid > div { min-width: 0; display: grid; gap: 12px; }
+.mg-folder-settings > summary { cursor: pointer; padding-block: 10px; }
+.mg-account-notice { margin-bottom: 12px; }
+.mg-account-notice p { margin-bottom: 0; }
+@media (max-width: 960px) { .mg-access-grid { grid-template-columns: minmax(0, 1fr); } }
+.mg-folder-settings .mg-root-grid { grid-template-columns: minmax(0, 1fr); }
+.mg-folder-settings .mg-agent-row { display: flex; flex-wrap: wrap; }
+.mg-folder-settings .mg-agent-name { flex: 1 1 64px; min-width: 0; }

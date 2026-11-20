@@ -114,7 +114,7 @@ export function requiredPolicyTools(policy: AccessPolicy): Record<string, string
 }
 /** Reconcile only exact Graph-owned opt-ins. Broad grants and other policy layers
  * remain operator-owned. A blocked agent must not prevent repair of its peers. */
-export function planPolicyToolReconciliation(policy: AccessPolicy, entries: Record<string, AgentEntry> | undefined, globalDeny: string[] = []) {
+export function planPolicyToolReconciliation(policy: AccessPolicy, entries: Record<string, AgentEntry> | undefined, globalDeny: string[] = [], preserveSharedTools = false) {
   const required = requiredPolicyTools(policy);
   const patch: ReturnType<typeof planToolExposure>["patch"] = {};
   const expected: ReturnType<typeof planToolExposure>["expected"] = {};
@@ -126,7 +126,7 @@ export function planPolicyToolReconciliation(policy: AccessPolicy, entries: Reco
     const before = tools[key] ?? [];
     const blocked = names.filter(name => [...globalDeny, ...(tools.deny ?? [])].some(pattern => ["group:plugins", "microsoft-graph"].includes(pattern.toLowerCase()) || matches(pattern, name)));
     const missing = names.filter(name => !before.some(pattern => ["group:plugins", "microsoft-graph"].includes(pattern.toLowerCase()) || matches(pattern, name)));
-    const stale = before.filter(name => ownedTools.has(name.toLowerCase()) && !names.includes(name.toLowerCase()));
+    const stale = preserveSharedTools ? [] : before.filter(name => ownedTools.has(name.toLowerCase()) && !names.includes(name.toLowerCase()));
     if (!missing.length && !stale.length && !blocked.length) continue;
     const issue = drift[agent] = { missing, stale, blocked, reason: undefined as string | undefined };
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(agent)) { issue.reason = "unsupported_agent_id"; continue; }

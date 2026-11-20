@@ -27,18 +27,22 @@ try {
     await page.evaluate(() => {
       const root = (label, trusted = false) => ({ label, path: `/Synthetic/${label}`, drive_id: "synthetic-drive", item_id: label, include_descendants: true, ...(trusted ? { agents_instructions: "trusted" } : {}), permissions: { read: true, write: true, delete: false }, agents: { reader: { permissions: { read: true } }, editor: { permissions: { read: true, write: true } } } });
       const policy = { version: 2, rules: { default: "deny" }, services: { onedrive: { allowed_roots: [root("foo"), root("help-foo", true)] }, calendar: { agents: {} }, mail: { agents: {} }, todo: { agents: {} } } };
+      const second = structuredClone(policy);
+      second.services.onedrive.allowed_roots = [root("private-folder")];
+      const calls = [];
       let pageDefinition; let listener; let delayedStatus;
       const host = { locale: "de", connection: { connected: true, canAdmin: true }, agents: { rows: [{ id: "reader", name: "Reader" }, { id: "editor", name: "Editor" }] }, subscribe: fn => { listener = fn; return () => {}; },
-        request: async method => {
-          if (method === "config.get") return { hash: "fixture", configRevisionHash: "fixture", appliedConfigHash: "fixture", config: { plugins: { entries: { "microsoft-graph": { enabled: true, config: { credentialVaultKey: "synthetic-ref", policy } } } } } };
-          if (method === "microsoft-graph.credentials.status") return { ok: true, value: { policyVersion: 2, credential: { result: "valid" } } };
+        request: async (method, params) => {
+          calls.push({ method, params });
+          if (method === "config.get") return { hash: "fixture", configRevisionHash: "fixture", appliedConfigHash: "fixture", config: { plugins: { entries: { "microsoft-graph": { enabled: true, config: { credentialVaultKey: "synthetic-ref", policy, accounts: { privat: second } } } } } } };
+          if (method === "microsoft-graph.credentials.status") return { ok: true, value: { policyVersion: 2, credential: { result: params?.accountId ? "missing" : "valid" } } };
           if (method === "microsoft-graph.updateStatus") return { updateAvailable: false };
           if (method === "microsoft-graph.configuration.applicationStatus") { if (delayedStatus) await delayedStatus; return { activePolicyHash: null }; }
           throw new Error(`Disallowed fixture RPC: ${method}`);
         }, ui: { registerPage: definition => { pageDefinition = definition; return () => {}; }, registerNavigation: () => () => {} } };
       const stop = GraphFixture.default.activate(host); const controller = new AbortController();
       const view = pageDefinition.mount(document.querySelector("#fixture"), { host, signal: controller.signal });
-      window.fixture = { notify: () => listener(), delay: () => { delayedStatus = new Promise(resolve => { window.fixture.finish = resolve; }); }, dispose: () => { view.dispose(); controller.abort(); stop(); } };
+      window.fixture = { calls, notify: () => listener(), delay: () => { delayedStatus = new Promise(resolve => { window.fixture.finish = resolve; }); }, dispose: () => { view.dispose(); controller.abort(); stop(); } };
     });
     const info = page.locator(".mg-instructions-info"); const inputs = page.locator(".mg-instructions-control input");
     const settleRender = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -52,8 +56,21 @@ try {
       return { sideBySide: nav.right <= body.left, stacked: nav.bottom <= body.top };
     });
     assert.equal(mobile ? layout.stacked : layout.sideBySide, true);
+    const navigation = page.getByRole("navigation", { name: "Microsoft Graph" });
+    assert.deepEqual(await navigation.getByRole("button").allTextContents(), ["Übersicht", "Konten", "Agent-Zugriff", "Freigaberegeln"]);
+    const account = page.locator("select.mg-account-select");
+    await account.selectOption("1");
+    await page.locator(".mg-account-context > span").filter({ hasText: /Kein Microsoft-Konto verbunden|No Microsoft account connected/ }).waitFor();
+    await navigation.getByRole("button", { name: "Agent-Zugriff", exact: true }).click();
+    await page.getByText("\\Synthetic\\private-folder", { exact: true }).waitFor();
+    assert.equal(await page.getByText("\\Synthetic\\foo", { exact: true }).count(), 0);
+    await page.waitForFunction(() => window.fixture.calls.some(call => call.method.endsWith(".calendars") && call.params.accountId === "privat"));
+    await page.screenshot({ path: path.join(output, name + "-named-access.png"), fullPage: true });
+    await account.selectOption("0");
+    await page.getByRole("heading", { name: "Übersicht", exact: true }).waitFor();
     await page.screenshot({ path: path.join(output, name + "-overview.png") });
-    await page.getByRole("navigation", { name: "Microsoft Graph" }).getByRole("button", { name: "OneDrive", exact: true }).click();
+    await page.getByRole("navigation", { name: "Microsoft Graph" }).getByRole("button", { name: "Agent-Zugriff", exact: true }).click();
+    await page.locator(".mg-folder-settings > summary").click();
     await inputs.first().waitFor(); await settleRender();
     assert.equal(await inputs.count(), 2); assert.equal(await inputs.nth(0).isChecked(), false); assert.equal(await inputs.nth(1).isChecked(), true);
     // R-001: these exact labels formerly aliased the first info button and

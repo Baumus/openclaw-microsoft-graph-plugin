@@ -22,7 +22,7 @@ type SavePhase = "idle" | "validating" | "saving" | "applying" | "pending" | "un
 type SaveOperation = { intent?: ActivationIntent; target: Policy; baseline: Policy; toolExposure?: ReturnType<typeof planChangedToolExposure>["expected"]; targetHash?: string; phase: SavePhase; issued: boolean; settled: boolean; epoch: number; reloadAttempted?: boolean; reloadPending?: boolean; applicationFailed?: boolean; rejectedBeforeWrite?: boolean; persistenceConfirmed?: boolean; stage?: "tools" | "policy"; splitWrite?: boolean; policyPrepared?: boolean; toolApplicationConfirmed?: boolean };
 // Private drafts live only in authenticated host memory, never browser storage.
 const operationsByHost = new WeakMap<ControlUiHost, SaveOperation>();
-const contextByHost = new WeakMap<ControlUiHost, { step: number; selectedAgent: string; credential?: CredentialStatus["credential"] }>();
+const contextByHost = new WeakMap<ControlUiHost, { step: number; accountId?: string; selectedAgent: string; credential?: CredentialStatus["credential"] }>();
 // Core INVALID_REQUEST is a pre-commit validation/conflict rejection. A timeout,
 // disconnect or UNAVAILABLE may follow a persisted write and is never retry proof.
 function isPreCommitRejection(error: unknown): boolean {
@@ -33,8 +33,16 @@ function isPreCommitRejection(error: unknown): boolean {
 }
 const id = "microsoft-graph";
 let configurationPageSequence = 0;
-function authoredPolicySource(snapshot: ConfigSnapshot): string {
-  const policy = snapshot.parsed?.plugins?.entries?.[id]?.config?.policy;
+function policyAt(entry: Record<string, unknown> | undefined, accountId?: string): Policy | undefined {
+  if (accountId === undefined) return entry?.policy as Policy | undefined;
+  const accounts = entry?.accounts as Record<string, Policy> | undefined;
+  return accounts && Object.hasOwn(accounts, accountId) ? accounts[accountId] : undefined;
+}
+function authoredPolicySource(snapshot: ConfigSnapshot, accountId?: string): string {
+  const entry = snapshot.parsed?.plugins?.entries?.[id]?.config;
+  const policy = policyAt(entry, accountId);
+  const accounts = entry?.accounts;
+  if (accountId !== undefined && accounts && typeof accounts === "object" && "$include" in accounts) return `accounts:${String(accounts.$include)}`;
   if (policy && typeof policy === "object" && "$include" in policy) return `policy:${String((policy as { $include: unknown }).$include)}`;
   const plugins = snapshot.parsed?.plugins;
   if (plugins && "$include" in plugins) return `plugins:${String(plugins.$include)}`;
@@ -116,6 +124,52 @@ class ConfigurationPage {
   private included = false;
   private includeName = "";
   private step = 4;
+  private accountId?: string;
+  private newAccountId = "";
+  private get accountName() { return this.accountId ?? "Standardverbindung"; }
+  private get accountOptions() {
+    const entry = this.snapshot?.config.plugins?.entries?.[id]?.config;
+    const named = Object.keys(entry?.accounts ?? {}).sort();
+    return [...(entry?.policy || !named.length ? [undefined] : []), ...named];
+  }
+  private scoped(params: Record<string, unknown>) {
+    return this.accountId === undefined ? params : { ...params, accountId: this.accountId };
+  }
+  private async switchAccount(accountId?: string) {
+    if (this.locked || this.authBusy || this.authState === "pending" || this.statusInFlight || accountId === this.accountId) return;
+    if (this.dirty && !window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { this.render(); return; }
+    this.stopStatusChecks();
+    this.statusEpoch++; this.authEpoch++; this.validationEpoch++;
+    operationsByHost.delete(this.host);
+    this.operation = undefined;
+    this.intentDiscoveryPending = false;
+    this.reconciliationAttempt = undefined;
+    this.reconciliationPaused = false;
+    this.activePolicyHash = this.savedPolicyHash = undefined;
+    this.activeProofAvailable = false;
+    this.statusError = this.success = "";
+    this.credential = undefined;
+    this.device = undefined;
+    this.authState = "idle";
+    this.authError = this.authFailureCode = this.authFailureAt = "";
+    this.authClientId = this.authTenant = "";
+    this.editAppIds = false;
+    this.calendarCatalog = undefined;
+    this.calendarCatalogState = "idle";
+    this.folderPreview = undefined;
+    this.instructionsHelpRoot = undefined;
+    this.disclosureState.clear();
+    this.container.replaceChildren();
+    this.newFolderPath = "";
+    this.editingAccess = undefined;
+    this.confirmedRemoval = false;
+    this.accountId = accountId;
+    this.step = this.step === 5 ? 5 : 4;
+    this.snapshot = undefined;
+    this.initial = undefined;
+    await this.load();
+    this.container.querySelector<HTMLSelectElement>(".mg-account-select")?.focus({ preventScroll: true });
+  }
   private selectedAgent = "";
   private scopes: string[] = [];
   private initialScopes: string[] = [];
@@ -150,18 +204,19 @@ class ConfigurationPage {
   private checkbox(parent: HTMLElement, label: string, checked: boolean, set: (value: boolean) => void) { return checkbox(parent, label, checked, next => { if (!this.locked) set(next); }); }
   private async read<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    try { return await Promise.race([this.host.request<T>(method, params), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("status_timeout")), 15000); })]); }
+    try { return await Promise.race([this.host.request<T>(method, method.startsWith("microsoft-graph.configuration.") && !method.endsWith(".validate") ? this.scoped(params) : params), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("status_timeout")), 15000); })]); }
     finally { if (timer) clearTimeout(timer); }
   }
   private async loadCalendars() {
     if (!this.authorized || this.calendarCatalogState === "loading" || this.disposed) return;
+    const accountId = this.accountId;
     this.calendarCatalogState = "loading"; this.render();
     try {
       const result = await this.read<CalendarCatalog>("microsoft-graph.configuration.calendars");
-      if (this.disposed || this.signal.aborted) return;
+      if (this.disposed || this.signal.aborted || accountId !== this.accountId) return;
       if (!result || typeof result.defaultCalendarId !== "string" || !Array.isArray(result.calendars)) throw new Error("invalid_calendar_catalog");
       this.calendarCatalog = result; this.calendarCatalogState = "ready";
-    } catch { if (!this.disposed) { this.calendarCatalog = undefined; this.calendarCatalogState = "error"; } }
+    } catch { if (!this.disposed && accountId === this.accountId) { this.calendarCatalog = undefined; this.calendarCatalogState = "error"; } }
     finally { if (!this.disposed) this.render(); }
   }
   private get locked() { return this.busy || !!this.operation && !["idle", "failed", "applied"].includes(this.operation.phase); }
@@ -196,14 +251,14 @@ class ConfigurationPage {
   constructor(private container: HTMLElement, private host: ControlUiHost, private signal: AbortSignal) {
     this.operation = operationsByHost.get(host);
     const context = contextByHost.get(host);
-    if (context) { this.step = context.step; this.selectedAgent = context.selectedAgent; this.credential = context.credential; }
+    if (context) { this.step = context.step === 0 ? 1 : context.step; this.accountId = context.accountId; this.selectedAgent = context.selectedAgent; this.credential = context.credential; }
     this.container.addEventListener("click", this.guardEvent, true);
     this.container.addEventListener("change", this.guardEvent, true);
     this.container.addEventListener("input", this.guardEvent, true);
     window.addEventListener("beforeunload", this.warnBeforeUnload);
     window.addEventListener("resize", this.positionInstructionsHelp);
     window.addEventListener("scroll", this.positionInstructionsHelp, true);
-    const stored = savedAppIds();
+    const stored = this.accountId === undefined ? savedAppIds() : undefined;
     if (stored) { this.authClientId = stored.clientId; this.authTenant = stored.tenant; }
     this.unsubscribe = host.subscribe(() => {
       if (!this.authorized) {
@@ -227,7 +282,7 @@ class ConfigurationPage {
     void this.checkForUpdate();
     this.render();
   }
-  dispose() { contextByHost.set(this.host, { step: this.step, selectedAgent: this.selectedAgent, credential: this.credential }); this.disposed = true; this.statusEpoch++; if (this.subscriptionStatusTimer) clearTimeout(this.subscriptionStatusTimer); this.container.removeEventListener("click", this.guardEvent, true); this.container.removeEventListener("change", this.guardEvent, true); this.container.removeEventListener("input", this.guardEvent, true); window.removeEventListener("beforeunload", this.warnBeforeUnload); window.removeEventListener("resize", this.positionInstructionsHelp); window.removeEventListener("scroll", this.positionInstructionsHelp, true); if (this.authTimer) clearTimeout(this.authTimer); this.stopStatusChecks(); this.unsubscribe(); this.container.replaceChildren(); }
+  dispose() { contextByHost.set(this.host, { step: this.step, accountId: this.accountId, selectedAgent: this.selectedAgent, credential: this.credential }); this.disposed = true; this.statusEpoch++; if (this.subscriptionStatusTimer) clearTimeout(this.subscriptionStatusTimer); this.container.removeEventListener("click", this.guardEvent, true); this.container.removeEventListener("change", this.guardEvent, true); this.container.removeEventListener("input", this.guardEvent, true); window.removeEventListener("beforeunload", this.warnBeforeUnload); window.removeEventListener("resize", this.positionInstructionsHelp); window.removeEventListener("scroll", this.positionInstructionsHelp, true); if (this.authTimer) clearTimeout(this.authTimer); this.stopStatusChecks(); this.unsubscribe(); this.container.replaceChildren(); }
   private async checkForUpdate() {
     if (!this.authorized || this.updateCheckStarted || this.disposed) return;
     this.updateCheckStarted = true;
@@ -248,7 +303,7 @@ class ConfigurationPage {
   }
   private get applicationStatus(): "applied" | "pending" | "unknown" {
     if (this.savedPolicyHash && this.activePolicyHash) return this.savedPolicyHash === this.activePolicyHash ? "applied" : "pending";
-    if (this.activeProofAvailable) return "unknown";
+    if (this.activeProofAvailable || this.accountId !== undefined) return "unknown";
     // Older backends can only prove the whole saved revision is active.
     const { configRevisionHash, appliedConfigHash } = this.snapshot ?? {};
     return configRevisionHash && appliedConfigHash && configRevisionHash === appliedConfigHash ? "applied" : "unknown";
@@ -284,9 +339,9 @@ class ConfigurationPage {
       if (this.disposed || this.signal.aborted || epoch !== this.statusEpoch) return;
       if (this.operation?.splitWrite && this.operation.stage === "policy" && this.operation.issued) {
         const operation = this.operation;
-        if (canonicalPolicy(snap.config?.plugins?.entries?.[id]?.config?.policy) === canonicalPolicy(operation.target)) {
+        if (canonicalPolicy(policyAt(snap.config?.plugins?.entries?.[id]?.config, this.accountId)) === canonicalPolicy(operation.target)) {
           if (!this.authorized) return;
-          if (authoredPolicySource(snap) !== this.includeName) { operation.phase = "conflict"; this.stopStatusChecks(); return; }
+          if (authoredPolicySource(snap, this.accountId) !== this.includeName) { operation.phase = "conflict"; this.stopStatusChecks(); return; }
           operation.policyPrepared = true;
           if (!active.available || active.hash !== operation.targetHash) {
             operation.phase = this.statusChecksRemaining > 0 ? "applying" : "pending";
@@ -311,7 +366,7 @@ class ConfigurationPage {
         }
       }
       const expected = this.operation?.target ?? this.initial;
-      const saved = snap.config?.plugins?.entries?.[id]?.config?.policy;
+      const saved = policyAt(snap.config?.plugins?.entries?.[id]?.config, this.accountId);
       if (canonicalPolicy(saved) !== canonicalPolicy(expected) || !oneDriveToolExposureSaved(snap.config?.agents?.entries, this.operation?.phase === "applied" ? {} : this.operation?.toolExposure ?? {})) {
         if (this.operation?.issued && !this.operation.rejectedBeforeWrite && !this.operation.persistenceConfirmed && (this.operation.stage === "tools" || !this.operation.policyPrepared) && canonicalPolicy(saved) === canonicalPolicy(this.operation.stage === "tools" ? this.operation.target : this.operation.baseline)) {
           // A transport failure is not an external edit or proof of rollback.
@@ -382,9 +437,15 @@ class ConfigurationPage {
       const pluginEntry = snap.config?.plugins?.entries?.[id];
       const entry = pluginEntry?.config ?? {};
       this.pluginEnabled = pluginEntry?.enabled === true && entry.enabled !== false;
-      this.includeName = authoredPolicySource(snap);
+      this.snapshot = snap;
+      if (!this.operation && !this.accountOptions.includes(this.accountId)) {
+        this.accountId = this.accountOptions[0];
+        this.credential = undefined;
+        this.authClientId = this.authTenant = "";
+      }
+      this.includeName = authoredPolicySource(snap, this.accountId);
       this.included = !!this.includeName;
-      const policy = entry.policy as Policy | undefined;
+      const policy = policyAt(entry, this.accountId);
       this.initial = policy ? clone(policy) : blankPolicy();
       this.policy = this.operation && this.operation.phase !== "applied" ? clone(this.operation.target) : clone(this.initial);
       this.snapshot = snap;
@@ -423,9 +484,9 @@ class ConfigurationPage {
     const shell = el("div", "mg-shell");
     const content = el("div", "mg-content");
     const rail = el("nav", "mg-steps"); rail.setAttribute("aria-label", "Microsoft Graph");
-    const pages = [["Übersicht", 4], ["Konten", 5], ["Agent-Zugriff", 1], ["Freigaberegeln", 2], ["OneDrive", 0], ["Prüfen", 3]] as const;
+    const pages = [["Übersicht", 4], ["Konten", 5], ["Agent-Zugriff", 1], ["Freigaberegeln", 2]] as const;
     for (const [name, index] of pages) {
-      const tab = this.action(name, () => { this.step = index; this.render(); if (index === 3) void this.validate(); }, index === this.step ? "active" : "ghost");
+      const tab = this.action(name, () => { this.step = index; this.render(); }, index === this.step ? "active" : "ghost");
       tab.disabled = this.locked;
       if (index === this.step) tab.setAttribute("aria-current", "page");
       append(rail, tab);
@@ -433,27 +494,34 @@ class ConfigurationPage {
     append(shell, rail, content); append(main, shell);
     const account = el("div", "mg-account-context");
     const product = el("div");
-    append(product, el("small", "mg-hint", "Integration"), el("strong", "", "Microsoft Graph"));
-    const accountStatus = this.credential?.result === "valid" ? "Microsoft-Konto verbunden"
+    append(product, el("small", "mg-hint", "Microsoft Graph"), el("strong", "", this.accountName));
+    const accountStatus = this.credential?.result === "valid" && !this.credential.missingScopes?.length ? "Microsoft-Konto verbunden"
       : this.credential?.result === "missing" ? "Kein Microsoft-Konto verbunden" : "Microsoft-Kontostatus nicht bestätigt";
-    append(account, product, el("span", "mg-hint", accountStatus));
-    append(content, account, el("h1", "mg-page-title", pages.find(([, index]) => index === this.step)?.[0] ?? "Übersicht"));
-    this.renderSetup(content);
-    if (this.step === 5 || this.authState === "pending") this.renderSignIn(content);
+    const selector = el("select", "mg-account-select");
+    selector.setAttribute("aria-label", localize("Microsoft-Konto"));
+    for (const [index, optionId] of this.accountOptions.entries()) {
+      const option = el("option", "", optionId ?? "Standardverbindung");
+      option.value = String(index); option.selected = optionId === this.accountId;
+      append(selector, option);
+    }
+    selector.disabled = this.locked || this.authBusy || this.authState === "pending" || this.statusInFlight;
+    selector.addEventListener("change", () => void this.switchAccount(this.accountOptions[Number(selector.value)]));
+    append(account, product, selector, el("span", "mg-hint", accountStatus));
+    append(content, account, el("h1", "mg-page-title", pages.find(([, index]) => index === this.step)?.[0] ?? "Änderungen prüfen"));
     if (this.included && (this.dirty || !!this.error)) append(content, el("p", "mg-banner", format("Konfigurationsquelle: {name}. Änderungen werden beim Speichern in diese Datei geschrieben.", { name: this.includeName.slice(this.includeName.indexOf(":") + 1) })));
     this.renderSaveStatus(content);
     const body = el("section", "mg-body");
     if (this.step === 4) this.renderOverview(body);
-    else if (this.step === 0) this.renderOneDrive(body);
     else if (this.step === 1) this.renderServices(body);
     else if (this.step === 2) this.renderApprovals(body);
     else if (this.step === 3) this.renderReview(body);
-    else append(body, el("p", "mg-hint", "Diese Installation verwendet eine Microsoft-Verbindung."));
+    else this.renderAccounts(body);
     append(content, body);
     if (this.error) append(content, el("p", "mg-error", this.error)); if (this.success) append(content, el("p", "mg-success", this.success));
     const footer = el("footer", "mg-footer"); append(footer, el("span", "mg-dirty", this.dirty ? "Ungespeicherte Änderungen" : "Keine ungespeicherten Änderungen"));
     if (this.dirty) append(footer, this.action("Änderungen verwerfen", () => { if (window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { this.policy = clone(this.initial!); this.error = ""; this.success = ""; this.render(); } }, "ghost"));
-    if (this.step !== 3 && this.dirty) append(footer, this.action("Änderungen prüfen", () => { this.step = 3; this.render(); void this.validate(); }, "primary"));
+    if (this.step !== 3) append(footer, this.action("Änderungen prüfen", () => { this.step = 3; this.render(); void this.validate(); }, "primary"));
+    if (this.step === 3) append(footer, this.action("Zurück zum Zugriff", () => { this.step = 1; this.render(); }));
     if (this.step === 3 && this.dirty) { const save = this.action(this.operation?.phase === "validating" || this.operation?.phase === "saving" ? "Speichert …" : "Speichern und anwenden", () => { void this.save(); }, "primary"); save.disabled = this.authBusy || this.authState === "pending"; append(footer, save); }
     if (this.step === 3 && this.dirty && !this.operation) append(footer, el("p", "mg-save-hint", "Wir speichern die Regeln und wenden sie automatisch an. Die Verbindung kann dabei kurz unterbrochen werden."));
     if (this.operation && !["failed", "applied"].includes(this.operation.phase)) {
@@ -503,7 +571,7 @@ class ConfigurationPage {
       // force a restart, or interrupt admitted work to make the badge green.
       const fresh = await this.read<ConfigSnapshot>("config.get");
       if (this.disposed || this.signal.aborted || !this.authorized || this.operation !== operation) return;
-      if (canonicalPolicy(fresh.config?.plugins?.entries?.[id]?.config?.policy) !== canonicalPolicy(operation.target)) { operation.phase = "conflict"; return; }
+      if (canonicalPolicy(policyAt(fresh.config?.plugins?.entries?.[id]?.config, this.accountId)) !== canonicalPolicy(operation.target)) { operation.phase = "conflict"; return; }
       const result = await this.host.request<{ ok?: boolean; restartRequired?: boolean }>("plugins.reload", { plugins: [{ pluginId: id }], waitForDrain: true });
       if (!result.ok || result.restartRequired) { operation.applicationFailed = true; operation.phase = "pending"; }
     } catch { operation.applicationFailed = true; operation.phase = "pending"; }
@@ -518,14 +586,14 @@ class ConfigurationPage {
     check.dataset.safeStatus = "true"; check.disabled = this.statusInFlight || !this.authorized; append(parent, check);
   }
   private get toolDrift() {
-    return this.initial && this.snapshot ? planPolicyToolReconciliation(this.initial, this.snapshot.config.agents?.entries, this.snapshot.config.tools?.deny).drift : {};
+    return this.initial && this.snapshot ? planPolicyToolReconciliation(this.initial, this.snapshot.config.agents?.entries, this.snapshot.config.tools?.deny, this.accountOptions.some(account => account !== undefined)).drift : {};
   }
   private get selectedServiceToolsMissing() { return Object.keys(this.toolDrift).length > 0; }
   private async reconcileSavedTools() {
     if (!this.reconciliationSupported || !this.authorized || this.disposed || this.signal.aborted || this.dirty || !this.initial || !this.snapshot || this.intentDiscoveryPending
       || this.applicationStatus !== "applied" || !this.activeProofAvailable || this.activePolicyHash !== this.savedPolicyHash
       || this.operation && this.operation.phase !== "applied") return;
-    const plan = planPolicyToolReconciliation(this.initial, this.snapshot.config.agents?.entries, this.snapshot.config.tools?.deny);
+    const plan = planPolicyToolReconciliation(this.initial, this.snapshot.config.agents?.entries, this.snapshot.config.tools?.deny, this.accountOptions.some(account => account !== undefined));
     if (!Object.keys(plan.patch).length) return;
     // Bind a single attempt to the complete observed config revision. A lost
     // reply is observed, never retried, and another tab must win the same CAS.
@@ -612,8 +680,67 @@ class ConfigurationPage {
     } catch { this.error = "Der Vorgang konnte nicht beendet werden. Prüfe Verbindung und aktuellen Stand."; }
     finally { this.busy = false; this.render(); }
   }
+  private renderAccounts(body: HTMLElement) {
+    append(body, el("p", "mg-hint", "Microsoft-Verbindungen und Anmeldestatus verwalten."));
+    const list = el("section", "mg-section mg-service-summary");
+    for (const accountId of this.accountOptions) {
+      const row = el("div", "mg-summary-row");
+      append(row, el("strong", "", accountId ?? "Standardverbindung"), accountId === this.accountId
+        ? el("span", "mg-count", "Ausgewählt")
+        : this.action("Konto öffnen", () => void this.switchAccount(accountId)));
+      append(list, row);
+    }
+    append(body, list);
+    this.renderSetup(body);
+    this.renderSignIn(body);
+    const add = el("section", "mg-section");
+    append(add, el("h2", "", "Weiteres Konto"));
+    this.field(add, "Verbindungs-ID", this.newAccountId, value => { this.newAccountId = value; }, "Beispiel: arbeit oder privat. Die ID bleibt mit diesem Microsoft-Konto verbunden.");
+    const create = this.action("Konto hinzufügen", () => void this.createAccount(), "primary");
+    create.disabled = this.authBusy || this.authState === "pending" || this.statusInFlight;
+    append(add, create); append(body, add);
+  }
+
+  private async createAccount() {
+    if (this.locked || this.authBusy || this.authState === "pending" || this.statusInFlight || !this.snapshot) return;
+    const accountId = this.newAccountId.trim();
+    if (!/^[a-z][a-z0-9-]{0,62}$/.test(accountId) || this.accountOptions.includes(accountId)) {
+      this.error = "Gib eine freie Verbindungs-ID aus Kleinbuchstaben, Ziffern und Bindestrichen ein."; this.render(); return;
+    }
+    if (this.dirty) { this.error = "Speichere oder verwirf zuerst die aktuellen Änderungen."; this.render(); return; }
+    this.busy = true; this.error = ""; this.render();
+    let created = false;
+    try {
+      const fresh = await this.read<ConfigSnapshot>("config.get");
+      if (!this.authorized || this.disposed || this.signal.aborted || policyAt(fresh.config.plugins?.entries?.[id]?.config, accountId)) throw Error("account_conflict");
+      const target = blankPolicy();
+      try {
+        await this.host.request("config.patch", {
+          baseHash: fresh.hash, raw: JSON.stringify({ plugins: { entries: { [id]: { config: { accounts: { [accountId]: target } } } } } }),
+          note: "Microsoft Graph: add named connection",
+        });
+      } catch { /* Read back before allowing another creation attempt. */ }
+      const saved = await this.read<ConfigSnapshot>("config.get");
+      if (!this.authorized || this.disposed || this.signal.aborted) return;
+      this.snapshot = saved;
+      created = canonicalPolicy(policyAt(saved.config.plugins?.entries?.[id]?.config, accountId)) === canonicalPolicy(target);
+      if (!created) throw Error("account_unconfirmed");
+      this.newAccountId = "";
+    } catch { this.error = "Das neue Konto konnte nicht bestätigt werden. Prüfe die Kontenliste vor einem erneuten Versuch."; }
+    finally { this.busy = false; }
+    if (created) { await this.switchAccount(accountId); this.step = 5; }
+    this.render();
+  }
+
   private renderOverview(body: HTMLElement) {
     const section = el("section", "mg-section mg-overview");
+    const status = el("div", this.credential?.result === "valid" ? "mg-success mg-account-notice" : "mg-banner mg-account-notice");
+    if (this.credential?.result === "valid" && !this.credential.missingScopes?.length) {
+      append(status, el("strong", "", "Verbindung hergestellt"), el("p", "mg-hint", "Ein Lesezugriff durch einen berechtigten Agenten wurde nicht geprüft."));
+    } else {
+      append(status, el("strong", "", "Microsoft-Anmeldung prüfen"), this.action("Zu den Konten", () => { this.step = 5; this.render(); }));
+    }
+    append(body, status);
     append(section, el("h2", "", "Dienste und Zugriff"));
     const policy = this.initial ?? blankPolicy();
     const rows = el("dl", "mg-service-summary");
@@ -683,16 +810,17 @@ class ConfigurationPage {
     append(main, card);
   }
   private async credentialCall<T>(method: string, params: Record<string, unknown>): Promise<T> {
-    const reply = await this.host.request<CredentialReply<T>>(method, params);
+    const reply = await this.host.request<CredentialReply<T>>(method, this.scoped(params));
     if (!reply || typeof reply !== "object" || typeof reply.ok !== "boolean") throw new Error("internal_error");
     if (!reply.ok) throw new Error(reply.error);
     return reply.value;
   }
   private async refreshCredential(isCurrent: () => boolean = () => true) {
+    const accountId = this.accountId;
     try {
       const status = await this.credentialCall<CredentialStatus>("microsoft-graph.credentials.status", {});
-      if (!this.disposed && !this.signal.aborted && this.authorized && isCurrent()) this.credential = status.credential;
-    } catch { if (!this.disposed && !this.signal.aborted && this.authorized && isCurrent()) this.credential = { result: "unavailable" }; }
+      if (!this.disposed && !this.signal.aborted && this.authorized && this.accountId === accountId && isCurrent()) this.credential = status.credential;
+    } catch { if (!this.disposed && !this.signal.aborted && this.authorized && this.accountId === accountId && isCurrent()) this.credential = { result: "unavailable" }; }
   }
   private signInError(code: string): string {
     const messages: Record<string, string> = {
@@ -752,7 +880,7 @@ class ConfigurationPage {
       const started = await this.credentialCall<DeviceStart>(renewal ? "microsoft-graph.credentials.reauthorize-start" : "microsoft-graph.credentials.device-start", renewal ? {} : { clientId: this.authClientId.trim(), tenant: this.authTenant.trim() });
       if (!current()) return;
       if (!isMicrosoftDeviceVerificationUri(started.verificationUri)) throw new Error("device_authorization_failed");
-      if (!renewal) saveAppIds(this.authClientId.trim(), this.authTenant.trim());
+      if (!renewal && this.accountId === undefined) saveAppIds(this.authClientId.trim(), this.authTenant.trim());
       this.device = started; this.authState = "pending"; this.authFailureCode = ""; this.scheduleAuthCheck();
     } catch (error) {
       if (!current()) return;
@@ -820,7 +948,7 @@ class ConfigurationPage {
       }); append(card, copy);
       append(card, this.action("Erneut anmelden", () => { this.authState = "idle"; this.authError = ""; void this.refreshCredential().then(() => this.render()); }, "ghost"));
     } else {
-      const stored = savedAppIds();
+      const stored = this.accountId === undefined ? savedAppIds() : undefined;
       if (stored && !this.editAppIds) {
         append(card, el("h2", "", "Konto verbinden"), el("p", "mg-lead", "App-Kennungen sind in diesem Browser gespeichert. Anmeldung und Freigabe prüfen wir beim Verbinden."));
         append(card, el("p", "mg-status", "Microsoft-Konto · Anmeldung noch nicht geprüft"));
@@ -939,7 +1067,7 @@ class ConfigurationPage {
     this.folderPreview = undefined;
     this.busy = true; this.error = ""; this.render();
     try {
-      const resolved = await this.host.request<{ path: string; drive_id: string; item_id: string }>("microsoft-graph.configuration.resolveFolder", { path });
+      const resolved = await this.host.request<{ path: string; drive_id: string; item_id: string }>("microsoft-graph.configuration.resolveFolder", this.scoped({ path }));
       if (this.disposed || this.signal.aborted || !this.host.connection.connected || !this.host.connection.canAdmin) return;
       this.folderPreview = resolved;
     } catch { this.error = "Ordner nicht gefunden oder nicht prüfbar. Prüfe den Pfad und die OneDrive-Verbindung."; }
@@ -987,7 +1115,6 @@ class ConfigurationPage {
     append(title, el("p", "mg-kicker", "OneDrive-Zugriff"), el("h2", "", "Wer darf auf welche OneDrive-Bereiche zugreifen?"), el("p", "mg-hint", "Klicke auf ein Recht, um es zu ändern. Ohne aktives Recht wird der Agent entfernt. Änderungen werden erst nach Prüfen und Speichern wirksam."));
     append(heading, title, el("span", "mg-count", format("{count} Zuweisungen", { count: assignments })));
     append(body, heading);
-    this.renderFolderInput(body);
     if (!roots.length) { append(body, el("p", "mg-message", "Noch kein OneDrive-Ordner freigegeben.")); return; }
     const grid = el("div", "mg-root-grid");
     for (const [index, root] of roots.entries()) {
@@ -1155,7 +1282,16 @@ class ConfigurationPage {
     append(body, el("h2", "", "Microsoft-Dienste"), el("p", "", "Wähle, welche Dienste der Agent nutzen darf. Ein neuer Zugang umfasst alle Funktionen des Dienstes. Bestehende eingeschränkte Zugänge bleiben unverändert."));
     const agentId = this.renderAgentPicker(body);
     if (!agentId) { append(body, el("p", "mg-message", "Keine Agenten gefunden.")); return; }
-    this.renderAgentFolders(body, agentId);
+    const grid = el("div", "mg-access-grid");
+    const folders = el("div");
+    const services = el("div");
+    append(services, el("h2", "", "Dienste"));
+    this.renderAgentFolders(folders, agentId);
+    const folderSettings = el("details", "mg-folder-settings");
+    append(folderSettings, el("summary", "", "Ordner verwalten"));
+    this.renderOneDrive(folderSettings);
+    append(folders, folderSettings);
+    append(grid, folders, services); append(body, grid);
     for (const service of ["calendar", "mail", "contacts", "todo"] as const) {
       const card = el("fieldset", "mg-section"); append(card, el("legend", "", serviceNames[service]));
       const grants = this.policy.services[service]?.agents ?? {}; const existing = grants[agentId];
@@ -1180,7 +1316,7 @@ class ConfigurationPage {
         } catch { append(card, el("p", "mg-warning", "Agent-Tools sind durch die Agent-Policy gesperrt. Deny-Regeln bleiben unverändert.")); }
       }
       if (service === "calendar") this.renderCalendarAccess(card, agentId, existing);
-      append(body, card);
+      append(services, card);
     }
   }
   private calendarChoices(): Array<{ id: string; name: string }> {
@@ -1221,7 +1357,7 @@ class ConfigurationPage {
     append(card, list, el("p", "mg-hint", "Die Auswahl gilt nur für diesen Agenten. Funktionsrechte bleiben unverändert; Änderungen werden erst nach Prüfen und Speichern aktiv."));
   }
   private renderApprovals(body: HTMLElement) {
-    append(body, el("h2", "", "Wann ist eine Freigabe nötig?"), el("p", "", "Eine Freigabe ist eine Rückfrage vor der konkreten Aktion. Die Agentenrechte aus den ersten beiden Schritten gelten immer zusätzlich."));
+    append(body, el("p", "", "Diese Regeln gelten für das ausgewählte Konto. Die Agentenrechte gelten zusätzlich; kritische Aktionen erfordern weiterhin eine Einzelbestätigung."));
     for (const service of ["onedrive", "calendar", "mail", "contacts", "todo"] as const) {
       const card = el("fieldset", "mg-section"); append(card, el("legend", "", serviceNames[service]));
       append(card, el("p", "", "Unkritisch · Lesen und Suchen: keine Rückfrage."));
@@ -1236,7 +1372,7 @@ class ConfigurationPage {
     }
   }
   private renderReview(body: HTMLElement) {
-    append(body, el("h2", "", "Änderungen prüfen"), el("p", "", "Prüfe die Zugriffe und Rückfragen. Benötigte Microsoft-Graph-Tools werden für berechtigte Agenten zusammen mit den Microsoft-Graph-Regeln freigeschaltet."));
+    append(body, el("p", "", "Prüfe die Zugriffe und Rückfragen. Benötigte Microsoft-Graph-Tools werden für berechtigte Agenten zusammen mit den Microsoft-Graph-Regeln freigeschaltet."));
     try {
       const exposure = planChangedToolExposure(this.initial ?? this.policy, this.policy, this.snapshot?.config?.agents?.entries, this.snapshot?.config?.tools?.deny);
       for (const [agentId, entry] of Object.entries(exposure.expected)) append(body, el("p", "mg-status", format("{agent}: zusätzliche Microsoft-Graph-Tools · {tools}", { agent: agentId, tools: entry.value.filter(name => !this.snapshot?.config?.agents?.entries?.[agentId]?.tools?.[entry.key]?.includes(name)).join(", ") })));
@@ -1292,7 +1428,7 @@ class ConfigurationPage {
         this.read<{ valid: boolean; policyHash?: string }>("microsoft-graph.configuration.validate", { policy: target }),
       ]);
       if (this.disposed || this.signal.aborted || !this.authorized) return;
-      if (canonicalPolicy(fresh.config.plugins?.entries?.[id]?.config?.policy) !== canonicalPolicy(target) || authoredPolicySource(fresh) !== this.includeName)
+      if (canonicalPolicy(policyAt(fresh.config?.plugins?.entries?.[id]?.config, this.accountId)) !== canonicalPolicy(target) || authoredPolicySource(fresh, this.accountId) !== this.includeName)
         throw new Error("Die Regeln wurden inzwischen geändert. Lade den aktuellen Stand neu.");
       if (!validation.valid || !validation.policyHash || !active.available || active.hash !== validation.policyHash)
         throw new Error("Die gespeicherten Regeln sind noch nicht nachweisbar aktiv. Prüfe zuerst den Aktivierungsstatus.");
@@ -1309,10 +1445,12 @@ class ConfigurationPage {
   }
   private dispatchPolicyWrite(operation: SaveOperation, fresh: ConfigSnapshot, agents: unknown = undefined) {
     const replacements: string[] = [];
-    const policy = collectDiff(operation.baseline, operation.target, "plugins.entries.microsoft-graph.config.policy", replacements);
+    const path = this.accountId === undefined ? "policy" : `accounts.${this.accountId}`;
+    const policy = collectDiff(operation.baseline, operation.target, `plugins.entries.microsoft-graph.config.${path}`, replacements);
+    const config = this.accountId === undefined ? { policy } : { accounts: { [this.accountId]: policy } };
     if (agents) for (const [agent, entry] of Object.entries(operation.toolExposure ?? {})) if (Array.isArray(fresh.config.agents?.entries?.[agent]?.tools?.[entry.key])) replacements.push(`agents.entries.${agent}.tools.${entry.key}`);
     operation.stage = "policy";
-    this.dispatchWrite(operation, fresh.hash, { plugins: { entries: { [id]: { config: { policy } } } }, ...(agents && Object.keys(agents).length ? { agents: { entries: agents } } : {}) }, replacements);
+    this.dispatchWrite(operation, fresh.hash, { plugins: { entries: { [id]: { config } } }, ...(agents && Object.keys(agents).length ? { agents: { entries: agents } } : {}) }, replacements);
   }
   private dispatchWrite(operation: SaveOperation, baseHash: string, payload: unknown, replacePaths: string[]) {
     operation.phase = "saving"; operation.issued = true; operation.settled = false; operation.rejectedBeforeWrite = false;
@@ -1336,8 +1474,8 @@ class ConfigurationPage {
       if (this.disposed || this.signal.aborted || !this.authorized) { operation.phase = "failed"; return; }
       const fresh = await this.read<ConfigSnapshot>("config.get");
       if (this.disposed || this.signal.aborted || !this.authorized) { operation.phase = "failed"; return; }
-      if (canonicalPolicy(fresh.config?.plugins?.entries?.[id]?.config?.policy) !== canonicalPolicy(operation.baseline)) { this.error = "Configuration changed since this draft loaded. Reload and reapply your changes."; operation.phase = "conflict"; return; }
-      if (authoredPolicySource(fresh) !== this.includeName) { this.error = "Die Konfigurationsquelle wurde geändert. Bitte neu laden."; operation.phase = "conflict"; return; }
+      if (canonicalPolicy(policyAt(fresh.config?.plugins?.entries?.[id]?.config, this.accountId)) !== canonicalPolicy(operation.baseline)) { this.error = "Configuration changed since this draft loaded. Reload and reapply your changes."; operation.phase = "conflict"; return; }
+      if (authoredPolicySource(fresh, this.accountId) !== this.includeName) { this.error = "Die Konfigurationsquelle wurde geändert. Bitte neu laden."; operation.phase = "conflict"; return; }
       const exposure = planChangedToolExposure(operation.baseline, operation.target, fresh.config?.agents?.entries, fresh.config?.tools?.deny);
       operation.toolExposure = exposure.expected;
       operation.splitWrite = !!this.includeName && Object.keys(exposure.patch).length > 0;

@@ -233,7 +233,7 @@ describe("guided Microsoft sign-in", () => {
     expect(toggle.checked).toBe(false);
     expect((policy.services as Record<string, unknown>).contacts).toBeUndefined();
     toggle.checked = true; toggle.dispatchEvent(new Event("change", { bubbles: true }));
-    clickByText(view.container, "Prüfen"); await view.settle();
+    clickByText(view.container, "Änderungen prüfen"); await view.settle();
     expect(view.calls.find(call => call.method === "microsoft-graph.configuration.validate" && (call.params as any)?.policy?.services?.contacts)?.params).toMatchObject({ policy: { services: { contacts: { agents: { main: { operations: ["read", "create", "update", "delete"] } } } } } });
     view.dispose();
   });

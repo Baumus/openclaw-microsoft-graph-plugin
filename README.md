@@ -441,14 +441,17 @@ If native creation succeeds but content insertion fails, `draftCreated: true` an
 
 ### Additional Microsoft Graph connections
 
-The existing top-level `policy`, credential vault and Control UI continue to
-manage the legacy connection. To add named connections, set
-`plugins.entries.microsoft-graph.config.accounts` to an object mapping stable
-connection IDs (for example, `work` and `personal`) to the same complete
-version-2 policy shape as `policy`. Each connection has its own agent,
-operation and resource grants; grants are not inherited from another
-connection. Configure OneDrive drive/item IDs and calendar IDs for the selected
-Microsoft account. Do not reuse an ID for a different Microsoft identity.
+In the Control UI, open **Accounts** to add a named connection or switch between
+configured connections. Select the connection before editing agent grants or
+signing in. The UI shows configured connection IDs, not verified email addresses.
+Do not reuse a connection ID for a different Microsoft identity.
+
+For configuration-managed setups, `plugins.entries.microsoft-graph.config.accounts`
+maps stable connection IDs to complete version-2 policies. The existing top-level
+`policy` and its vault remain the default connection. Agent, operation and
+resource grants are not inherited across connections. Tool opt-ins are shared by
+OpenClaw, so the automatic UI reconciliation adds needed tools without pruning
+shared opt-ins in multi-account mode. Account policies still enforce access.
 
 After applying the configuration, sign in separately for each named connection:
 
@@ -458,9 +461,7 @@ openclaw microsoft-graph credentials status --account work
 openclaw microsoft-graph credentials reauthorize --account work --client-id <app-id> --tenant <tenant>
 ```
 
-The credential RPCs also accept `accountId` for future account-aware UI flows.
-Keep the same account ID from device-code start through polling or cancellation.
-The current Control UI edits and signs into the legacy connection only.
+The credential and resource-discovery RPCs use the selected `accountId`.
 Removing a named policy disables routing after the new configuration takes
 effect; it does not erase the encrypted credential or revoke Microsoft consent.
 

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { activationOwner, registerConfigurationUiMethods } from "./config-ui-rpc.js";
 
-const policy = { version: 2, rules: { default: "deny" }, services: { onedrive: { allowed_roots: [] }, calendar: { agents: { main: { operations: ["read"], resources: ["me"] } } }, mail: { agents: {} }, todo: { agents: {} } } };
+const policy = { version: 2 as const, rules: { default: "deny" as const }, services: { onedrive: { allowed_roots: [] }, calendar: { agents: { main: { operations: ["read"], resources: ["me"] } } }, mail: { agents: {} }, todo: { agents: {} } } };
 describe("configuration UI validation RPC", () => {
   it("registers admin-only, validates policy, and returns scopes only", () => {
     const handlers = new Map<string, (arg: { params: unknown; respond: (ok: boolean, payload?: unknown, error?: unknown) => void }) => void>();
@@ -87,4 +87,21 @@ describe("host-verified durable activation owner", () => {
     await handler({client:{connect:{device:{id:"a".repeat(64)}}}, params:{action:"status",client:{connect:{device:{id:"b".repeat(64)}}}},respond});
     expect(respond).toHaveBeenCalledWith(false,undefined,expect.objectContaining({code:"INVALID_REQUEST"}));
   });
+});
+
+it("binds the running policy witness to the named connection and rejects unknown IDs", () => {
+  const registerGatewayMethod = vi.fn();
+  const work = structuredClone(policy);
+  const personal = structuredClone(policy);
+  personal.services.calendar.agents.main.resources = ["synthetic-personal-calendar"];
+  registerConfigurationUiMethods({ registerGatewayMethod }, { policy, accounts: { work, personal } });
+  const handler = registerGatewayMethod.mock.calls.find(call => call[0] === "microsoft-graph.configuration.applicationStatus")![1];
+  const invoke = (params: unknown) => {
+    const respond = vi.fn();
+    handler({ params, respond });
+    return respond.mock.calls[0];
+  };
+  expect(invoke({ accountId: "work" })).toEqual(invoke({}));
+  expect(invoke({ accountId: "personal" })[1].activePolicyHash).not.toBe(invoke({})[1].activePolicyHash);
+  for (const accountId of ["missing", "../work", "constructor", null]) expect(invoke({ accountId })[0]).toBe(false);
 });

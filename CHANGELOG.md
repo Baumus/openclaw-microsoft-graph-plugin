@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.27.0
+
+- Manage named Microsoft Graph connections in the Control UI, with account-scoped sign-in, grants, calendar and folder lookup, and activation status.
+- Use the four-section integration layout; review changes from the edit flow and manage OneDrive within Agent Access.
+
 ## 3.26.0
 
 - Support named Microsoft Graph connections with independent encrypted OAuth state and per-agent resource policies. Existing calls without an account ID continue to use the legacy connection.

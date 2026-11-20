@@ -42,7 +42,7 @@ describe("agent calendar access editor", () => {
     expect(view.container.textContent).toContain("Eingeschränkt · nur Standardkalender");
     expect(view.container.textContent).toContain("Team");
     toggle(view.container, "Team");
-    click(view.container, "Prüfen"); await view.settle();
+    click(view.container, "Änderungen prüfen"); await view.settle();
     expect(view.container.textContent).toContain("Main: freigegeben · Team");
     const candidate = view.calls.filter(call => call.method === "microsoft-graph.configuration.validate").at(-1)!.params as { policy: typeof initial };
     expect(candidate.policy.services.calendar.agents.main.resources).toEqual(["me", "team-id"]);
@@ -54,7 +54,7 @@ describe("agent calendar access editor", () => {
     const policy = structuredClone(initial); policy.services.calendar.agents.main.resources = ["me", "old-id"];
     const view = mount(policy); await view.settle(); click(view.container, "Agent-Zugriff"); await view.settle();
     expect(view.container.textContent).toContain("Kalender-ID: old-id · nicht verifizierbar");
-    toggle(view.container, "Team"); click(view.container, "Prüfen"); await view.settle();
+    toggle(view.container, "Team"); click(view.container, "Änderungen prüfen"); await view.settle();
     const candidate = view.calls.filter(call => call.method === "microsoft-graph.configuration.validate").at(-1)!.params as { policy: typeof initial };
     expect(candidate.policy.services.calendar.agents.main.resources).toEqual(["me", "old-id", "team-id"]);
     view.dispose();
