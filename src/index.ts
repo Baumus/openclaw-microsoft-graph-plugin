@@ -3576,7 +3576,7 @@ export async function beforeMicrosoftGraphToolCall(
   }
   // Bind caller input separately from private, pre-approved staging metadata.
   // Native Codex must execute the original input without any hook rewrite.
-  const originalArtifactParams = (event.toolName === "onedrive_upload" || event.toolName === "onedrive_update") ? params : undefined;
+  const originalArtifactParams = (event.toolName === "onedrive_upload" || event.toolName === "onedrive_update" || isMailAttachment(event.toolName, params)) ? params : undefined;
   const hookParams = () => originalArtifactParams ? event.params as Record<string, unknown> : defaultTodoParams ?? params;
   let ownedLease: WorkspaceStagingLease | undefined;
   let reusedArtifact: ReturnType<NativeApprovalSnapshotStore["artifactForPreflight"]>;
