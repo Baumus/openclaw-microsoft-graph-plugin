@@ -126,9 +126,10 @@ class ConfigurationPage {
   private step = 4;
   private accountId?: string;
   private newAccountName = "";
-  private accountCreationError = "";
-  private accountCreationUnconfirmed = false;
+  private accountWriteError = "";
+  private accountWriteUnconfirmed = false;
   private accountCreationPending = false;
+  private accountRemovalPending = false;
   private accountLabel(accountId?: string): string {
     if (accountId === undefined) return localize("Standardverbindung");
     const labels = this.snapshot?.config.plugins?.entries?.[id]?.config?.accountLabels as Record<string, string> | undefined;
@@ -143,7 +144,7 @@ class ConfigurationPage {
   private scoped(params: Record<string, unknown>) {
     return this.accountId === undefined ? params : { ...params, accountId: this.accountId };
   }
-  private async switchAccount(accountId?: string, saved?: ConfigSnapshot) {
+  private async switchAccount(accountId?: string, saved?: ConfigSnapshot, notice = "Verbindung gespeichert.") {
     if (this.locked || this.authBusy || this.authState === "pending" || this.statusInFlight || accountId === this.accountId) return;
     if (this.dirty && !window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { this.render(); return; }
     this.stopStatusChecks();
@@ -175,7 +176,7 @@ class ConfigurationPage {
     this.step = this.step === 5 ? 5 : 4;
     this.snapshot = saved;
     this.initial = undefined;
-    if (saved) this.success = "Verbindung gespeichert.";
+    if (saved) this.success = notice;
     await this.load(saved);
     this.container.querySelector<HTMLSelectElement>(".mg-account-select")?.focus({ preventScroll: true });
   }
@@ -718,6 +719,11 @@ class ConfigurationPage {
   }
   private renderAccounts(body: HTMLElement) {
     append(body, el("p", "mg-hint", "Microsoft-Verbindungen und Anmeldestatus verwalten."));
+    if (this.accountRemovalPending) {
+      const status = el("p", "mg-banner", "Verbindung wird entfernt …");
+      status.setAttribute("role", "status");
+      append(body, status);
+    }
     const list = el("section", "mg-section mg-service-summary");
     for (const accountId of this.accountOptions) {
       const row = el("div", "mg-summary-row");
@@ -736,6 +742,11 @@ class ConfigurationPage {
       this.renderSetup(body);
       this.renderSignIn(body);
     }
+    if (this.accountId !== undefined) {
+      const remove = this.action("Verbindung entfernen", () => void this.removeAccount(), "danger");
+      remove.disabled = this.dirty || this.authBusy || this.authState === "pending" || this.statusInFlight || this.accountWriteUnconfirmed;
+      append(body, remove);
+    }
     const add = el("form", "mg-section");
     append(add, el("h2", "", "Weiteres Konto"));
     const name = this.field(add, "Anzeigename", this.newAccountName, value => { this.newAccountName = value; },
@@ -746,18 +757,18 @@ class ConfigurationPage {
     const create = this.action(this.accountCreationPending ? "Verbindung wird gespeichert …" : "Verbindung anlegen", () => {}, "primary");
     if (this.accountCreationPending) create.setAttribute("aria-busy", "true");
     create.type = "submit";
-    create.disabled = name.disabled || this.accountCreationUnconfirmed;
+    create.disabled = name.disabled || this.accountWriteUnconfirmed;
     add.addEventListener("submit", event => { event.preventDefault(); void this.createAccount(); });
     append(add, el("p", "mg-hint", "Legt die Verbindung ohne Zugriffsrechte an. Danach legst du den Agentenzugriff fest und meldest dich bei Microsoft an."), create);
-    if (this.accountCreationError) {
-      const error = el("p", "mg-error", this.accountCreationError);
+    if (this.accountWriteError) {
+      const error = el("p", "mg-error", this.accountWriteError);
       error.setAttribute("role", "alert");
       append(add, error);
-      if (this.accountCreationUnconfirmed) append(add, this.action("Kontenliste neu laden", () => {
+      if (this.accountWriteUnconfirmed) append(add, this.action("Kontenliste neu laden", () => {
         void this.load().then(() => {
           if (this.error || !this.authorized) return;
-          this.accountCreationUnconfirmed = false;
-          this.accountCreationError = "";
+          this.accountWriteUnconfirmed = false;
+          this.accountWriteError = "";
           this.render();
         });
       }));
@@ -765,15 +776,92 @@ class ConfigurationPage {
     append(body, add);
   }
 
+  private async observeAccountWrite(baseHash: string, config: Record<string, unknown>, note: string,
+    matches: (entry: Record<string, unknown> | undefined) => boolean, replacePaths?: string[]): Promise<{ snapshot: ConfigSnapshot; applied: boolean } | "rejected"> {
+    let settlement: "rejected" | "unknown" | "applied" | undefined;
+    const patch = this.host.request("config.patch", {
+      baseHash, raw: JSON.stringify({ plugins: { entries: { [id]: { config } } } }), note, response: "summary", ...(replacePaths && { replacePaths }),
+    }).then(
+      () => { settlement = "applied"; },
+      error => { settlement = isPreCommitRejection(error) ? "rejected" : "unknown"; },
+    );
+    // A write can persist while the Gateway is still waiting for plugin reload.
+    for (let attempt = 0; attempt < 12; attempt++) {
+      if (!settlement) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([patch, new Promise<void>(resolve => { timer = setTimeout(resolve, attempt === 0 ? 1000 : 5000); })]);
+        clearTimeout(timer);
+      }
+      if (!this.authorized || this.disposed || this.signal.aborted) break;
+      if (settlement === "rejected") return "rejected";
+      const settledBeforeRead = settlement !== undefined;
+      const snapshot = await this.read<ConfigSnapshot>("config.get");
+      if (!this.authorized || this.disposed || this.signal.aborted) break;
+      if (matches(snapshot.config.plugins?.entries?.[id]?.config)) {
+        return { snapshot, applied: settlement === "applied" || !!snapshot.configRevisionHash && snapshot.configRevisionHash === snapshot.appliedConfigHash };
+      }
+      if (settledBeforeRead) break;
+    }
+    throw Error("account_write_unconfirmed");
+  }
+
+  private async removeAccount() {
+    const accountId = this.accountId;
+    if (accountId === undefined || !this.authorized || this.locked || this.dirty || !this.initial || !this.snapshot
+      || this.authBusy || this.authState === "pending" || this.statusInFlight || this.accountWriteUnconfirmed) return;
+    const label = this.accountLabel(accountId);
+    if (!window.confirm(format("„{name}“ aus OpenClaw entfernen? Die Agent-Freigaben für diese Verbindung entfallen nach dem Plugin-Reload. Das Microsoft-Konto und seine Daten bleiben unverändert. Verschlüsselte Anmeldedaten bleiben lokal gespeichert, werden aber bei einer neuen Verbindung nicht wiederverwendet.", { name: label }))) return;
+    const before = this.initial;
+    this.busy = this.accountRemovalPending = true;
+    this.success = this.accountWriteError = ""; this.render();
+    let removed: { snapshot: ConfigSnapshot; applied: boolean } | undefined;
+    try {
+      const fresh = await this.read<ConfigSnapshot>("config.get");
+      if (!this.authorized || this.disposed || this.signal.aborted) return;
+      const entry = fresh.config.plugins?.entries?.[id]?.config;
+      const current = policyAt(entry, accountId);
+      const labels = entry?.accountLabels as Record<string, string> | undefined;
+      if (!current || canonicalPolicy(current) !== canonicalPolicy(before) || (labels?.[accountId] ?? accountId) !== label) {
+        this.accountWriteUnconfirmed = true;
+        this.accountWriteError = "Die Verbindung wurde inzwischen geändert. Lade die Kontenliste neu und prüfe sie erneut.";
+        return;
+      }
+      const replacePaths: string[] = [];
+      nestedArrayPaths(current, `plugins.entries.${id}.config.accounts.${accountId}`, replacePaths);
+      const result = await this.observeAccountWrite(fresh.hash, {
+        accounts: { [accountId]: null }, accountLabels: { [accountId]: null }, retiredAccountIds: { [accountId]: true },
+      }, "Microsoft Graph: remove named connection", entry => {
+        const labels = entry?.accountLabels as Record<string, string> | undefined;
+        const retired = entry?.retiredAccountIds as Record<string, true> | undefined;
+        return !policyAt(entry, accountId) && !Object.hasOwn(labels ?? {}, accountId) && retired?.[accountId] === true;
+      }, replacePaths);
+      if (result === "rejected") {
+        this.accountWriteError = "Die Entfernung wurde abgelehnt. Die Verbindung wurde nicht entfernt.";
+        return;
+      }
+      removed = result;
+    } catch {
+      this.accountWriteUnconfirmed = true;
+      this.accountWriteError = "Entfernung nicht bestätigt. Lade zuerst die Kontenliste neu.";
+    } finally {
+      this.busy = this.accountRemovalPending = false;
+      if (!removed) this.render();
+    }
+    if (removed) {
+      this.snapshot = removed.snapshot;
+      await this.switchAccount(this.accountOptions[0], removed.snapshot, removed.applied ? "Verbindung entfernt." : "Entfernung gespeichert. Sie greift nach dem Neuladen des Microsoft-Graph-Plugins.");
+    }
+  }
+
   private async createAccount() {
-    if (!this.authorized || this.locked || this.authBusy || this.authState === "pending" || this.statusInFlight || this.accountCreationUnconfirmed || !this.snapshot) return;
+    if (!this.authorized || this.locked || this.authBusy || this.authState === "pending" || this.statusInFlight || this.accountWriteUnconfirmed || !this.snapshot) return;
     const label = this.newAccountName.trim();
     if (!label || label.length > 80 || /[\u0000-\u001f\u007f]/.test(label)) {
-      this.accountCreationError = "Gib einen Anzeigenamen mit 1 bis 80 Zeichen ein."; this.render(); return;
+      this.accountWriteError = "Gib einen Anzeigenamen mit 1 bis 80 Zeichen ein."; this.render(); return;
     }
-    if (this.dirty) { this.accountCreationError = "Speichere oder verwirf zuerst die aktuellen Änderungen."; this.render(); return; }
+    if (this.dirty) { this.accountWriteError = "Speichere oder verwirf zuerst die aktuellen Änderungen."; this.render(); return; }
     this.busy = true; this.accountCreationPending = true;
-    this.success = this.accountCreationError = ""; this.render();
+    this.success = this.accountWriteError = ""; this.render();
     let created: { accountId: string; snapshot: ConfigSnapshot } | undefined;
     try {
       const fresh = await this.read<ConfigSnapshot>("config.get");
@@ -781,55 +869,31 @@ class ConfigurationPage {
       const entry = fresh.config.plugins?.entries?.[id]?.config;
       this.snapshot = fresh;
       if (this.accountOptions.some(option => this.accountLabel(option).toLowerCase() === label.toLowerCase())) {
-        this.accountCreationError = "Dieser Anzeigename wird bereits verwendet. Öffne die vorhandene Verbindung oder wähle einen anderen Namen.";
+        this.accountWriteError = "Dieser Anzeigename wird bereits verwendet. Öffne die vorhandene Verbindung oder wähle einen anderen Namen.";
         return;
       }
       const stem = label.normalize("NFKD").replace(/\p{Mark}/gu, "").toLowerCase().replace(/[^a-z0-9]+/g, "-")
         .replace(/^[^a-z]+|-+$/g, "").slice(0, 56) || "konto";
       let accountId = stem;
-      for (let suffix = 2; accountId === "constructor" || policyAt(entry, accountId); suffix++) accountId = stem + "-" + suffix;
+      const retired = entry?.retiredAccountIds as Record<string, true> | undefined;
+      for (let suffix = 2; accountId === "constructor" || policyAt(entry, accountId) || retired?.[accountId] === true; suffix++) accountId = stem + "-" + suffix;
       const target = blankPolicy();
-      let settlement: "rejected" | "settled" | undefined;
-      const patch = this.host.request("config.patch", {
-        baseHash: fresh.hash,
-        raw: JSON.stringify({ plugins: { entries: { [id]: { config: { accounts: { [accountId]: target }, accountLabels: { [accountId]: label } } } } } }),
-        note: "Microsoft Graph: add named connection",
-        response: "summary",
-      }).then(
-        () => { settlement = "settled"; },
-        error => { settlement = isPreCommitRejection(error) ? "rejected" : "settled"; },
-      );
-
-      // config.patch can remain pending for runtime drain after committing.
-      // Read the exact saved target without sending the write a second time.
-      for (let attempt = 0; attempt < 12; attempt++) {
-        if (!settlement) {
-          let timer: ReturnType<typeof setTimeout> | undefined;
-          await Promise.race([patch, new Promise<void>(resolve => { timer = setTimeout(resolve, attempt === 0 ? 1000 : 5000); })]);
-          clearTimeout(timer);
-        }
-        if (!this.authorized || this.disposed || this.signal.aborted) break;
-        if (settlement === "rejected") {
-          this.accountCreationError = "Die Verbindung wurde nicht gespeichert. Lade den aktuellen Stand und prüfe die Gateway-Konfiguration.";
-          return;
-        }
-        const settledBeforeRead = settlement !== undefined;
-        const saved = await this.read<ConfigSnapshot>("config.get");
-        if (!this.authorized || this.disposed || this.signal.aborted) break;
-        const savedEntry = saved.config.plugins?.entries?.[id]?.config;
-        const savedLabels = savedEntry?.accountLabels as Record<string, string> | undefined;
-        const savedPolicy = policyAt(savedEntry, accountId);
-        if (savedLabels?.[accountId] === label && savedPolicy && canonicalPolicy(savedPolicy) === canonicalPolicy(target)) {
-          created = { accountId, snapshot: saved };
-          this.newAccountName = "";
-          break;
-        }
-        if (settledBeforeRead) break;
+      const result = await this.observeAccountWrite(fresh.hash, {
+        accounts: { [accountId]: target }, accountLabels: { [accountId]: label },
+      }, "Microsoft Graph: add named connection", entry => {
+        const labels = entry?.accountLabels as Record<string, string> | undefined;
+        const saved = policyAt(entry, accountId);
+        return labels?.[accountId] === label && !!saved && canonicalPolicy(saved) === canonicalPolicy(target);
+      });
+      if (result === "rejected") {
+        this.accountWriteError = "Die Verbindung wurde nicht gespeichert. Lade den aktuellen Stand und prüfe die Gateway-Konfiguration.";
+        return;
       }
-      if (!created) throw Error("account_unconfirmed");
+      created = { accountId, snapshot: result.snapshot };
+      this.newAccountName = "";
     } catch {
-      this.accountCreationUnconfirmed = true;
-      this.accountCreationError = "Speichern nicht bestätigt. Lade die Kontenliste neu, bevor du es erneut versuchst.";
+      this.accountWriteUnconfirmed = true;
+      this.accountWriteError = "Speichern nicht bestätigt. Lade die Kontenliste neu, bevor du es erneut versuchst.";
     } finally {
       this.busy = false; this.accountCreationPending = false;
       if (!created) this.render();

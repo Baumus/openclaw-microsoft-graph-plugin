@@ -451,3 +451,75 @@ it.each(["lost response", "pending activation", "manual reload", "already active
     expect(view.calls.filter(call => call.method === "config.patch")).toHaveLength(2);
   } finally { view.dispose(); vi.useRealTimers(); }
 });
+
+it("removes only the confirmed connection and never reuses its ID", async () => {
+  vi.useFakeTimers();
+  const view = mount();
+  const confirm = vi.fn((_message: string) => false);
+  vi.stubGlobal("confirm", confirm);
+  try {
+    const snap = view.responses["config.get"] as {
+      hash: string; configRevisionHash: string; appliedConfigHash: string;
+      config: { plugins: { entries: Record<string, { config: Record<string, unknown> }> } };
+    };
+    const entry = snap.config.plugins.entries["microsoft-graph"]!.config;
+    const accounts: Record<string, unknown> = { office: structuredClone(policy), private: structuredClone(policy) };
+    const labels: Record<string, string> = { office: "Office", private: "Private" };
+    entry.accounts = accounts;
+    entry.accountLabels = labels;
+    const request = view.host.request;
+    const reload = deferredReply();
+    view.host.request = async (method, params) => {
+      if (method !== "config.patch") return request(method, params);
+      view.calls.push({ method, params });
+      const raw = JSON.parse((params as { raw: string }).raw).plugins.entries["microsoft-graph"].config;
+      if (raw.retiredAccountIds) {
+        expect((params as { replacePaths: string[] }).replacePaths).toContain("plugins.entries.microsoft-graph.config.accounts.office.services.mail.agents.main.operations");
+        expect(raw).toEqual({ accounts: { office: null }, accountLabels: { office: null }, retiredAccountIds: { office: true } });
+        delete accounts.office;
+        delete labels.office;
+        entry.retiredAccountIds = raw.retiredAccountIds;
+        snap.configRevisionHash = "removal-saved";
+        return reload.promise;
+      }
+      expect(Object.keys(raw.accounts)).toEqual(["office-2"]);
+      Object.assign(accounts, raw.accounts);
+      Object.assign(labels, raw.accountLabels);
+      return { ok: true };
+    };
+    await view.settle();
+    clickByText(view.container, "Konten");
+    expect(view.container.textContent).not.toContain("Verbindung entfernen");
+    const picker = view.container.querySelector<HTMLSelectElement>(".mg-account-select")!;
+    picker.value = "1";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    await view.settle();
+    clickByText(view.container, "Verbindung entfernen");
+    expect(confirm.mock.calls[0]?.[0]).toContain("„Office“");
+    expect(view.calls.filter(call => call.method === "config.patch")).toHaveLength(0);
+    confirm.mockReturnValue(true);
+    clickByText(view.container, "Verbindung entfernen");
+    await view.settle();
+    expect(view.container.textContent).toContain("Verbindung wird entfernt");
+    await vi.advanceTimersByTimeAsync(1000);
+    await view.settle();
+    expect(view.container.textContent).toContain("Entfernung gespeichert");
+    expect(accounts).toEqual({ private: policy });
+    expect(entry.policy).toEqual(policy);
+    expect(view.container.querySelector<HTMLSelectElement>(".mg-account-select")?.selectedOptions[0]?.textContent).toBe("Standardverbindung");
+    reload.reject(new Error("reload still pending"));
+    const form = view.container.querySelector("form")!;
+    const name = form.querySelector("input")!;
+    name.value = "Office";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await view.settle();
+    expect(labels).toEqual({ private: "Private", "office-2": "Office" });
+    expect(view.calls.filter(call => call.method === "config.patch")).toHaveLength(2);
+    expect(view.calls.some(call => call.method === "plugins.reload")).toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
+    view.dispose();
+    vi.useRealTimers();
+  }
+});

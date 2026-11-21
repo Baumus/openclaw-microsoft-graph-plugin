@@ -9,11 +9,11 @@ export const AccountSelector = Type.Optional(Type.String({
   description: "Connection ID from microsoft_graph_capabilities. Omit for the legacy connection; always repeat the same ID for follow-up calls.",
 }));
 export const AccountsSchema = Type.Record(Type.String({ pattern: ACCOUNT_ID_PATTERN }), GraphPolicySchema, { additionalProperties: false });
-export type AccountConfig = { policy?: GraphPolicy; accounts?: Record<string, GraphPolicy> };
+export type AccountConfig = { policy?: GraphPolicy; accounts?: Record<string, GraphPolicy>; retiredAccountIds?: Record<string, true> };
 
 export function selectAccount<T extends AccountConfig>(config: T, accountId: unknown): T {
   if (accountId === undefined) return config;
-  if (typeof accountId !== "string" || !accountIdRegex.test(accountId) || !config.accounts || !Object.hasOwn(config.accounts, accountId)) {
+  if (typeof accountId !== "string" || !accountIdRegex.test(accountId) || config.retiredAccountIds?.[accountId] === true || !config.accounts || !Object.hasOwn(config.accounts, accountId)) {
     throw new Error("access_denied");
   }
   return { ...config, policy: validatePolicy(config.accounts[accountId]) };
