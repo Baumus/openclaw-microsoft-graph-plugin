@@ -298,10 +298,8 @@
   align-items: start;
 }
 .mg-access-grid > div { min-width: 0; display: grid; gap: 12px; }
-.mg-folder-settings > summary { cursor: pointer; padding-block: 10px; }
 .mg-account-notice { margin-bottom: 12px; }
 .mg-account-notice p { margin-bottom: 0; }
 @media (max-width: 960px) { .mg-access-grid { grid-template-columns: minmax(0, 1fr); } }
-.mg-folder-settings .mg-root-grid { grid-template-columns: minmax(0, 1fr); }
-.mg-folder-settings .mg-agent-row { display: flex; flex-wrap: wrap; }
-.mg-folder-settings .mg-agent-name { flex: 1 1 64px; min-width: 0; }
+
+.mg-folder-status { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 6px; }

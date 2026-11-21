@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.28.1
+
+- Separate OneDrive folder management from per-agent access and link each folder directly to its shared AGENTS.md setting.
+
 ## 3.28.0
 
 - Remove named connections from OpenClaw without touching the Microsoft account or other connections. Retire the old connection ID so its retained encrypted sign-in state cannot be reused.

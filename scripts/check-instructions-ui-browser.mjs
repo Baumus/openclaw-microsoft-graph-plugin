@@ -64,7 +64,7 @@ try {
     });
     assert.equal(mobile ? layout.stacked : layout.sideBySide, true);
     const navigation = page.getByRole("navigation", { name: "Microsoft Graph" });
-    assert.deepEqual(await navigation.getByRole("button").allTextContents(), ["Übersicht", "Konten", "Agent-Zugriff", "Freigaberegeln"]);
+    assert.deepEqual(await navigation.getByRole("button").allTextContents(), ["Übersicht", "Konten", "Agent-Zugriff", "OneDrive-Ordner", "Freigaberegeln"]);
     const account = page.locator("select.mg-account-select");
     await account.selectOption("1");
     await page.locator(".mg-account-context > span").filter({ hasText: /Kein Microsoft-Konto verbunden|No Microsoft account connected/ }).waitFor();
@@ -77,7 +77,8 @@ try {
     await page.getByRole("heading", { name: "Übersicht", exact: true }).waitFor();
     await page.screenshot({ path: path.join(output, name + "-overview.png") });
     await page.getByRole("navigation", { name: "Microsoft Graph" }).getByRole("button", { name: "Agent-Zugriff", exact: true }).click();
-    await page.locator(".mg-folder-settings > summary").click();
+    await page.getByRole("button", { name: "Ordner öffnen: /Synthetic/foo", exact: true }).click();
+    assert.equal(await page.locator(".mg-root-card h3[data-folder=foo]").evaluate(node => document.activeElement === node), true);
     await inputs.first().waitFor(); await settleRender();
     assert.equal(await inputs.count(), 2); assert.equal(await inputs.nth(0).isChecked(), false); assert.equal(await inputs.nth(1).isChecked(), true);
     // R-001: these exact labels formerly aliased the first info button and
