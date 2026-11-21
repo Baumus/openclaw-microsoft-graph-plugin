@@ -499,7 +499,7 @@ class ConfigurationPage {
     const shell = el("div", "mg-shell");
     const content = el("div", "mg-content");
     const rail = el("nav", "mg-steps"); rail.setAttribute("aria-label", "Microsoft Graph");
-    const pages = [["Übersicht", 4], ["Konten", 5], ["Agent-Zugriff", 1], ["Freigaberegeln", 2]] as const;
+    const pages = [["Übersicht", 4], ["Konten", 5], ["Agent-Zugriff", 1], ["OneDrive-Ordner", 6], ["Freigaberegeln", 2]] as const;
     for (const [name, index] of pages) {
       const tab = this.action(name, () => { this.step = index; this.render(); }, index === this.step ? "active" : "ghost");
       tab.disabled = this.locked;
@@ -529,6 +529,7 @@ class ConfigurationPage {
     const body = el("section", "mg-body");
     if (this.step === 4) this.renderOverview(body);
     else if (this.step === 1) this.renderServices(body);
+    else if (this.step === 6) this.renderOneDrive(body);
     else if (this.step === 2) this.renderApprovals(body);
     else if (this.step === 3) this.renderReview(body);
     else this.renderAccounts(body);
@@ -1218,6 +1219,22 @@ class ConfigurationPage {
           control.title = localize("Durch die Ordnerregel begrenzt.");
         }
       }
+      const original = this.initial?.services.onedrive.allowed_roots.find(folder => folder.label === root.label);
+      const changed = original?.agents_instructions !== root.agents_instructions;
+      const status = changed ? "AGENTS.md: Ungespeichert"
+        : this.applicationStatus !== "applied" ? "AGENTS.md: Aktiver Stand nicht bestätigt"
+        : root.agents_instructions === "trusted" ? "AGENTS.md: Ein · Für den Ordner" : "AGENTS.md: Aus · Für den Ordner";
+      const folderSettings = el("div", "mg-folder-status");
+      const open = this.action("Ordner öffnen", () => {
+        this.step = 6;
+        this.render();
+        const heading = [...this.container.querySelectorAll<HTMLElement>(".mg-root-card h3")]
+          .find(node => node.dataset.folder === root.label);
+        heading?.focus();
+      }, "ghost");
+      open.setAttribute("aria-label", format("Ordner öffnen: {path}", { path: root.path }));
+      append(folderSettings, el("span", "mg-hint", status), open);
+      append(row, folderSettings);
       append(section, row);
     }
     if (!roots.length) append(section, el("p", "mg-hint", "Noch kein OneDrive-Ordner freigegeben."));
@@ -1287,13 +1304,16 @@ class ConfigurationPage {
     append(title, el("p", "mg-kicker", "OneDrive-Zugriff"), el("h2", "", "Wer darf auf welche OneDrive-Bereiche zugreifen?"), el("p", "mg-hint", "Klicke auf ein Recht, um es zu ändern. Ohne aktives Recht wird der Agent entfernt. Änderungen werden erst nach Prüfen und Speichern wirksam."));
     append(heading, title, el("span", "mg-count", format("{count} Zuweisungen", { count: assignments })));
     append(body, heading);
+    this.renderFolderInput(body);
     if (!roots.length) { append(body, el("p", "mg-message", "Noch kein OneDrive-Ordner freigegeben.")); return; }
     const grid = el("div", "mg-root-grid");
     for (const [index, root] of roots.entries()) {
       const card = el("article", "mg-root-card");
       const header = el("div", "mg-root-header");
       const name = root.path.split("/").filter(Boolean).at(-1) || root.path;
-      const identity = el("div", "mg-root-identity"); append(identity, el("h3", "", name), el("p", "mg-root-path", root.path));
+      const folderHeading = el("h3", "", name);
+      folderHeading.tabIndex = -1; folderHeading.dataset.folder = root.label;
+      const identity = el("div", "mg-root-identity"); append(identity, folderHeading, el("p", "mg-root-path", root.path));
       append(header, identity, el("span", "mg-descendants", "Inkl. Unterordner")); append(card, header);
       this.renderInstructionsControl(card, root, index);
       const agents = Object.entries(root.agents).filter(([, grant]) => Object.values(grant.permissions).some(Boolean));
@@ -1399,6 +1419,7 @@ class ConfigurationPage {
       this.render();
     });
     input.dataset.focusKey = JSON.stringify(["instructions", "checkbox", root.label]);
+    append(row, el("p", "mg-hint", "Gilt für alle Agenten mit Lesezugriff auf diesen Ordner. Erteilt keine zusätzlichen Rechte."));
     const panel = el("div", "mg-instructions-help");
     panel.id = `${this.helpIdPrefix}-${index}`;
     panel.dataset.root = root.label;
@@ -1459,10 +1480,6 @@ class ConfigurationPage {
     const services = el("div");
     append(services, el("h2", "", "Dienste"));
     this.renderAgentFolders(folders, agentId);
-    const folderSettings = el("details", "mg-folder-settings");
-    append(folderSettings, el("summary", "", "Ordner verwalten"));
-    this.renderOneDrive(folderSettings);
-    append(folders, folderSettings);
     append(grid, folders, services); append(body, grid);
     for (const service of ["calendar", "mail", "contacts", "todo"] as const) {
       const card = el("fieldset", "mg-section"); append(card, el("legend", "", serviceNames[service]));
