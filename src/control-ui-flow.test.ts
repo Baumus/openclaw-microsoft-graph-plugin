@@ -336,7 +336,7 @@ describe("guided Microsoft sign-in", () => {
 });
 
 
-it("guides a new named connection from saving through scoped Microsoft sign-in", async () => {
+it.each(["lost response", "pending activation"])("guides a new named connection through scoped sign-in with %s", async (mode) => {
   vi.useFakeTimers();
   const view = mount();
   try {
@@ -347,6 +347,8 @@ it("guides a new named connection from saving through scoped Microsoft sign-in",
     const entry = (view.responses["config.get"] as { config: { plugins: { entries: Record<string, { config: { policy: typeof policy; accounts?: Record<string, typeof policy>; accountLabels?: Record<string, string> } }> } } }).config.plugins.entries["microsoft-graph"]!.config;
     let connected = false;
     let active = false;
+    let rejectPatch!: (error: Error) => void;
+    const pendingPatch = new Promise<never>((_, reject) => { rejectPatch = reject; });
     view.host.request = async (method, raw) => {
       const params = raw as { accountId?: string; raw?: string; policy?: typeof policy };
       if (method === "config.patch") {
@@ -355,6 +357,7 @@ it("guides a new named connection from saving through scoped Microsoft sign-in",
         if (change.accountLabels) {
           entry.accounts = change.accounts;
           entry.accountLabels = change.accountLabels;
+          if (mode === "pending activation") return pendingPatch;
           throw new Error("connection lost after write");
         }
         Object.assign(entry.accounts!.buro!.services, change.accounts.buro.services);
@@ -381,9 +384,21 @@ it("guides a new named connection from saving through scoped Microsoft sign-in",
     name.value = "Büro"; name.dispatchEvent(new Event("input", { bubbles: true }));
     form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await view.settle();
+    if (mode === "pending activation") {
+      expect(view.container.textContent).toContain("Verbindung wird gespeichert …");
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await vi.advanceTimersByTimeAsync(1000);
+      await view.settle();
+    }
+    expect(view.calls.filter(call => call.method === "config.patch")).toHaveLength(1);
     expect(entry.accountLabels).toEqual({ buro: "Büro" });
     expect(view.container.querySelector<HTMLSelectElement>(".mg-account-select")?.selectedOptions[0]?.textContent).toBe("Büro");
     expect(view.container.textContent).toContain("Das Gateway hat die Aktivierung noch nicht bestätigt.");
+    expect(view.container.textContent).not.toContain("Anmeldung starten");
+    if (mode === "pending activation") rejectPatch(new Error("saved but activation timed out"));
+    await view.settle();
+    expect(view.container.textContent).toContain("Das Gateway hat die Aktivierung noch nicht bestätigt.");
+    expect(view.calls.some(call => call.method === "plugins.reload")).toBe(false);
     active = true;
     clickByText(view.container, "Kontostatus erneut prüfen"); await view.settle();
     clickByText(view.container, "Zugriff festlegen");

@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.27.2
+
+- Confirm named connection saves as soon as the saved configuration is visible, without waiting for plugin activation.
+
 ## 3.27.1
 
 - Save named connections by display name and distinguish persisted configuration, active rules, and Microsoft sign-in.

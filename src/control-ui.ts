@@ -128,6 +128,7 @@ class ConfigurationPage {
   private newAccountName = "";
   private accountCreationError = "";
   private accountCreationUnconfirmed = false;
+  private accountCreationPending = false;
   private accountLabel(accountId?: string): string {
     if (accountId === undefined) return localize("Standardverbindung");
     const labels = this.snapshot?.config.plugins?.entries?.[id]?.config?.accountLabels as Record<string, string> | undefined;
@@ -142,7 +143,7 @@ class ConfigurationPage {
   private scoped(params: Record<string, unknown>) {
     return this.accountId === undefined ? params : { ...params, accountId: this.accountId };
   }
-  private async switchAccount(accountId?: string) {
+  private async switchAccount(accountId?: string, saved?: ConfigSnapshot) {
     if (this.locked || this.authBusy || this.authState === "pending" || this.statusInFlight || accountId === this.accountId) return;
     if (this.dirty && !window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { this.render(); return; }
     this.stopStatusChecks();
@@ -172,9 +173,10 @@ class ConfigurationPage {
     this.confirmedRemoval = false;
     this.accountId = accountId;
     this.step = this.step === 5 ? 5 : 4;
-    this.snapshot = undefined;
+    this.snapshot = saved;
     this.initial = undefined;
-    await this.load();
+    if (saved) this.success = "Verbindung gespeichert.";
+    await this.load(saved);
     this.container.querySelector<HTMLSelectElement>(".mg-account-select")?.focus({ preventScroll: true });
   }
   private selectedAgent = "";
@@ -438,11 +440,11 @@ class ConfigurationPage {
       }
     } catch { /* Runtime may be draining: null is not proof that no intent exists. */ }
   }
-  private async load() {
+  private async load(saved?: ConfigSnapshot) {
     if (!this.authorized || this.busy) return;
     this.busy = true; this.error = ""; this.render();
     try {
-      const snap = await this.read<ConfigSnapshot>("config.get");
+      const snap = saved ?? await this.read<ConfigSnapshot>("config.get");
       if (this.disposed || this.signal.aborted) return;
       const pluginEntry = snap.config?.plugins?.entries?.[id];
       const entry = pluginEntry?.config ?? {};
@@ -720,7 +722,8 @@ class ConfigurationPage {
     name.required = true;
     name.maxLength = 80;
     name.disabled = this.authBusy || this.authState === "pending" || this.statusInFlight;
-    const create = this.action("Verbindung anlegen", () => {}, "primary");
+    const create = this.action(this.accountCreationPending ? "Verbindung wird gespeichert …" : "Verbindung anlegen", () => {}, "primary");
+    if (this.accountCreationPending) create.setAttribute("aria-busy", "true");
     create.type = "submit";
     create.disabled = name.disabled || this.accountCreationUnconfirmed;
     add.addEventListener("submit", event => { event.preventDefault(); void this.createAccount(); });
@@ -748,8 +751,9 @@ class ConfigurationPage {
       this.accountCreationError = "Gib einen Anzeigenamen mit 1 bis 80 Zeichen ein."; this.render(); return;
     }
     if (this.dirty) { this.accountCreationError = "Speichere oder verwirf zuerst die aktuellen Änderungen."; this.render(); return; }
-    this.busy = true; this.accountCreationError = ""; this.render();
-    let createdAccountId: string | undefined;
+    this.busy = true; this.accountCreationPending = true;
+    this.success = this.accountCreationError = ""; this.render();
+    let created: { accountId: string; snapshot: ConfigSnapshot } | undefined;
     try {
       const fresh = await this.read<ConfigSnapshot>("config.get");
       if (!this.authorized || this.disposed || this.signal.aborted) return;
@@ -764,33 +768,52 @@ class ConfigurationPage {
       let accountId = stem;
       for (let suffix = 2; accountId === "constructor" || policyAt(entry, accountId); suffix++) accountId = stem + "-" + suffix;
       const target = blankPolicy();
-      try {
-        await this.host.request("config.patch", {
-          baseHash: fresh.hash,
-          raw: JSON.stringify({ plugins: { entries: { [id]: { config: { accounts: { [accountId]: target }, accountLabels: { [accountId]: label } } } } } }),
-          note: "Microsoft Graph: add named connection",
-          response: "summary",
-        });
-      } catch (error) {
-        if (isPreCommitRejection(error)) {
+      let settlement: "rejected" | "settled" | undefined;
+      const patch = this.host.request("config.patch", {
+        baseHash: fresh.hash,
+        raw: JSON.stringify({ plugins: { entries: { [id]: { config: { accounts: { [accountId]: target }, accountLabels: { [accountId]: label } } } } } }),
+        note: "Microsoft Graph: add named connection",
+        response: "summary",
+      }).then(
+        () => { settlement = "settled"; },
+        error => { settlement = isPreCommitRejection(error) ? "rejected" : "settled"; },
+      );
+
+      // config.patch can remain pending for runtime drain after committing.
+      // Read the exact saved target without sending the write a second time.
+      for (let attempt = 0; attempt < 12; attempt++) {
+        if (!settlement) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([patch, new Promise<void>(resolve => { timer = setTimeout(resolve, attempt === 0 ? 1000 : 5000); })]);
+          clearTimeout(timer);
+        }
+        if (!this.authorized || this.disposed || this.signal.aborted) break;
+        if (settlement === "rejected") {
           this.accountCreationError = "Die Verbindung wurde nicht gespeichert. Lade den aktuellen Stand und prüfe die Gateway-Konfiguration.";
           return;
         }
-        // A reconnect can interrupt the response after the write was persisted.
+        const settledBeforeRead = settlement !== undefined;
+        const saved = await this.read<ConfigSnapshot>("config.get");
+        if (!this.authorized || this.disposed || this.signal.aborted) break;
+        const savedEntry = saved.config.plugins?.entries?.[id]?.config;
+        const savedLabels = savedEntry?.accountLabels as Record<string, string> | undefined;
+        const savedPolicy = policyAt(savedEntry, accountId);
+        if (savedLabels?.[accountId] === label && savedPolicy && canonicalPolicy(savedPolicy) === canonicalPolicy(target)) {
+          created = { accountId, snapshot: saved };
+          this.newAccountName = "";
+          break;
+        }
+        if (settledBeforeRead) break;
       }
-      const saved = await this.read<ConfigSnapshot>("config.get");
-      if (!this.authorized || this.disposed || this.signal.aborted) throw Error("account_unconfirmed");
-      this.snapshot = saved;
-      if (this.accountLabel(accountId) !== label || canonicalPolicy(policyAt(saved.config.plugins?.entries?.[id]?.config, accountId)) !== canonicalPolicy(target)) throw Error("account_unconfirmed");
-      createdAccountId = accountId;
-      this.newAccountName = "";
+      if (!created) throw Error("account_unconfirmed");
     } catch {
       this.accountCreationUnconfirmed = true;
       this.accountCreationError = "Speichern nicht bestätigt. Lade die Kontenliste neu, bevor du es erneut versuchst.";
     } finally {
-      this.busy = false; this.render();
+      this.busy = false; this.accountCreationPending = false;
+      if (!created) this.render();
     }
-    if (createdAccountId) await this.switchAccount(createdAccountId);
+    if (created) await this.switchAccount(created.accountId, created.snapshot);
   }
 
   private renderOverview(body: HTMLElement) {
