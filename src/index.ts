@@ -65,6 +65,7 @@ const Config = Type.Object({
   credentialVaultKey: Type.Optional(SecretRefOnly),
   policy: Type.Optional(GraphPolicySchema),
   accounts: Type.Optional(AccountsSchema),
+  retiredAccountIds: Type.Optional(Type.Record(Type.String({ pattern: "^[a-z][a-z0-9-]{0,62}$" }), Type.Literal(true), { additionalProperties: false })),
   accountLabels: Type.Optional(Type.Record(Type.String({ pattern: "^[a-z][a-z0-9-]{0,62}$" }), Type.String({ minLength: 1, maxLength: 80 }), { additionalProperties: false })),
   requestTimeoutMs: Type.Optional(Type.Integer({ minimum: 1000, maximum: 30000, default: 5000 })),
   readOperationTimeoutMs: Type.Optional(Type.Integer({ minimum: 5000, maximum: 300000, default: DEFAULT_READ_OPERATION_TIMEOUT_MS, description: "Whole-operation deadline for multi-request reads; each Graph request remains bounded by requestTimeoutMs." })),

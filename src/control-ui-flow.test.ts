@@ -336,7 +336,7 @@ describe("guided Microsoft sign-in", () => {
 });
 
 
-it("guides a new named connection from saving through scoped Microsoft sign-in", async () => {
+it.each(["lost response", "pending activation", "manual reload", "already active at retry"])("guides a new named connection through scoped sign-in with %s", async (mode) => {
   vi.useFakeTimers();
   const view = mount();
   try {
@@ -347,6 +347,8 @@ it("guides a new named connection from saving through scoped Microsoft sign-in",
     const entry = (view.responses["config.get"] as { config: { plugins: { entries: Record<string, { config: { policy: typeof policy; accounts?: Record<string, typeof policy>; accountLabels?: Record<string, string> } }> } } }).config.plugins.entries["microsoft-graph"]!.config;
     let connected = false;
     let active = false;
+    let rejectPatch!: (error: Error) => void;
+    const pendingPatch = new Promise<never>((_, reject) => { rejectPatch = reject; });
     view.host.request = async (method, raw) => {
       const params = raw as { accountId?: string; raw?: string; policy?: typeof policy };
       if (method === "config.patch") {
@@ -355,9 +357,17 @@ it("guides a new named connection from saving through scoped Microsoft sign-in",
         if (change.accountLabels) {
           entry.accounts = change.accounts;
           entry.accountLabels = change.accountLabels;
+          if (mode === "pending activation") return pendingPatch;
           throw new Error("connection lost after write");
         }
         Object.assign(entry.accounts!.buro!.services, change.accounts.buro.services);
+        return { ok: true };
+      }
+      if (method === "plugins.reload") {
+        const attempts = view.calls.filter(call => call.method === method).length;
+        view.calls.push({ method, params });
+        if (mode === "manual reload" && attempts === 0) throw new Error("plugin busy");
+        active = true;
         return { ok: true };
       }
       if (method === "microsoft-graph.configuration.validate") return { valid: true, policyHash: hash(params.policy), requiredScopes: ["Contacts.ReadWrite"] };
@@ -381,11 +391,43 @@ it("guides a new named connection from saving through scoped Microsoft sign-in",
     name.value = "Büro"; name.dispatchEvent(new Event("input", { bubbles: true }));
     form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await view.settle();
+    if (mode === "pending activation") {
+      expect(view.container.textContent).toContain("Verbindung wird gespeichert …");
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await vi.advanceTimersByTimeAsync(1000);
+      await view.settle();
+    }
+    expect(view.calls.filter(call => call.method === "config.patch")).toHaveLength(1);
     expect(entry.accountLabels).toEqual({ buro: "Büro" });
     expect(view.container.querySelector<HTMLSelectElement>(".mg-account-select")?.selectedOptions[0]?.textContent).toBe("Büro");
-    expect(view.container.textContent).toContain("Das Gateway hat die Aktivierung noch nicht bestätigt.");
-    active = true;
-    clickByText(view.container, "Kontostatus erneut prüfen"); await view.settle();
+    expect(view.container.textContent).toContain("Verbindung gespeichert · Aktivierung ausstehend");
+    expect(view.container.textContent).not.toContain("Anmeldung starten");
+    if (mode === "pending activation") rejectPatch(new Error("saved but activation timed out"));
+    await view.settle();
+    expect(view.container.textContent).toContain("Verbindung gespeichert · Aktivierung ausstehend");
+    expect(view.container.textContent).not.toContain("Plugin erneut laden");
+    expect(view.calls.some(call => call.method === "plugins.reload")).toBe(false);
+    if (mode === "manual reload" || mode === "already active at retry") {
+      await vi.advanceTimersByTimeAsync(70_000);
+      expect(view.container.textContent).toContain("Du musst die Verbindung nicht noch einmal anlegen.");
+      active = mode === "already active at retry";
+      clickByText(view.container, "Plugin erneut laden"); await view.settle();
+      const reload = { method: "plugins.reload", params: { plugins: [{ pluginId: "microsoft-graph" }], waitForDrain: true } };
+      if (mode === "manual reload") {
+        expect(view.calls.filter(call => call.method === "plugins.reload")).toEqual([reload]);
+        expect(view.container.textContent).toContain("Verbindung gespeichert · Aktivierung ausstehend");
+        expect(view.container.textContent).not.toContain("Anmeldung starten");
+        await vi.advanceTimersByTimeAsync(70_000);
+        clickByText(view.container, "Plugin erneut laden"); await view.settle();
+      }
+      expect(view.calls.filter(call => call.method === "plugins.reload")).toEqual(mode === "manual reload" ? [reload, reload] : []);
+    } else {
+      active = true;
+      await vi.advanceTimersByTimeAsync(5000);
+      await view.settle();
+    }
+    expect(view.container.textContent).toContain("Verbindung aktiv");
+    expect(view.calls.filter(call => call.method === "config.patch")).toHaveLength(1);
     clickByText(view.container, "Zugriff festlegen");
     const contacts = [...view.container.querySelectorAll("fieldset")].find(item => item.querySelector("legend")?.textContent === "Kontakte")!;
     const toggle = contacts.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
@@ -408,4 +450,76 @@ it("guides a new named connection from saving through scoped Microsoft sign-in",
     expect(entry.policy).toEqual(policy);
     expect(view.calls.filter(call => call.method === "config.patch")).toHaveLength(2);
   } finally { view.dispose(); vi.useRealTimers(); }
+});
+
+it("removes only the confirmed connection and never reuses its ID", async () => {
+  vi.useFakeTimers();
+  const view = mount();
+  const confirm = vi.fn((_message: string) => false);
+  vi.stubGlobal("confirm", confirm);
+  try {
+    const snap = view.responses["config.get"] as {
+      hash: string; configRevisionHash: string; appliedConfigHash: string;
+      config: { plugins: { entries: Record<string, { config: Record<string, unknown> }> } };
+    };
+    const entry = snap.config.plugins.entries["microsoft-graph"]!.config;
+    const accounts: Record<string, unknown> = { office: structuredClone(policy), private: structuredClone(policy) };
+    const labels: Record<string, string> = { office: "Office", private: "Private" };
+    entry.accounts = accounts;
+    entry.accountLabels = labels;
+    const request = view.host.request;
+    const reload = deferredReply();
+    view.host.request = async (method, params) => {
+      if (method !== "config.patch") return request(method, params);
+      view.calls.push({ method, params });
+      const raw = JSON.parse((params as { raw: string }).raw).plugins.entries["microsoft-graph"].config;
+      if (raw.retiredAccountIds) {
+        expect((params as { replacePaths: string[] }).replacePaths).toContain("plugins.entries.microsoft-graph.config.accounts.office.services.mail.agents.main.operations");
+        expect(raw).toEqual({ accounts: { office: null }, accountLabels: { office: null }, retiredAccountIds: { office: true } });
+        delete accounts.office;
+        delete labels.office;
+        entry.retiredAccountIds = raw.retiredAccountIds;
+        snap.configRevisionHash = "removal-saved";
+        return reload.promise;
+      }
+      expect(Object.keys(raw.accounts)).toEqual(["office-2"]);
+      Object.assign(accounts, raw.accounts);
+      Object.assign(labels, raw.accountLabels);
+      return { ok: true };
+    };
+    await view.settle();
+    clickByText(view.container, "Konten");
+    expect(view.container.textContent).not.toContain("Verbindung entfernen");
+    const picker = view.container.querySelector<HTMLSelectElement>(".mg-account-select")!;
+    picker.value = "1";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    await view.settle();
+    clickByText(view.container, "Verbindung entfernen");
+    expect(confirm.mock.calls[0]?.[0]).toContain("„Office“");
+    expect(view.calls.filter(call => call.method === "config.patch")).toHaveLength(0);
+    confirm.mockReturnValue(true);
+    clickByText(view.container, "Verbindung entfernen");
+    await view.settle();
+    expect(view.container.textContent).toContain("Verbindung wird entfernt");
+    await vi.advanceTimersByTimeAsync(1000);
+    await view.settle();
+    expect(view.container.textContent).toContain("Entfernung gespeichert");
+    expect(accounts).toEqual({ private: policy });
+    expect(entry.policy).toEqual(policy);
+    expect(view.container.querySelector<HTMLSelectElement>(".mg-account-select")?.selectedOptions[0]?.textContent).toBe("Standardverbindung");
+    reload.reject(new Error("reload still pending"));
+    const form = view.container.querySelector("form")!;
+    const name = form.querySelector("input")!;
+    name.value = "Office";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await view.settle();
+    expect(labels).toEqual({ private: "Private", "office-2": "Office" });
+    expect(view.calls.filter(call => call.method === "config.patch")).toHaveLength(2);
+    expect(view.calls.some(call => call.method === "plugins.reload")).toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
+    view.dispose();
+    vi.useRealTimers();
+  }
 });

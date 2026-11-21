@@ -19,7 +19,7 @@ type DeviceStatus = { state: "pending" | "created" | "failed"; error?: string; s
 type CredentialReply<T> = { ok: true; value: T } | { ok: false; error: string };
 type ConfigSnapshot = { hash: string; config: { tools?: { deny?: string[] }; agents?: { entries?: Record<string, { tools?: { allow?: string[]; alsoAllow?: string[]; deny?: string[] } }> }; plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; parsed?: { plugins?: { $include?: unknown; entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; configRevisionHash?: string; appliedConfigHash?: string };
 type SavePhase = "idle" | "validating" | "saving" | "applying" | "pending" | "unknown" | "failed" | "conflict" | "applied";
-type SaveOperation = { intent?: ActivationIntent; target: Policy; baseline: Policy; toolExposure?: ReturnType<typeof planChangedToolExposure>["expected"]; targetHash?: string; phase: SavePhase; issued: boolean; settled: boolean; epoch: number; reloadAttempted?: boolean; reloadPending?: boolean; applicationFailed?: boolean; rejectedBeforeWrite?: boolean; persistenceConfirmed?: boolean; stage?: "tools" | "policy"; splitWrite?: boolean; policyPrepared?: boolean; toolApplicationConfirmed?: boolean };
+type SaveOperation = { accountActivation?: boolean; intent?: ActivationIntent; target: Policy; baseline: Policy; toolExposure?: ReturnType<typeof planChangedToolExposure>["expected"]; targetHash?: string; phase: SavePhase; issued: boolean; settled: boolean; epoch: number; reloadAttempted?: boolean; reloadPending?: boolean; applicationFailed?: boolean; rejectedBeforeWrite?: boolean; persistenceConfirmed?: boolean; stage?: "tools" | "policy"; splitWrite?: boolean; policyPrepared?: boolean; toolApplicationConfirmed?: boolean };
 // Private drafts live only in authenticated host memory, never browser storage.
 const operationsByHost = new WeakMap<ControlUiHost, SaveOperation>();
 const contextByHost = new WeakMap<ControlUiHost, { step: number; accountId?: string; selectedAgent: string; credential?: CredentialStatus["credential"] }>();
@@ -126,8 +126,10 @@ class ConfigurationPage {
   private step = 4;
   private accountId?: string;
   private newAccountName = "";
-  private accountCreationError = "";
-  private accountCreationUnconfirmed = false;
+  private accountWriteError = "";
+  private accountWriteUnconfirmed = false;
+  private accountCreationPending = false;
+  private accountRemovalPending = false;
   private accountLabel(accountId?: string): string {
     if (accountId === undefined) return localize("Standardverbindung");
     const labels = this.snapshot?.config.plugins?.entries?.[id]?.config?.accountLabels as Record<string, string> | undefined;
@@ -142,7 +144,7 @@ class ConfigurationPage {
   private scoped(params: Record<string, unknown>) {
     return this.accountId === undefined ? params : { ...params, accountId: this.accountId };
   }
-  private async switchAccount(accountId?: string) {
+  private async switchAccount(accountId?: string, saved?: ConfigSnapshot, notice = "Verbindung gespeichert.") {
     if (this.locked || this.authBusy || this.authState === "pending" || this.statusInFlight || accountId === this.accountId) return;
     if (this.dirty && !window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { this.render(); return; }
     this.stopStatusChecks();
@@ -172,9 +174,10 @@ class ConfigurationPage {
     this.confirmedRemoval = false;
     this.accountId = accountId;
     this.step = this.step === 5 ? 5 : 4;
-    this.snapshot = undefined;
+    this.snapshot = saved;
     this.initial = undefined;
-    await this.load();
+    if (saved) this.success = notice;
+    await this.load(saved);
     this.container.querySelector<HTMLSelectElement>(".mg-account-select")?.focus({ preventScroll: true });
   }
   private selectedAgent = "";
@@ -377,7 +380,7 @@ class ConfigurationPage {
       }
       const expected = this.operation?.target ?? this.initial;
       const saved = policyAt(snap.config?.plugins?.entries?.[id]?.config, this.accountId);
-      if (canonicalPolicy(saved) !== canonicalPolicy(expected) || !oneDriveToolExposureSaved(snap.config?.agents?.entries, this.operation?.phase === "applied" ? {} : this.operation?.toolExposure ?? {})) {
+      if ((this.operation?.accountActivation && !saved) || canonicalPolicy(saved) !== canonicalPolicy(expected) || !oneDriveToolExposureSaved(snap.config?.agents?.entries, this.operation?.phase === "applied" ? {} : this.operation?.toolExposure ?? {})) {
         if (this.operation?.issued && !this.operation.rejectedBeforeWrite && !this.operation.persistenceConfirmed && (this.operation.stage === "tools" || !this.operation.policyPrepared) && canonicalPolicy(saved) === canonicalPolicy(this.operation.stage === "tools" ? this.operation.target : this.operation.baseline)) {
           // A transport failure is not an external edit or proof of rollback.
           // Keep observing the exact target for the bounded reconciliation window.
@@ -438,11 +441,11 @@ class ConfigurationPage {
       }
     } catch { /* Runtime may be draining: null is not proof that no intent exists. */ }
   }
-  private async load() {
+  private async load(saved?: ConfigSnapshot) {
     if (!this.authorized || this.busy) return;
     this.busy = true; this.error = ""; this.render();
     try {
-      const snap = await this.read<ConfigSnapshot>("config.get");
+      const snap = saved ?? await this.read<ConfigSnapshot>("config.get");
       if (this.disposed || this.signal.aborted) return;
       const pluginEntry = snap.config?.plugins?.entries?.[id];
       const entry = pluginEntry?.config ?? {};
@@ -470,9 +473,11 @@ class ConfigurationPage {
       this.initialScopes = baseline?.requiredScopes ?? []; this.scopes = this.initialScopes; this.savedPolicyHash = baseline?.policyHash;
       this.activePolicyHash = active.hash; this.activeProofAvailable = active.available;
       this.wasConnected = this.authorized;
-      if (!this.operation) await this.discoverIntent();
-      if (!this.operation && this.applicationStatus === "pending") {
-        this.operation = { target: clone(this.initial), baseline: clone(this.initial), targetHash: this.savedPolicyHash, phase: "pending", issued: true, settled: true, epoch: this.statusEpoch };
+      if (!this.operation && (this.accountId === undefined || active.available)) await this.discoverIntent();
+      const accountActivation = this.accountId !== undefined && !!policy && !!this.savedPolicyHash && this.applicationStatus !== "applied";
+      if (!this.operation && (this.applicationStatus === "pending" || accountActivation)) {
+        this.operation = { accountActivation, target: clone(this.initial), baseline: clone(this.initial), targetHash: this.savedPolicyHash,
+          phase: accountActivation ? "applying" : "pending", issued: true, settled: true, epoch: this.statusEpoch };
         operationsByHost.set(this.host, this.operation);
       }
       if (!this.operation) await this.reconcileSavedTools();
@@ -528,7 +533,7 @@ class ConfigurationPage {
     else if (this.step === 3) this.renderReview(body);
     else this.renderAccounts(body);
     append(content, body);
-    if (this.error) append(content, el("p", "mg-error", this.error)); if (this.success) append(content, el("p", "mg-success", this.success));
+    if (this.error) append(content, el("p", "mg-error", this.error)); if (this.success && !this.operation?.accountActivation) append(content, el("p", "mg-success", this.success));
     const footer = el("footer", "mg-footer"); append(footer, el("span", "mg-dirty", this.dirty ? "Ungespeicherte Änderungen" : "Keine ungespeicherten Änderungen"));
     if (this.dirty) append(footer, this.action("Änderungen verwerfen", () => { if (window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { this.policy = clone(this.initial!); this.error = ""; this.success = ""; this.render(); } }, "ghost"));
     if (this.step !== 3 && (this.step !== 5 || this.dirty)) append(footer, this.action("Änderungen prüfen", () => { this.step = 3; this.render(); void this.validate(); }, "primary"));
@@ -579,13 +584,19 @@ class ConfigurationPage {
   private async applySavedPolicy() {
     const operation = this.operation;
     if (!operation || !operation.issued || !operation.settled || operation.reloadPending || !["applying", "pending"].includes(operation.phase) || !this.authorized || this.disposed) return;
-    operation.reloadPending = true; operation.reloadAttempted = true; operation.phase = "applying"; this.render();
+    if (operation.accountActivation && operation.phase !== "pending") return;
+    operation.reloadPending = true; operation.reloadAttempted = true; operation.applicationFailed = false; operation.phase = "applying"; this.render();
     try {
       // Recheck the exact target. Do not rewrite config (including SecretRefs),
       // force a restart, or interrupt admitted work to make the badge green.
-      const fresh = await this.read<ConfigSnapshot>("config.get");
+      const [fresh, active] = await Promise.all([
+        this.read<ConfigSnapshot>("config.get"),
+        operation.accountActivation ? this.readActivePolicy() : undefined,
+      ]);
       if (this.disposed || this.signal.aborted || !this.authorized || this.operation !== operation) return;
-      if (canonicalPolicy(policyAt(fresh.config?.plugins?.entries?.[id]?.config, this.accountId)) !== canonicalPolicy(operation.target)) { operation.phase = "conflict"; return; }
+      const savedPolicy = policyAt(fresh.config?.plugins?.entries?.[id]?.config, this.accountId);
+      if ((operation.accountActivation && !savedPolicy) || canonicalPolicy(savedPolicy) !== canonicalPolicy(operation.target)) { operation.phase = "conflict"; return; }
+      if (operation.accountActivation && (active?.hash === operation.targetHash || this.applicationStatus === "applied")) return;
       const result = await this.host.request<{ ok?: boolean; restartRequired?: boolean }>("plugins.reload", { plugins: [{ pluginId: id }], waitForDrain: true });
       if (!result.ok || result.restartRequired) { operation.applicationFailed = true; operation.phase = "pending"; }
     } catch { operation.applicationFailed = true; operation.phase = "pending"; }
@@ -651,6 +662,16 @@ class ConfigurationPage {
         ? "Kein Speichervorgang läuft. Fehlende und überzählige Microsoft-Graph-Tools werden automatisch mit den gespeicherten Regeln abgeglichen. Explizite Sperren bleiben bestehen."
         : "Kein Speichervorgang läuft. Der automatische Tool-Abgleich ist noch nicht verfügbar oder die gespeicherten Regeln sind noch nicht nachweisbar aktiv. Prüfe den Status; explizite Sperren bleiben bestehen.";
     }
+    const accountActivation = this.operation?.accountActivation && !missingTools;
+    if (accountActivation && (phase === "applying" || phase === "pending")) {
+      title = "Verbindung gespeichert · Aktivierung ausstehend";
+      detail = phase === "applying"
+        ? "Die Verbindung wird nutzbar, sobald OpenClaw das Microsoft-Graph-Plugin neu geladen hat. Laufende Aufgaben können das verzögern. Der Status wird automatisch geprüft."
+        : "Die Verbindung bleibt gespeichert. Prüfe den Status oder stoße das Neuladen des Plugins erneut an. Du musst die Verbindung nicht noch einmal anlegen.";
+    } else if (accountActivation && phase === "applied") {
+      title = "Verbindung aktiv";
+      detail = "Die Aktivierung ist bestätigt. Die Microsoft-Anmeldung ist ein separater Schritt.";
+    }
     append(status, el("strong", "", title), el("p", "mg-status-detail", detail));
     if (missingTools) {
       if (this.reconciliationPaused) append(status, el("p", "mg-warning", "Automatischer Tool-Abgleich pausiert. Prüfe den Status, laufende Einrichtungsvorgänge und die Agent-Konfiguration. Ein unbestätigter Tool-Schritt wird nicht wiederholt."));
@@ -665,15 +686,17 @@ class ConfigurationPage {
         else if (issue.reason) append(status, el("p", "mg-status-detail", format("{agent}: automatische Reparatur nicht möglich ({reason}). Agent-Konfiguration prüfen.", { agent: label, reason: issue.reason })));
       }
     }
-    if (this.operation?.applicationFailed && ["pending", "applying"].includes(phase ?? "")) append(status, el("p", "mg-status-detail", "Die automatische Anwendung konnte nicht abgeschlossen werden. Deine Regeln sind gespeichert; laufende Arbeit wird nicht abgebrochen."));
-    if (this.operation?.reloadPending) append(status, el("p", "mg-status-detail", "Anwendung wurde angefordert. Wir prüfen, wann die gespeicherten Regeln aktiv sind."));
+    if (!accountActivation && this.operation?.applicationFailed && ["pending", "applying"].includes(phase ?? "")) append(status, el("p", "mg-status-detail", "Die automatische Anwendung konnte nicht abgeschlossen werden. Deine Regeln sind gespeichert; laufende Arbeit wird nicht abgebrochen."));
+    if (this.operation?.reloadPending) append(status, el("p", "mg-status-detail", accountActivation
+      ? "Microsoft-Graph-Plugin wird neu geladen …"
+      : "Anwendung wurde angefordert. Wir prüfen, wann die gespeicherten Regeln aktiv sind."));
     if (this.statusError) append(status, el("p", "mg-status-detail", this.statusError));
-    if (!phase || ["applied", "pending", "unknown", "conflict"].includes(phase)) this.appendStatusButton(status);
-    if (["pending", "applying"].includes(phase ?? "") && this.operation?.settled && !this.operation.reloadPending) {
-      const apply = button("Gespeicherte Regeln anwenden", () => { void this.applySavedPolicy(); }); apply.dataset.safeStatus = "true"; apply.disabled = this.statusInFlight || this.busy; append(status, apply);
-      append(status, el("p", "mg-hint", "Dabei werden nur die gespeicherten Regeln übernommen, nicht erneut gespeichert. Laufende Arbeit wird nicht abgebrochen."));
+    if (!phase || ["applied", "pending", "unknown", "conflict"].includes(phase) || accountActivation && phase === "applying") this.appendStatusButton(status);
+    if ((phase === "pending" || phase === "applying" && !this.operation?.accountActivation) && this.operation?.settled && !this.operation.reloadPending) {
+      const apply = button(this.operation.accountActivation ? "Plugin erneut laden" : "Gespeicherte Regeln anwenden", () => { void this.applySavedPolicy(); }); apply.dataset.safeStatus = "true"; apply.disabled = this.statusInFlight || this.busy; append(status, apply);
+      if (!accountActivation) append(status, el("p", "mg-hint", "Dabei werden nur die gespeicherten Regeln übernommen, nicht erneut gespeichert. Laufende Arbeit wird nicht abgebrochen."));
     }
-    if (phase === "pending") {
+    if (phase === "pending" && !this.operation?.accountActivation) {
       const overview = button("Übersicht anzeigen", () => { this.step = 4; this.render(); }); overview.dataset.safeStatus = "true"; append(status, overview);
     }
     if (phase === "conflict" || phase === "failed" && this.operation?.policyPrepared || phase === "unknown" && this.operation?.intent?.state === "issued") {
@@ -696,6 +719,11 @@ class ConfigurationPage {
   }
   private renderAccounts(body: HTMLElement) {
     append(body, el("p", "mg-hint", "Microsoft-Verbindungen und Anmeldestatus verwalten."));
+    if (this.accountRemovalPending) {
+      const status = el("p", "mg-banner", "Verbindung wird entfernt …");
+      status.setAttribute("role", "status");
+      append(body, status);
+    }
     const list = el("section", "mg-section mg-service-summary");
     for (const accountId of this.accountOptions) {
       const row = el("div", "mg-summary-row");
@@ -706,12 +734,18 @@ class ConfigurationPage {
       append(list, row);
     }
     append(body, list);
-    if (this.accountId !== undefined && !this.activeProofAvailable && this.credential?.result === "unavailable") {
+    const awaitingActivation = this.operation?.accountActivation && this.operation.phase !== "applied";
+    if (!awaitingActivation && this.accountId !== undefined && !this.activeProofAvailable && this.credential?.result === "unavailable") {
       append(body, el("p", "mg-banner", "Verbindung gespeichert. Das Gateway hat die Aktivierung noch nicht bestätigt."),
         this.action("Kontostatus erneut prüfen", () => void this.load()));
-    } else {
+    } else if (!awaitingActivation) {
       this.renderSetup(body);
       this.renderSignIn(body);
+    }
+    if (this.accountId !== undefined) {
+      const remove = this.action("Verbindung entfernen", () => void this.removeAccount(), "danger");
+      remove.disabled = this.dirty || this.authBusy || this.authState === "pending" || this.statusInFlight || this.accountWriteUnconfirmed;
+      append(body, remove);
     }
     const add = el("form", "mg-section");
     append(add, el("h2", "", "Weiteres Konto"));
@@ -720,20 +754,21 @@ class ConfigurationPage {
     name.required = true;
     name.maxLength = 80;
     name.disabled = this.authBusy || this.authState === "pending" || this.statusInFlight;
-    const create = this.action("Verbindung anlegen", () => {}, "primary");
+    const create = this.action(this.accountCreationPending ? "Verbindung wird gespeichert …" : "Verbindung anlegen", () => {}, "primary");
+    if (this.accountCreationPending) create.setAttribute("aria-busy", "true");
     create.type = "submit";
-    create.disabled = name.disabled || this.accountCreationUnconfirmed;
+    create.disabled = name.disabled || this.accountWriteUnconfirmed;
     add.addEventListener("submit", event => { event.preventDefault(); void this.createAccount(); });
     append(add, el("p", "mg-hint", "Legt die Verbindung ohne Zugriffsrechte an. Danach legst du den Agentenzugriff fest und meldest dich bei Microsoft an."), create);
-    if (this.accountCreationError) {
-      const error = el("p", "mg-error", this.accountCreationError);
+    if (this.accountWriteError) {
+      const error = el("p", "mg-error", this.accountWriteError);
       error.setAttribute("role", "alert");
       append(add, error);
-      if (this.accountCreationUnconfirmed) append(add, this.action("Kontenliste neu laden", () => {
+      if (this.accountWriteUnconfirmed) append(add, this.action("Kontenliste neu laden", () => {
         void this.load().then(() => {
           if (this.error || !this.authorized) return;
-          this.accountCreationUnconfirmed = false;
-          this.accountCreationError = "";
+          this.accountWriteUnconfirmed = false;
+          this.accountWriteError = "";
           this.render();
         });
       }));
@@ -741,56 +776,129 @@ class ConfigurationPage {
     append(body, add);
   }
 
+  private async observeAccountWrite(baseHash: string, config: Record<string, unknown>, note: string,
+    matches: (entry: Record<string, unknown> | undefined) => boolean, replacePaths?: string[]): Promise<{ snapshot: ConfigSnapshot; applied: boolean } | "rejected"> {
+    let settlement: "rejected" | "unknown" | "applied" | undefined;
+    const patch = this.host.request("config.patch", {
+      baseHash, raw: JSON.stringify({ plugins: { entries: { [id]: { config } } } }), note, response: "summary", ...(replacePaths && { replacePaths }),
+    }).then(
+      () => { settlement = "applied"; },
+      error => { settlement = isPreCommitRejection(error) ? "rejected" : "unknown"; },
+    );
+    // A write can persist while the Gateway is still waiting for plugin reload.
+    for (let attempt = 0; attempt < 12; attempt++) {
+      if (!settlement) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([patch, new Promise<void>(resolve => { timer = setTimeout(resolve, attempt === 0 ? 1000 : 5000); })]);
+        clearTimeout(timer);
+      }
+      if (!this.authorized || this.disposed || this.signal.aborted) break;
+      if (settlement === "rejected") return "rejected";
+      const settledBeforeRead = settlement !== undefined;
+      const snapshot = await this.read<ConfigSnapshot>("config.get");
+      if (!this.authorized || this.disposed || this.signal.aborted) break;
+      if (matches(snapshot.config.plugins?.entries?.[id]?.config)) {
+        return { snapshot, applied: settlement === "applied" || !!snapshot.configRevisionHash && snapshot.configRevisionHash === snapshot.appliedConfigHash };
+      }
+      if (settledBeforeRead) break;
+    }
+    throw Error("account_write_unconfirmed");
+  }
+
+  private async removeAccount() {
+    const accountId = this.accountId;
+    if (accountId === undefined || !this.authorized || this.locked || this.dirty || !this.initial || !this.snapshot
+      || this.authBusy || this.authState === "pending" || this.statusInFlight || this.accountWriteUnconfirmed) return;
+    const label = this.accountLabel(accountId);
+    if (!window.confirm(format("„{name}“ aus OpenClaw entfernen? Die Agent-Freigaben für diese Verbindung entfallen nach dem Plugin-Reload. Das Microsoft-Konto und seine Daten bleiben unverändert. Verschlüsselte Anmeldedaten bleiben lokal gespeichert, werden aber bei einer neuen Verbindung nicht wiederverwendet.", { name: label }))) return;
+    const before = this.initial;
+    this.busy = this.accountRemovalPending = true;
+    this.success = this.accountWriteError = ""; this.render();
+    let removed: { snapshot: ConfigSnapshot; applied: boolean } | undefined;
+    try {
+      const fresh = await this.read<ConfigSnapshot>("config.get");
+      if (!this.authorized || this.disposed || this.signal.aborted) return;
+      const entry = fresh.config.plugins?.entries?.[id]?.config;
+      const current = policyAt(entry, accountId);
+      const labels = entry?.accountLabels as Record<string, string> | undefined;
+      if (!current || canonicalPolicy(current) !== canonicalPolicy(before) || (labels?.[accountId] ?? accountId) !== label) {
+        this.accountWriteUnconfirmed = true;
+        this.accountWriteError = "Die Verbindung wurde inzwischen geändert. Lade die Kontenliste neu und prüfe sie erneut.";
+        return;
+      }
+      const replacePaths: string[] = [];
+      nestedArrayPaths(current, `plugins.entries.${id}.config.accounts.${accountId}`, replacePaths);
+      const result = await this.observeAccountWrite(fresh.hash, {
+        accounts: { [accountId]: null }, accountLabels: { [accountId]: null }, retiredAccountIds: { [accountId]: true },
+      }, "Microsoft Graph: remove named connection", entry => {
+        const labels = entry?.accountLabels as Record<string, string> | undefined;
+        const retired = entry?.retiredAccountIds as Record<string, true> | undefined;
+        return !policyAt(entry, accountId) && !Object.hasOwn(labels ?? {}, accountId) && retired?.[accountId] === true;
+      }, replacePaths);
+      if (result === "rejected") {
+        this.accountWriteError = "Die Entfernung wurde abgelehnt. Die Verbindung wurde nicht entfernt.";
+        return;
+      }
+      removed = result;
+    } catch {
+      this.accountWriteUnconfirmed = true;
+      this.accountWriteError = "Entfernung nicht bestätigt. Lade zuerst die Kontenliste neu.";
+    } finally {
+      this.busy = this.accountRemovalPending = false;
+      if (!removed) this.render();
+    }
+    if (removed) {
+      this.snapshot = removed.snapshot;
+      await this.switchAccount(this.accountOptions[0], removed.snapshot, removed.applied ? "Verbindung entfernt." : "Entfernung gespeichert. Sie greift nach dem Neuladen des Microsoft-Graph-Plugins.");
+    }
+  }
+
   private async createAccount() {
-    if (!this.authorized || this.locked || this.authBusy || this.authState === "pending" || this.statusInFlight || this.accountCreationUnconfirmed || !this.snapshot) return;
+    if (!this.authorized || this.locked || this.authBusy || this.authState === "pending" || this.statusInFlight || this.accountWriteUnconfirmed || !this.snapshot) return;
     const label = this.newAccountName.trim();
     if (!label || label.length > 80 || /[\u0000-\u001f\u007f]/.test(label)) {
-      this.accountCreationError = "Gib einen Anzeigenamen mit 1 bis 80 Zeichen ein."; this.render(); return;
+      this.accountWriteError = "Gib einen Anzeigenamen mit 1 bis 80 Zeichen ein."; this.render(); return;
     }
-    if (this.dirty) { this.accountCreationError = "Speichere oder verwirf zuerst die aktuellen Änderungen."; this.render(); return; }
-    this.busy = true; this.accountCreationError = ""; this.render();
-    let createdAccountId: string | undefined;
+    if (this.dirty) { this.accountWriteError = "Speichere oder verwirf zuerst die aktuellen Änderungen."; this.render(); return; }
+    this.busy = true; this.accountCreationPending = true;
+    this.success = this.accountWriteError = ""; this.render();
+    let created: { accountId: string; snapshot: ConfigSnapshot } | undefined;
     try {
       const fresh = await this.read<ConfigSnapshot>("config.get");
       if (!this.authorized || this.disposed || this.signal.aborted) return;
       const entry = fresh.config.plugins?.entries?.[id]?.config;
       this.snapshot = fresh;
       if (this.accountOptions.some(option => this.accountLabel(option).toLowerCase() === label.toLowerCase())) {
-        this.accountCreationError = "Dieser Anzeigename wird bereits verwendet. Öffne die vorhandene Verbindung oder wähle einen anderen Namen.";
+        this.accountWriteError = "Dieser Anzeigename wird bereits verwendet. Öffne die vorhandene Verbindung oder wähle einen anderen Namen.";
         return;
       }
       const stem = label.normalize("NFKD").replace(/\p{Mark}/gu, "").toLowerCase().replace(/[^a-z0-9]+/g, "-")
         .replace(/^[^a-z]+|-+$/g, "").slice(0, 56) || "konto";
       let accountId = stem;
-      for (let suffix = 2; accountId === "constructor" || policyAt(entry, accountId); suffix++) accountId = stem + "-" + suffix;
+      const retired = entry?.retiredAccountIds as Record<string, true> | undefined;
+      for (let suffix = 2; accountId === "constructor" || policyAt(entry, accountId) || retired?.[accountId] === true; suffix++) accountId = stem + "-" + suffix;
       const target = blankPolicy();
-      try {
-        await this.host.request("config.patch", {
-          baseHash: fresh.hash,
-          raw: JSON.stringify({ plugins: { entries: { [id]: { config: { accounts: { [accountId]: target }, accountLabels: { [accountId]: label } } } } } }),
-          note: "Microsoft Graph: add named connection",
-          response: "summary",
-        });
-      } catch (error) {
-        if (isPreCommitRejection(error)) {
-          this.accountCreationError = "Die Verbindung wurde nicht gespeichert. Lade den aktuellen Stand und prüfe die Gateway-Konfiguration.";
-          return;
-        }
-        // A reconnect can interrupt the response after the write was persisted.
+      const result = await this.observeAccountWrite(fresh.hash, {
+        accounts: { [accountId]: target }, accountLabels: { [accountId]: label },
+      }, "Microsoft Graph: add named connection", entry => {
+        const labels = entry?.accountLabels as Record<string, string> | undefined;
+        const saved = policyAt(entry, accountId);
+        return labels?.[accountId] === label && !!saved && canonicalPolicy(saved) === canonicalPolicy(target);
+      });
+      if (result === "rejected") {
+        this.accountWriteError = "Die Verbindung wurde nicht gespeichert. Lade den aktuellen Stand und prüfe die Gateway-Konfiguration.";
+        return;
       }
-      const saved = await this.read<ConfigSnapshot>("config.get");
-      if (!this.authorized || this.disposed || this.signal.aborted) throw Error("account_unconfirmed");
-      this.snapshot = saved;
-      if (this.accountLabel(accountId) !== label || canonicalPolicy(policyAt(saved.config.plugins?.entries?.[id]?.config, accountId)) !== canonicalPolicy(target)) throw Error("account_unconfirmed");
-      createdAccountId = accountId;
+      created = { accountId, snapshot: result.snapshot };
       this.newAccountName = "";
     } catch {
-      this.accountCreationUnconfirmed = true;
-      this.accountCreationError = "Speichern nicht bestätigt. Lade die Kontenliste neu, bevor du es erneut versuchst.";
+      this.accountWriteUnconfirmed = true;
+      this.accountWriteError = "Speichern nicht bestätigt. Lade die Kontenliste neu, bevor du es erneut versuchst.";
     } finally {
-      this.busy = false; this.render();
+      this.busy = false; this.accountCreationPending = false;
+      if (!created) this.render();
     }
-    if (createdAccountId) await this.switchAccount(createdAccountId);
+    if (created) await this.switchAccount(created.accountId, created.snapshot);
   }
 
   private renderOverview(body: HTMLElement) {

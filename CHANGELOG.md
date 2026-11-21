@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.28.0
+
+- Remove named connections from OpenClaw without touching the Microsoft account or other connections. Retire the old connection ID so its retained encrypted sign-in state cannot be reused.
+
+## 3.27.2
+
+- Confirm named connection saves as soon as the saved configuration is visible, without waiting for plugin activation.
+- Show activation separately and let administrators retry the plugin reload without recreating the connection.
+
 ## 3.27.1
 
 - Save named connections by display name and distinguish persisted configuration, active rules, and Microsoft sign-in.
