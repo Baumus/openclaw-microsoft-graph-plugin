@@ -1201,13 +1201,20 @@ class ConfigurationPage {
     const section = el("section", "mg-section");
     append(section, el("h3", "", "OneDrive"), el("p", "mg-hint", "Freigaben gelten für den Ordner und seine Unterordner."));
     const roots = this.policy.services.onedrive.allowed_roots;
+    const folders = el("div", "mg-agent-folders");
     for (const root of roots) {
-      const row = el("fieldset", "mg-agent-folder");
-      append(row, el("legend", "mg-root-path", root.path.replaceAll("/", "\\")));
+      const row = el("div", "mg-agent-folder");
+      const path = root.path.replaceAll("/", "\\");
+      const folderName = root.path.split("/").filter(Boolean).at(-1) ?? root.label;
+      row.setAttribute("role", "group");
+      row.setAttribute("aria-label", path);
+      const identity = el("div", "mg-agent-folder-identity");
+      append(identity, el("strong", "", folderName), el("p", "mg-root-path", path));
+      const permissions = el("div", "mg-agent-folder-permissions");
       for (const [right, label] of [["read", "Lesen"], ["write", "Schreiben"], ["delete", "Löschen"]] as const) {
         const restricted = !root.permissions[right] && Object.entries(root.agents)
           .some(([id, grant]) => id !== agentId && grant.permissions[right]);
-        const control = this.checkbox(row, label, root.agents[agentId]?.permissions[right] === true, checked => {
+        const control = this.checkbox(permissions, label, root.agents[agentId]?.permissions[right] === true, checked => {
           const grant = root.agents[agentId] ?? { permissions: { read: false, write: false, delete: false } };
           grant.permissions[right] = checked;
           if (Object.values(grant.permissions).some(Boolean)) root.agents[agentId] = grant;
@@ -1234,10 +1241,11 @@ class ConfigurationPage {
       }, "ghost");
       open.setAttribute("aria-label", format("Ordner öffnen: {path}", { path: root.path }));
       append(folderSettings, el("span", "mg-hint", status), open);
-      append(row, folderSettings);
-      append(section, row);
+      append(row, identity, permissions, folderSettings);
+      append(folders, row);
     }
-    if (!roots.length) append(section, el("p", "mg-hint", "Noch kein OneDrive-Ordner freigegeben."));
+    if (roots.length) append(section, folders);
+    else append(section, el("p", "mg-hint", "Noch kein OneDrive-Ordner freigegeben."));
     this.renderFolderInput(section);
     append(body, section);
   }
