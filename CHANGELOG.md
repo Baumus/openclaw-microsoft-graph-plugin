@@ -3,6 +3,7 @@
 ## 3.27.2
 
 - Confirm named connection saves as soon as the saved configuration is visible, without waiting for plugin activation.
+- Show activation separately and let administrators retry the plugin reload without recreating the connection.
 
 ## 3.27.1
 

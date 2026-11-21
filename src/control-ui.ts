@@ -19,7 +19,7 @@ type DeviceStatus = { state: "pending" | "created" | "failed"; error?: string; s
 type CredentialReply<T> = { ok: true; value: T } | { ok: false; error: string };
 type ConfigSnapshot = { hash: string; config: { tools?: { deny?: string[] }; agents?: { entries?: Record<string, { tools?: { allow?: string[]; alsoAllow?: string[]; deny?: string[] } }> }; plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; parsed?: { plugins?: { $include?: unknown; entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; configRevisionHash?: string; appliedConfigHash?: string };
 type SavePhase = "idle" | "validating" | "saving" | "applying" | "pending" | "unknown" | "failed" | "conflict" | "applied";
-type SaveOperation = { intent?: ActivationIntent; target: Policy; baseline: Policy; toolExposure?: ReturnType<typeof planChangedToolExposure>["expected"]; targetHash?: string; phase: SavePhase; issued: boolean; settled: boolean; epoch: number; reloadAttempted?: boolean; reloadPending?: boolean; applicationFailed?: boolean; rejectedBeforeWrite?: boolean; persistenceConfirmed?: boolean; stage?: "tools" | "policy"; splitWrite?: boolean; policyPrepared?: boolean; toolApplicationConfirmed?: boolean };
+type SaveOperation = { accountActivation?: boolean; intent?: ActivationIntent; target: Policy; baseline: Policy; toolExposure?: ReturnType<typeof planChangedToolExposure>["expected"]; targetHash?: string; phase: SavePhase; issued: boolean; settled: boolean; epoch: number; reloadAttempted?: boolean; reloadPending?: boolean; applicationFailed?: boolean; rejectedBeforeWrite?: boolean; persistenceConfirmed?: boolean; stage?: "tools" | "policy"; splitWrite?: boolean; policyPrepared?: boolean; toolApplicationConfirmed?: boolean };
 // Private drafts live only in authenticated host memory, never browser storage.
 const operationsByHost = new WeakMap<ControlUiHost, SaveOperation>();
 const contextByHost = new WeakMap<ControlUiHost, { step: number; accountId?: string; selectedAgent: string; credential?: CredentialStatus["credential"] }>();
@@ -379,7 +379,7 @@ class ConfigurationPage {
       }
       const expected = this.operation?.target ?? this.initial;
       const saved = policyAt(snap.config?.plugins?.entries?.[id]?.config, this.accountId);
-      if (canonicalPolicy(saved) !== canonicalPolicy(expected) || !oneDriveToolExposureSaved(snap.config?.agents?.entries, this.operation?.phase === "applied" ? {} : this.operation?.toolExposure ?? {})) {
+      if ((this.operation?.accountActivation && !saved) || canonicalPolicy(saved) !== canonicalPolicy(expected) || !oneDriveToolExposureSaved(snap.config?.agents?.entries, this.operation?.phase === "applied" ? {} : this.operation?.toolExposure ?? {})) {
         if (this.operation?.issued && !this.operation.rejectedBeforeWrite && !this.operation.persistenceConfirmed && (this.operation.stage === "tools" || !this.operation.policyPrepared) && canonicalPolicy(saved) === canonicalPolicy(this.operation.stage === "tools" ? this.operation.target : this.operation.baseline)) {
           // A transport failure is not an external edit or proof of rollback.
           // Keep observing the exact target for the bounded reconciliation window.
@@ -472,9 +472,11 @@ class ConfigurationPage {
       this.initialScopes = baseline?.requiredScopes ?? []; this.scopes = this.initialScopes; this.savedPolicyHash = baseline?.policyHash;
       this.activePolicyHash = active.hash; this.activeProofAvailable = active.available;
       this.wasConnected = this.authorized;
-      if (!this.operation) await this.discoverIntent();
-      if (!this.operation && this.applicationStatus === "pending") {
-        this.operation = { target: clone(this.initial), baseline: clone(this.initial), targetHash: this.savedPolicyHash, phase: "pending", issued: true, settled: true, epoch: this.statusEpoch };
+      if (!this.operation && (this.accountId === undefined || active.available)) await this.discoverIntent();
+      const accountActivation = this.accountId !== undefined && !!policy && !!this.savedPolicyHash && this.applicationStatus !== "applied";
+      if (!this.operation && (this.applicationStatus === "pending" || accountActivation)) {
+        this.operation = { accountActivation, target: clone(this.initial), baseline: clone(this.initial), targetHash: this.savedPolicyHash,
+          phase: accountActivation ? "applying" : "pending", issued: true, settled: true, epoch: this.statusEpoch };
         operationsByHost.set(this.host, this.operation);
       }
       if (!this.operation) await this.reconcileSavedTools();
@@ -530,7 +532,7 @@ class ConfigurationPage {
     else if (this.step === 3) this.renderReview(body);
     else this.renderAccounts(body);
     append(content, body);
-    if (this.error) append(content, el("p", "mg-error", this.error)); if (this.success) append(content, el("p", "mg-success", this.success));
+    if (this.error) append(content, el("p", "mg-error", this.error)); if (this.success && !this.operation?.accountActivation) append(content, el("p", "mg-success", this.success));
     const footer = el("footer", "mg-footer"); append(footer, el("span", "mg-dirty", this.dirty ? "Ungespeicherte Änderungen" : "Keine ungespeicherten Änderungen"));
     if (this.dirty) append(footer, this.action("Änderungen verwerfen", () => { if (window.confirm(localize("Alle ungespeicherten Änderungen verwerfen?"))) { this.policy = clone(this.initial!); this.error = ""; this.success = ""; this.render(); } }, "ghost"));
     if (this.step !== 3 && (this.step !== 5 || this.dirty)) append(footer, this.action("Änderungen prüfen", () => { this.step = 3; this.render(); void this.validate(); }, "primary"));
@@ -581,13 +583,19 @@ class ConfigurationPage {
   private async applySavedPolicy() {
     const operation = this.operation;
     if (!operation || !operation.issued || !operation.settled || operation.reloadPending || !["applying", "pending"].includes(operation.phase) || !this.authorized || this.disposed) return;
-    operation.reloadPending = true; operation.reloadAttempted = true; operation.phase = "applying"; this.render();
+    if (operation.accountActivation && operation.phase !== "pending") return;
+    operation.reloadPending = true; operation.reloadAttempted = true; operation.applicationFailed = false; operation.phase = "applying"; this.render();
     try {
       // Recheck the exact target. Do not rewrite config (including SecretRefs),
       // force a restart, or interrupt admitted work to make the badge green.
-      const fresh = await this.read<ConfigSnapshot>("config.get");
+      const [fresh, active] = await Promise.all([
+        this.read<ConfigSnapshot>("config.get"),
+        operation.accountActivation ? this.readActivePolicy() : undefined,
+      ]);
       if (this.disposed || this.signal.aborted || !this.authorized || this.operation !== operation) return;
-      if (canonicalPolicy(policyAt(fresh.config?.plugins?.entries?.[id]?.config, this.accountId)) !== canonicalPolicy(operation.target)) { operation.phase = "conflict"; return; }
+      const savedPolicy = policyAt(fresh.config?.plugins?.entries?.[id]?.config, this.accountId);
+      if ((operation.accountActivation && !savedPolicy) || canonicalPolicy(savedPolicy) !== canonicalPolicy(operation.target)) { operation.phase = "conflict"; return; }
+      if (operation.accountActivation && (active?.hash === operation.targetHash || this.applicationStatus === "applied")) return;
       const result = await this.host.request<{ ok?: boolean; restartRequired?: boolean }>("plugins.reload", { plugins: [{ pluginId: id }], waitForDrain: true });
       if (!result.ok || result.restartRequired) { operation.applicationFailed = true; operation.phase = "pending"; }
     } catch { operation.applicationFailed = true; operation.phase = "pending"; }
@@ -653,6 +661,16 @@ class ConfigurationPage {
         ? "Kein Speichervorgang läuft. Fehlende und überzählige Microsoft-Graph-Tools werden automatisch mit den gespeicherten Regeln abgeglichen. Explizite Sperren bleiben bestehen."
         : "Kein Speichervorgang läuft. Der automatische Tool-Abgleich ist noch nicht verfügbar oder die gespeicherten Regeln sind noch nicht nachweisbar aktiv. Prüfe den Status; explizite Sperren bleiben bestehen.";
     }
+    const accountActivation = this.operation?.accountActivation && !missingTools;
+    if (accountActivation && (phase === "applying" || phase === "pending")) {
+      title = "Verbindung gespeichert · Aktivierung ausstehend";
+      detail = phase === "applying"
+        ? "Die Verbindung wird nutzbar, sobald OpenClaw das Microsoft-Graph-Plugin neu geladen hat. Laufende Aufgaben können das verzögern. Der Status wird automatisch geprüft."
+        : "Die Verbindung bleibt gespeichert. Prüfe den Status oder stoße das Neuladen des Plugins erneut an. Du musst die Verbindung nicht noch einmal anlegen.";
+    } else if (accountActivation && phase === "applied") {
+      title = "Verbindung aktiv";
+      detail = "Die Aktivierung ist bestätigt. Die Microsoft-Anmeldung ist ein separater Schritt.";
+    }
     append(status, el("strong", "", title), el("p", "mg-status-detail", detail));
     if (missingTools) {
       if (this.reconciliationPaused) append(status, el("p", "mg-warning", "Automatischer Tool-Abgleich pausiert. Prüfe den Status, laufende Einrichtungsvorgänge und die Agent-Konfiguration. Ein unbestätigter Tool-Schritt wird nicht wiederholt."));
@@ -667,15 +685,17 @@ class ConfigurationPage {
         else if (issue.reason) append(status, el("p", "mg-status-detail", format("{agent}: automatische Reparatur nicht möglich ({reason}). Agent-Konfiguration prüfen.", { agent: label, reason: issue.reason })));
       }
     }
-    if (this.operation?.applicationFailed && ["pending", "applying"].includes(phase ?? "")) append(status, el("p", "mg-status-detail", "Die automatische Anwendung konnte nicht abgeschlossen werden. Deine Regeln sind gespeichert; laufende Arbeit wird nicht abgebrochen."));
-    if (this.operation?.reloadPending) append(status, el("p", "mg-status-detail", "Anwendung wurde angefordert. Wir prüfen, wann die gespeicherten Regeln aktiv sind."));
+    if (!accountActivation && this.operation?.applicationFailed && ["pending", "applying"].includes(phase ?? "")) append(status, el("p", "mg-status-detail", "Die automatische Anwendung konnte nicht abgeschlossen werden. Deine Regeln sind gespeichert; laufende Arbeit wird nicht abgebrochen."));
+    if (this.operation?.reloadPending) append(status, el("p", "mg-status-detail", accountActivation
+      ? "Microsoft-Graph-Plugin wird neu geladen …"
+      : "Anwendung wurde angefordert. Wir prüfen, wann die gespeicherten Regeln aktiv sind."));
     if (this.statusError) append(status, el("p", "mg-status-detail", this.statusError));
-    if (!phase || ["applied", "pending", "unknown", "conflict"].includes(phase)) this.appendStatusButton(status);
-    if (["pending", "applying"].includes(phase ?? "") && this.operation?.settled && !this.operation.reloadPending) {
-      const apply = button("Gespeicherte Regeln anwenden", () => { void this.applySavedPolicy(); }); apply.dataset.safeStatus = "true"; apply.disabled = this.statusInFlight || this.busy; append(status, apply);
-      append(status, el("p", "mg-hint", "Dabei werden nur die gespeicherten Regeln übernommen, nicht erneut gespeichert. Laufende Arbeit wird nicht abgebrochen."));
+    if (!phase || ["applied", "pending", "unknown", "conflict"].includes(phase) || accountActivation && phase === "applying") this.appendStatusButton(status);
+    if ((phase === "pending" || phase === "applying" && !this.operation?.accountActivation) && this.operation?.settled && !this.operation.reloadPending) {
+      const apply = button(this.operation.accountActivation ? "Plugin erneut laden" : "Gespeicherte Regeln anwenden", () => { void this.applySavedPolicy(); }); apply.dataset.safeStatus = "true"; apply.disabled = this.statusInFlight || this.busy; append(status, apply);
+      if (!accountActivation) append(status, el("p", "mg-hint", "Dabei werden nur die gespeicherten Regeln übernommen, nicht erneut gespeichert. Laufende Arbeit wird nicht abgebrochen."));
     }
-    if (phase === "pending") {
+    if (phase === "pending" && !this.operation?.accountActivation) {
       const overview = button("Übersicht anzeigen", () => { this.step = 4; this.render(); }); overview.dataset.safeStatus = "true"; append(status, overview);
     }
     if (phase === "conflict" || phase === "failed" && this.operation?.policyPrepared || phase === "unknown" && this.operation?.intent?.state === "issued") {
@@ -708,10 +728,11 @@ class ConfigurationPage {
       append(list, row);
     }
     append(body, list);
-    if (this.accountId !== undefined && !this.activeProofAvailable && this.credential?.result === "unavailable") {
+    const awaitingActivation = this.operation?.accountActivation && this.operation.phase !== "applied";
+    if (!awaitingActivation && this.accountId !== undefined && !this.activeProofAvailable && this.credential?.result === "unavailable") {
       append(body, el("p", "mg-banner", "Verbindung gespeichert. Das Gateway hat die Aktivierung noch nicht bestätigt."),
         this.action("Kontostatus erneut prüfen", () => void this.load()));
-    } else {
+    } else if (!awaitingActivation) {
       this.renderSetup(body);
       this.renderSignIn(body);
     }

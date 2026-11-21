@@ -833,7 +833,7 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/b515e4222c6a39851b7dd30266f6adc81fc375eab19918eaa9d6fa52b10aaf5e/index.js"
+    "entry": "dist/control-ui/0f6e3dc36d51f4d129bddb4f860709d1944188fb9998549152a8b421bf327645/index.js"
   },
   "contracts": {
     "tools": [

@@ -336,7 +336,7 @@ describe("guided Microsoft sign-in", () => {
 });
 
 
-it.each(["lost response", "pending activation"])("guides a new named connection through scoped sign-in with %s", async (mode) => {
+it.each(["lost response", "pending activation", "manual reload", "already active at retry"])("guides a new named connection through scoped sign-in with %s", async (mode) => {
   vi.useFakeTimers();
   const view = mount();
   try {
@@ -361,6 +361,13 @@ it.each(["lost response", "pending activation"])("guides a new named connection 
           throw new Error("connection lost after write");
         }
         Object.assign(entry.accounts!.buro!.services, change.accounts.buro.services);
+        return { ok: true };
+      }
+      if (method === "plugins.reload") {
+        const attempts = view.calls.filter(call => call.method === method).length;
+        view.calls.push({ method, params });
+        if (mode === "manual reload" && attempts === 0) throw new Error("plugin busy");
+        active = true;
         return { ok: true };
       }
       if (method === "microsoft-graph.configuration.validate") return { valid: true, policyHash: hash(params.policy), requiredScopes: ["Contacts.ReadWrite"] };
@@ -393,14 +400,34 @@ it.each(["lost response", "pending activation"])("guides a new named connection 
     expect(view.calls.filter(call => call.method === "config.patch")).toHaveLength(1);
     expect(entry.accountLabels).toEqual({ buro: "Büro" });
     expect(view.container.querySelector<HTMLSelectElement>(".mg-account-select")?.selectedOptions[0]?.textContent).toBe("Büro");
-    expect(view.container.textContent).toContain("Das Gateway hat die Aktivierung noch nicht bestätigt.");
+    expect(view.container.textContent).toContain("Verbindung gespeichert · Aktivierung ausstehend");
     expect(view.container.textContent).not.toContain("Anmeldung starten");
     if (mode === "pending activation") rejectPatch(new Error("saved but activation timed out"));
     await view.settle();
-    expect(view.container.textContent).toContain("Das Gateway hat die Aktivierung noch nicht bestätigt.");
+    expect(view.container.textContent).toContain("Verbindung gespeichert · Aktivierung ausstehend");
+    expect(view.container.textContent).not.toContain("Plugin erneut laden");
     expect(view.calls.some(call => call.method === "plugins.reload")).toBe(false);
-    active = true;
-    clickByText(view.container, "Kontostatus erneut prüfen"); await view.settle();
+    if (mode === "manual reload" || mode === "already active at retry") {
+      await vi.advanceTimersByTimeAsync(70_000);
+      expect(view.container.textContent).toContain("Du musst die Verbindung nicht noch einmal anlegen.");
+      active = mode === "already active at retry";
+      clickByText(view.container, "Plugin erneut laden"); await view.settle();
+      const reload = { method: "plugins.reload", params: { plugins: [{ pluginId: "microsoft-graph" }], waitForDrain: true } };
+      if (mode === "manual reload") {
+        expect(view.calls.filter(call => call.method === "plugins.reload")).toEqual([reload]);
+        expect(view.container.textContent).toContain("Verbindung gespeichert · Aktivierung ausstehend");
+        expect(view.container.textContent).not.toContain("Anmeldung starten");
+        await vi.advanceTimersByTimeAsync(70_000);
+        clickByText(view.container, "Plugin erneut laden"); await view.settle();
+      }
+      expect(view.calls.filter(call => call.method === "plugins.reload")).toEqual(mode === "manual reload" ? [reload, reload] : []);
+    } else {
+      active = true;
+      await vi.advanceTimersByTimeAsync(5000);
+      await view.settle();
+    }
+    expect(view.container.textContent).toContain("Verbindung aktiv");
+    expect(view.calls.filter(call => call.method === "config.patch")).toHaveLength(1);
     clickByText(view.container, "Zugriff festlegen");
     const contacts = [...view.container.querySelectorAll("fieldset")].find(item => item.querySelector("legend")?.textContent === "Kontakte")!;
     const toggle = contacts.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
