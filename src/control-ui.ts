@@ -1232,7 +1232,7 @@ class ConfigurationPage {
         : this.applicationStatus !== "applied" ? "AGENTS.md: Aktiver Stand nicht bestätigt"
         : root.agents_instructions === "trusted" ? "AGENTS.md: Ein · Für den Ordner" : "AGENTS.md: Aus · Für den Ordner";
       const folderSettings = el("div", "mg-folder-status");
-      const open = this.action("Ordner öffnen", () => {
+      const open = this.action("", () => {
         this.step = 6;
         this.render();
         const heading = [...this.container.querySelectorAll<HTMLElement>(".mg-root-card h3")]
@@ -1240,6 +1240,23 @@ class ConfigurationPage {
         heading?.focus();
       }, "ghost");
       open.setAttribute("aria-label", format("Ordner öffnen: {path}", { path: root.path }));
+      open.title = open.getAttribute("aria-label") ?? "";
+      // Use the same pencil glyph as the OpenClaw Control UI.
+      const svgNamespace = "http://www.w3.org/2000/svg";
+      const pencil = document.createElementNS(svgNamespace, "svg");
+      pencil.setAttribute("viewBox", "0 0 24 24");
+      pencil.setAttribute("width", "16");
+      pencil.setAttribute("height", "16");
+      pencil.setAttribute("aria-hidden", "true");
+      pencil.setAttribute("fill", "none");
+      pencil.setAttribute("stroke", "currentColor");
+      pencil.setAttribute("stroke-width", "2");
+      pencil.setAttribute("stroke-linecap", "round");
+      pencil.setAttribute("stroke-linejoin", "round");
+      const pencilPath = document.createElementNS(svgNamespace, "path");
+      pencilPath.setAttribute("d", "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z M15 5l4 4");
+      pencil.append(pencilPath);
+      open.append(pencil);
       append(folderSettings, el("span", "mg-hint", status), open);
       append(row, identity, permissions, folderSettings);
       append(folders, row);

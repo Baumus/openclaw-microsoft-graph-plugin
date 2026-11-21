@@ -210,20 +210,14 @@
 .mg-agent-folder-permissions .mg-check { min-height: 36px; margin: 0; font-size: .875rem; gap: 7px; }
 .mg-agent-folder-permissions .mg-check input { accent-color: var(--mg-text); }
 .mg-agent-folder-permissions .mg-check:has(input:disabled) { color: var(--mg-muted); cursor: not-allowed; }
-.mg-folder-status { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 12px; }
-.mg-folder-status .mg-hint { overflow-wrap: anywhere; }
+.mg-folder-status { display: flex; align-items: center; gap: 4px; }
+.mg-folder-status .mg-hint { min-width: 0; overflow-wrap: anywhere; }
 .mg-ui .mg-folder-status .mg-button {
+  flex: none;
+  width: 36px;
   min-height: 36px;
-  padding: 5px 0;
+  padding: 4px;
   border-color: transparent;
-  border-radius: 4px;
-  font-size: .83rem;
-  text-align: start;
-}
-.mg-ui .mg-folder-status .mg-button:hover:not(:disabled) {
-  background: transparent;
-  border-color: transparent;
-  text-decoration: underline;
 }
 .mg-account-context {
   display: flex;
