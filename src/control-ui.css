@@ -199,8 +199,26 @@
 .mg-agent-options { display: grid; gap: 5px; max-height: min(360px, 42vh); overflow: auto; padding: 4px; margin-bottom: 12px; }
 .mg-ui .mg-agent-options .mg-button { display: block; text-align: start; overflow-wrap: anywhere; }
 .mg-ui .mg-agent-options [aria-pressed="true"] { border-color: var(--mg-accent); }
-.mg-agent-folder { min-width: 0; margin: 12px 0; border: 1px solid var(--mg-border); border-radius: 8px; }
-.mg-agent-folder .mg-check { margin-inline-end: 16px; }
+/* Agent access: one list, with folder-wide settings below the agent's rights. */
+.mg-agent-folders { border: 1px solid var(--mg-border); border-radius: 10px; }
+.mg-agent-folder { display: grid; gap: 9px; min-width: 0; padding: 14px clamp(10px, 2vw, 18px) 10px; }
+.mg-agent-folder + .mg-agent-folder { border-top: 1px solid var(--mg-border); }
+.mg-agent-folder-identity { min-width: 0; overflow-wrap: anywhere; }
+.mg-agent-folder-identity strong { font-size: .95rem; font-weight: 650; }
+.mg-agent-folder-identity .mg-root-path { margin-top: 2px; font-family: inherit; line-height: 1.45; font-size: .78rem; }
+.mg-agent-folder-permissions { display: flex; flex-wrap: wrap; gap: 0 16px; }
+.mg-agent-folder-permissions .mg-check { min-height: 36px; margin: 0; font-size: .875rem; gap: 7px; }
+.mg-agent-folder-permissions .mg-check input { accent-color: var(--mg-text); }
+.mg-agent-folder-permissions .mg-check:has(input:disabled) { color: var(--mg-muted); cursor: not-allowed; }
+.mg-folder-status { display: flex; align-items: center; gap: 4px; }
+.mg-folder-status .mg-hint { min-width: 0; overflow-wrap: anywhere; }
+.mg-ui .mg-folder-status .mg-button {
+  flex: none;
+  width: 36px;
+  min-height: 36px;
+  padding: 4px;
+  border-color: transparent;
+}
 .mg-account-context {
   display: flex;
   align-items: baseline;
@@ -301,5 +319,3 @@
 .mg-account-notice { margin-bottom: 12px; }
 .mg-account-notice p { margin-bottom: 0; }
 @media (max-width: 960px) { .mg-access-grid { grid-template-columns: minmax(0, 1fr); } }
-
-.mg-folder-status { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 6px; }

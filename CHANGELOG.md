@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.28.2
+
+- Streamline OneDrive agent access with a compact folder list and a pencil shortcut from the AGENTS.md status to the matching folder settings.
+
 ## 3.28.1
 
 - Separate OneDrive folder management from per-agent access and link each folder directly to its shared AGENTS.md setting.

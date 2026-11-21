@@ -1201,13 +1201,20 @@ class ConfigurationPage {
     const section = el("section", "mg-section");
     append(section, el("h3", "", "OneDrive"), el("p", "mg-hint", "Freigaben gelten für den Ordner und seine Unterordner."));
     const roots = this.policy.services.onedrive.allowed_roots;
+    const folders = el("div", "mg-agent-folders");
     for (const root of roots) {
-      const row = el("fieldset", "mg-agent-folder");
-      append(row, el("legend", "mg-root-path", root.path.replaceAll("/", "\\")));
+      const row = el("div", "mg-agent-folder");
+      const path = root.path.replaceAll("/", "\\");
+      const folderName = root.path.split("/").filter(Boolean).at(-1) ?? root.label;
+      row.setAttribute("role", "group");
+      row.setAttribute("aria-label", path);
+      const identity = el("div", "mg-agent-folder-identity");
+      append(identity, el("strong", "", folderName), el("p", "mg-root-path", path));
+      const permissions = el("div", "mg-agent-folder-permissions");
       for (const [right, label] of [["read", "Lesen"], ["write", "Schreiben"], ["delete", "Löschen"]] as const) {
         const restricted = !root.permissions[right] && Object.entries(root.agents)
           .some(([id, grant]) => id !== agentId && grant.permissions[right]);
-        const control = this.checkbox(row, label, root.agents[agentId]?.permissions[right] === true, checked => {
+        const control = this.checkbox(permissions, label, root.agents[agentId]?.permissions[right] === true, checked => {
           const grant = root.agents[agentId] ?? { permissions: { read: false, write: false, delete: false } };
           grant.permissions[right] = checked;
           if (Object.values(grant.permissions).some(Boolean)) root.agents[agentId] = grant;
@@ -1225,7 +1232,7 @@ class ConfigurationPage {
         : this.applicationStatus !== "applied" ? "AGENTS.md: Aktiver Stand nicht bestätigt"
         : root.agents_instructions === "trusted" ? "AGENTS.md: Ein · Für den Ordner" : "AGENTS.md: Aus · Für den Ordner";
       const folderSettings = el("div", "mg-folder-status");
-      const open = this.action("Ordner öffnen", () => {
+      const open = this.action("", () => {
         this.step = 6;
         this.render();
         const heading = [...this.container.querySelectorAll<HTMLElement>(".mg-root-card h3")]
@@ -1233,11 +1240,29 @@ class ConfigurationPage {
         heading?.focus();
       }, "ghost");
       open.setAttribute("aria-label", format("Ordner öffnen: {path}", { path: root.path }));
+      open.title = open.getAttribute("aria-label") ?? "";
+      // Use the same pencil glyph as the OpenClaw Control UI.
+      const svgNamespace = "http://www.w3.org/2000/svg";
+      const pencil = document.createElementNS(svgNamespace, "svg");
+      pencil.setAttribute("viewBox", "0 0 24 24");
+      pencil.setAttribute("width", "16");
+      pencil.setAttribute("height", "16");
+      pencil.setAttribute("aria-hidden", "true");
+      pencil.setAttribute("fill", "none");
+      pencil.setAttribute("stroke", "currentColor");
+      pencil.setAttribute("stroke-width", "2");
+      pencil.setAttribute("stroke-linecap", "round");
+      pencil.setAttribute("stroke-linejoin", "round");
+      const pencilPath = document.createElementNS(svgNamespace, "path");
+      pencilPath.setAttribute("d", "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z M15 5l4 4");
+      pencil.append(pencilPath);
+      open.append(pencil);
       append(folderSettings, el("span", "mg-hint", status), open);
-      append(row, folderSettings);
-      append(section, row);
+      append(row, identity, permissions, folderSettings);
+      append(folders, row);
     }
-    if (!roots.length) append(section, el("p", "mg-hint", "Noch kein OneDrive-Ordner freigegeben."));
+    if (roots.length) append(section, folders);
+    else append(section, el("p", "mg-hint", "Noch kein OneDrive-Ordner freigegeben."));
     this.renderFolderInput(section);
     append(body, section);
   }
