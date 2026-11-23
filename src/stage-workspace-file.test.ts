@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import * as fsPromises from "node:fs/promises";
 import { chmod, link, mkdtemp, mkdir, readFile, readlink, readdir, rename, rm, symlink, truncate, utimes, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { reconcileWorkspaceStaging, stageWorkspaceFile, validateWorkspaceRelativeFilePath, workspaceFileContentType, workspaceStagingProcessIdentity, WorkspaceStagingStore, WORKSPACE_STAGING_QUOTA_BYTES } from "./stage-workspace-file.js";
 
@@ -10,6 +10,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return { ...actual, lstat: vi.fn(actual.lstat) };
 });
+
+// Keep the real lock recovery and exhaustion branches, but avoid repeated filesystem scans.
+vi.mock("./staging-lock-limits.js", () => ({ QUOTA_LOCK_ATTEMPTS: 4 }));
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -611,11 +614,16 @@ describe("one-call workspace source staging", () => {
     await truncate(orphan, 64 * 1024 * 1024);
     await expect(first.reserveShared(1, stateDir)).rejects.toThrow("workspace_staging_quota_exceeded");
     await other.release();
-    const slots = [];
-    for (let slot = 0; slot < 63; slot++) slots.push(await second.reserveShared(0, stateDir));
+    // Seed existing reservations from the other run instead of acquiring and releasing
+    // dozens of locks just to reach the real shared slot limit.
+    await Promise.all(Array.from({ length: 62 }, () =>
+      writeFile(join(dirname(orphan), `.workspace-staging-reservation-${randomUUID()}`), "0")));
+    const lastSlot = await second.reserveShared(0, stateDir);
     await expect(second.reserveShared(0, stateDir)).rejects.toThrow("workspace_staging_quota_exceeded");
-    await Promise.all(slots.map((slot) => slot.release()));
-  }, 20_000);
+    await lastSlot.release();
+    const reusedSlot = await first.reserveShared(0, stateDir);
+    await reusedSlot.release();
+  });
 
   it("retries after a blocked orphan cleanup without deleting a foreign symlink", async () => {
     const directory = await workspace();

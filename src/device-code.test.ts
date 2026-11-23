@@ -85,9 +85,42 @@ describe("gateway-side device-code sign-in", () => {
       const { state, config } = await setup();
       const fetchFn = vi.fn().mockResolvedValue(response({ ...deviceResponse, verification_uri: uri })) as unknown as typeof fetch;
       const signIn = new DeviceCodeSignIn(config, () => state, fetchFn);
-      await expect(signIn.start(clientId, tenant)).rejects.toThrow("device_authorization_failed");
+      await expect(signIn.start(clientId, tenant)).rejects.toThrow("device_authorization_invalid_response");
       expect(await inspectVaultCredential(state)).toEqual({ result: "missing" });
     }
+  });
+
+  it.each([
+    ["transport_failed", async () => { throw new Error("synthetic-private-transport-error"); }],
+    ["transport_failed", async () => new Response(new ReadableStream({ start(stream) { stream.error(new Error("synthetic-private-body-error")); } }))],
+    ["invalid_response", async () => new Response("synthetic-private-non-json", { status: 502 })],
+    ["invalid_response", async () => response([], 400)],
+    ["invalid_response", async () => response({ padding: "x".repeat(65536) })],
+    ["invalid_response", async () => response({}, 503)],
+    ["token_rejected", async () => response({ error: "invalid_grant", error_description: "synthetic-private-error", correlation_id: tenant, error_codes: [70000], refresh_token: "synthetic-private-refresh", ...deviceResponse }, 400)],
+    ["invalid_token_fields", async () => response({ refresh_token: "synthetic-private-refresh" })],
+    ["invalid_token_fields", async () => response({ refresh_token: "synthetic-private-refresh", scope: " " })],
+  ] as const)("reports %s without exposing response details", async (category, tokenResponse) => {
+    const { state, config } = await setup();
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(response(deviceResponse)).mockImplementationOnce(tokenResponse);
+    const signIn = new DeviceCodeSignIn(config, () => state, fetchFn, async () => undefined);
+    const started = await signIn.start(clientId, tenant);
+    expect(await terminal(signIn, started.sessionId)).toEqual({ state: "failed", error: `device_authorization_${category}` });
+    expect(await inspectVaultCredential(state)).toEqual({ result: "missing" });
+  });
+
+  it("reports an unexpected local vault failure without exposing its message", async () => {
+    const { state, config } = await setup();
+    const scope = requiredPolicyScopes(config.policy).join(" ");
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(response(deviceResponse))
+      .mockResolvedValueOnce(response({ refresh_token: "synthetic-private-refresh", scope }));
+    const stateDir = vi.fn(() => state).mockReturnValueOnce(state).mockImplementationOnce(() => {
+      throw new Error("synthetic-private-vault-error");
+    });
+    const signIn = new DeviceCodeSignIn(config, stateDir, fetchFn, async () => undefined);
+    const started = await signIn.start(clientId, tenant);
+    expect(await terminal(signIn, started.sessionId)).toEqual({ state: "failed", error: "credential_vault_write_failed" });
+    expect(await inspectVaultCredential(state)).toEqual({ result: "missing" });
   });
 
   it("never creates a vault on missing grant, consent denial, or malformed response", async () => {
@@ -203,7 +236,7 @@ describe("gateway-side device-code sign-in", () => {
       if (outcome === "policy") config.policy.services.mail.agents = {};
       release();
       const status = await terminal(signIn, started.sessionId);
-      expect(status).toEqual({ state: "failed", error: outcome === "denied" ? "device_authorization_declined" : outcome === "malformed" ? "device_authorization_failed" : outcome === "cancelled" ? "device_authorization_cancelled" : "credential_vault_conflict_policy_changed" });
+      expect(status).toEqual({ state: "failed", error: outcome === "denied" ? "device_authorization_declined" : outcome === "malformed" ? "device_authorization_invalid_token_fields" : outcome === "cancelled" ? "device_authorization_cancelled" : "credential_vault_conflict_policy_changed" });
       expect(await readFile(vaultCredentialPath(state))).toEqual(before);
       if (outcome === "cancelled") expect(fetchFn).toHaveBeenCalledTimes(1);
     }

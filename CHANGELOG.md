@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.28.3
+
+- Distinguish Microsoft device sign-in transport, response, rejection, token-field and Vault failures without exposing credentials or raw responses.
+- Reduce filesystem work in staging regression tests and give the cold approval-entry import a dedicated time budget.
+
 ## 3.28.2
 
 - Streamline OneDrive agent access with a compact folder list and a pencil shortcut from the AGENTS.md status to the matching folder settings.
