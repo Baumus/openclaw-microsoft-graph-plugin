@@ -16,12 +16,18 @@ type StartResult = { sessionId: string; userCode: string; verificationUri: strin
 type StatusResult = { state: "pending" | "created" | "failed"; error?: string; scopes?: string[] };
 
 async function oauthPost(url: string, body: URLSearchParams, fetchFn: typeof fetch, timeoutMs = 10_000): Promise<{ status: number; value: Record<string, unknown> }> {
-  const response = await fetchFn(url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body, signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
-  const raw = await response.text();
-  if (Buffer.byteLength(raw) > MAX_RESPONSE_BYTES) throw new Error("device_authorization_failed");
+  let response: Response;
+  let raw: string;
+  try {
+    response = await fetchFn(url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body, signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
+    raw = await response.text();
+  } catch {
+    throw new Error("device_authorization_transport_failed");
+  }
+  if (Buffer.byteLength(raw) > MAX_RESPONSE_BYTES) throw new Error("device_authorization_invalid_response");
   let value: unknown;
-  try { value = JSON.parse(raw); } catch { throw new Error("device_authorization_failed"); }
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("device_authorization_failed");
+  try { value = JSON.parse(raw); } catch { throw new Error("device_authorization_invalid_response"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("device_authorization_invalid_response");
   return { status: response.status, value: value as Record<string, unknown> };
 }
 function checkedScopes(policy: GraphPolicy, allowFolderSetup: boolean): string[] {
@@ -83,15 +89,19 @@ export class DeviceCodeSignIn {
       }
       const result = await oauthPost(endpoint(tenant, "devicecode"), new URLSearchParams({ client_id: clientId, scope: scopes.join(" ") }), this.fetchFn);
       const value = result.value;
-      if (result.status !== 200 || typeof value.device_code !== "string" || !value.device_code || value.device_code.length > 4096
+      if (result.status !== 200) {
+        throw new Error(typeof value.error === "string" && value.error
+          ? "device_authorization_start_rejected" : "device_authorization_invalid_response");
+      }
+      if (typeof value.device_code !== "string" || !value.device_code || value.device_code.length > 4096
         || typeof value.user_code !== "string" || !/^[A-Za-z0-9-]{4,32}$/.test(value.user_code)
         || !isMicrosoftDeviceVerificationUri(value.verification_uri)
         || !Number.isSafeInteger(value.expires_in) || Number(value.expires_in) < 30 || Number(value.expires_in) > 3600
-        || !Number.isSafeInteger(value.interval) || Number(value.interval) < 1 || Number(value.interval) > 60) throw new Error("device_authorization_failed");
+        || !Number.isSafeInteger(value.interval) || Number(value.interval) < 1 || Number(value.interval) > 60) throw new Error("device_authorization_invalid_response");
       const now = Date.now();
       const session: DeviceSession = { id: randomUUID(), state: "pending", expiresAt: now + Math.min(Number(value.expires_in) * 1000, MAX_LIFETIME_MS), interval: Number(value.interval) * 1000, deviceCode: value.device_code, userCode: value.user_code, verificationUri: value.verification_uri, clientId, tenant, scopes, mode, expectedBinding };
       this.session = session;
-      void this.poll(session, key).catch(() => { if (this.session === session) { session.state = "failed"; session.error = "device_authorization_failed"; session.deviceCode = ""; session.userCode = ""; } });
+      void this.poll(session, key).catch(() => { if (this.session === session && session.state === "pending") { session.state = "failed"; session.error = "device_authorization_failed"; session.deviceCode = ""; session.userCode = ""; } });
       return { sessionId: session.id, userCode: value.user_code, verificationUri: value.verification_uri, expiresAt: new Date(session.expiresAt).toISOString(), scopes };
     } finally { this.starting = false; }
   }
@@ -115,19 +125,31 @@ export class DeviceCodeSignIn {
       if (this.session !== session || session.state !== "pending" || Date.now() >= session.expiresAt) break;
       let response: { status: number; value: Record<string, unknown> };
       try { response = await oauthPost(endpoint(session.tenant, "token"), new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:device_code", client_id: session.clientId, device_code: session.deviceCode }), this.fetchFn); }
-      catch { session.state = "failed"; session.error = "device_authorization_failed"; break; }
+      catch (error) {
+        if (this.session === session && session.state === "pending" && Date.now() < session.expiresAt) {
+          session.state = "failed";
+          session.error = error instanceof Error && error.message === "device_authorization_transport_failed"
+            ? "device_authorization_transport_failed" : "device_authorization_invalid_response";
+        }
+        break;
+      }
       if (this.session !== session || session.state !== "pending" || Date.now() >= session.expiresAt) break;
       const value = response.value;
       if (response.status !== 200) {
         if (value.error === "authorization_pending") continue;
         if (value.error === "slow_down") { session.interval = Math.min(session.interval + 5000, 60_000); continue; }
         session.state = "failed";
-        session.error = value.error === "authorization_declined" ? "device_authorization_declined" : "device_authorization_failed";
+        session.error = value.error === "authorization_declined" ? "device_authorization_declined"
+          : typeof value.error === "string" && value.error ? "device_authorization_token_rejected" : "device_authorization_invalid_response";
+        break;
+      }
+      if (typeof value.refresh_token !== "string" || !value.refresh_token.trim() || value.refresh_token.length > 32 * 1024
+        || typeof value.scope !== "string" || !value.scope.trim() || value.scope.length > 8192) {
+        session.state = "failed";
+        session.error = "device_authorization_invalid_token_fields";
         break;
       }
       try {
-        if (typeof value.refresh_token !== "string" || !value.refresh_token || value.refresh_token.length > 32 * 1024
-          || typeof value.scope !== "string" || value.scope.length > 8192) throw new Error("device_authorization_failed");
         const granted = [...new Set(value.scope.split(/\s+/).filter(Boolean))];
         const credential = { clientId: session.clientId, tenant: session.tenant, refreshToken: value.refresh_token, scopes: granted.some((scope) => scope.toLowerCase() === "offline_access") ? granted : [...granted, "offline_access"] };
         for (const scope of session.scopes.filter((scope) => scope !== "offline_access")) selectScope(credential, [scope]);
@@ -147,7 +169,8 @@ export class DeviceCodeSignIn {
         session.state = "created";
       } catch (error) {
         session.state = "failed";
-        session.error = error instanceof Error && ["credential_scope_missing", "credential_vault_conflict", "credential_vault_conflict_changed", "credential_vault_conflict_quarantined", "credential_vault_conflict_identity", "credential_vault_conflict_exists", "credential_vault_conflict_policy_changed", "credential_vault_locked"].includes(error.message) ? error.message : "device_authorization_failed";
+        session.error = error instanceof Error && ["credential_scope_missing", "credential_vault_conflict", "credential_vault_conflict_changed", "credential_vault_conflict_quarantined", "credential_vault_conflict_identity", "credential_vault_conflict_exists", "credential_vault_conflict_policy_changed", "credential_vault_locked"].includes(error.message) ? error.message
+          : session.committing ? "credential_vault_write_failed" : "device_authorization_failed";
       }
       break;
     }

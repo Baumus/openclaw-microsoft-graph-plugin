@@ -104,6 +104,30 @@ function policySummary(policy: Policy): string[] {
     ...(["calendar", "mail", "contacts", "todo"] as const).map(s => format("{count} Agenten für {service}", { count: Object.keys(policy.services[s]?.agents ?? {}).length, service: localize(serviceNames[s]) })),
   ];
 }
+const SIGN_IN_ERRORS: Record<string, string> = {
+  credential_scope_missing: "Die Microsoft-Freigabe enthält nicht alle benötigten Berechtigungen. Prüfe die Einwilligung und starte erneut.",
+  credential_vault_conflict: "Der Zugang hat sich geändert. Prüfe den Status und starte die Erneuerung erneut. Der Assistent überschreibt keinen ungeprüften Zugang.",
+  credential_vault_conflict_exists: "Es gibt bereits einen Zugang. Prüfe den Status und nutze Microsoft-Berechtigungen erneuern statt einer neuen Verbindung.",
+  credential_vault_conflict_identity: "App oder Mandant stimmen nicht mit dem bestehenden Zugang überein. Erneuere mit den vorhandenen Kennungen; lege keine neue App an.",
+  credential_vault_conflict_changed: "Der Zugang wurde während der Anmeldung geändert, etwa durch eine Token-Erneuerung. Prüfe den Status und starte die Erneuerung erneut. Der aktuelle Zugang bleibt erhalten.",
+  credential_vault_conflict_policy_changed: "Die benötigten Berechtigungen wurden während der Anmeldung geändert. Prüfe die angewendeten Regeln und starte die Erneuerung erneut.",
+  credential_vault_conflict_quarantined: "Ein früherer Token-Austausch hat einen unklaren Ausgang. Der Zugang bleibt gesperrt; ein Admin muss die Wiederherstellung prüfen. Nicht löschen oder erneut verbinden.",
+  credential_vault_locked: "Der Zugang wird gerade geändert. Bitte später erneut versuchen.",
+  credential_vault_unavailable: "Der verschlüsselte Zugang ist nicht bereit. Prüfe den Vault-Schlüssel in der Plugin-Konfiguration.",
+  device_authorization_failed: "Die Anmeldung konnte nicht abgeschlossen werden. Die genaue Ursache ist nicht bekannt.",
+  device_authorization_transport_failed: "Die Verbindung zum Microsoft-Anmeldedienst wurde unterbrochen. Prüfe die Erreichbarkeit vom Gateway aus.",
+  device_authorization_invalid_response: "Die Antwort des Microsoft-Anmeldedienstes war nicht auswertbar.",
+  device_authorization_start_rejected: "Microsoft hat die Anfrage für einen Anmeldecode abgelehnt.",
+  device_authorization_token_rejected: "Microsoft hat den Token-Abruf abgelehnt. Prüfe die Anmeldeprotokolle in Microsoft Entra.",
+  device_authorization_invalid_token_fields: "Für den Abschluss der Anmeldung fehlen gültige Felder in der Token-Antwort.",
+  credential_vault_write_failed: "Die Zugangsdaten konnten nicht im lokalen verschlüsselten Speicher gesichert werden. Prüfe den lokalen Vault.",
+  device_authorization_declined: "Die Anmeldung wurde bei Microsoft abgelehnt. Du kannst erneut starten.",
+  device_authorization_expired: "Der Anmeldecode ist abgelaufen. Starte die Anmeldung erneut.",
+  device_authorization_cancelled: "Die Anmeldung wurde abgebrochen.",
+  device_authorization_in_progress: "Eine Anmeldung läuft bereits. Warte auf ihren Abschluss oder brich sie ab.",
+  invalid_policy: "Lege zuerst mindestens einen Agentenzugriff fest und speichere die Regeln.",
+};
+
 class ConfigurationPage {
   private readonly helpIdPrefix = `mg-instructions-${++configurationPageSequence}`;
   private instructionsHelpRoot?: string;
@@ -993,23 +1017,7 @@ class ConfigurationPage {
     } catch { if (!this.disposed && !this.signal.aborted && this.authorized && this.accountId === accountId && isCurrent()) this.credential = { result: "unavailable" }; }
   }
   private signInError(code: string): string {
-    const messages: Record<string, string> = {
-      credential_scope_missing: "Die Microsoft-Freigabe enthält nicht alle benötigten Berechtigungen. Prüfe die Einwilligung und starte erneut.",
-      credential_vault_conflict: "Der Zugang hat sich geändert. Prüfe den Status und starte die Erneuerung erneut. Der Assistent überschreibt keinen ungeprüften Zugang.",
-      credential_vault_conflict_exists: "Es gibt bereits einen Zugang. Prüfe den Status und nutze Microsoft-Berechtigungen erneuern statt einer neuen Verbindung.",
-      credential_vault_conflict_identity: "App oder Mandant stimmen nicht mit dem bestehenden Zugang überein. Erneuere mit den vorhandenen Kennungen; lege keine neue App an.",
-      credential_vault_conflict_changed: "Der Zugang wurde während der Anmeldung geändert, etwa durch eine Token-Erneuerung. Prüfe den Status und starte die Erneuerung erneut. Der aktuelle Zugang bleibt erhalten.",
-      credential_vault_conflict_policy_changed: "Die benötigten Berechtigungen wurden während der Anmeldung geändert. Prüfe die angewendeten Regeln und starte die Erneuerung erneut.",
-      credential_vault_conflict_quarantined: "Ein früherer Token-Austausch hat einen unklaren Ausgang. Der Zugang bleibt gesperrt; ein Admin muss die Wiederherstellung prüfen. Nicht löschen oder erneut verbinden.",
-      credential_vault_locked: "Der Zugang wird gerade geändert. Bitte später erneut versuchen.",
-      credential_vault_unavailable: "Der verschlüsselte Zugang ist nicht bereit. Prüfe den Vault-Schlüssel in der Plugin-Konfiguration.",
-      device_authorization_declined: "Die Anmeldung wurde bei Microsoft abgelehnt. Du kannst erneut starten.",
-      device_authorization_expired: "Der Anmeldecode ist abgelaufen. Starte die Anmeldung erneut.",
-      device_authorization_cancelled: "Die Anmeldung wurde abgebrochen.",
-      device_authorization_in_progress: "Eine Anmeldung läuft bereits. Warte auf ihren Abschluss oder brich sie ab.",
-      invalid_policy: "Lege zuerst mindestens einen Agentenzugriff fest und speichere die Regeln.",
-    };
-    return messages[code] ?? "Die Anmeldung konnte nicht abgeschlossen werden. Prüfe App-ID, Tenant und Microsoft-Einwilligung; versuche es erneut.";
+    return Object.hasOwn(SIGN_IN_ERRORS, code) ? SIGN_IN_ERRORS[code] : SIGN_IN_ERRORS.device_authorization_failed;
   }
   private authCurrent(epoch: number, sessionId?: string): boolean {
     return !this.disposed && !this.signal.aborted && this.authorized && epoch === this.authEpoch
@@ -1111,10 +1119,15 @@ class ConfigurationPage {
       append(card, el("p", "mg-hint", "Ein erneuter Versuch ohne Änderung hilft möglicherweise nicht."));
       append(card, el("p", "mg-hint", "Teile Zeitpunkt und technischen Fehlercode mit. Falls Microsoft einen weiteren Code zeigt, gib ihn zusätzlich an."));
       const details = el("details", "mg-admin-details"); append(details, el("summary", "", "Für den Admin"));
-      const logLink = el("a", "", "Anmeldeprotokolle öffnen"); logLink.href = "https://entra.microsoft.com/#view/Microsoft_AAD_IAM/SignInLogsBlade"; logLink.target = "_blank"; logLink.rel = "noopener noreferrer";
-      append(details, el("p", "mg-hint", "Einwilligung, Kontotyp und Richtlinie prüfen."), logLink); append(card, details);
+      const code = Object.hasOwn(SIGN_IN_ERRORS, this.authFailureCode) ? this.authFailureCode : "nicht verfügbar";
+      append(details, el("p", "", `Fehlercode: ${code}`));
+      if (["device_authorization_start_rejected", "device_authorization_token_rejected", "device_authorization_declined"].includes(code)) {
+        const logLink = el("a", "", "Anmeldeprotokolle öffnen"); logLink.href = "https://entra.microsoft.com/"; logLink.target = "_blank"; logLink.rel = "noopener noreferrer";
+        append(details, logLink);
+      }
+      append(card, details);
       const copy = this.action("Fehlerangaben für Admin kopieren", () => {
-        const info = [`Microsoft-Anmeldung: nicht abgeschlossen`, `Zeitpunkt (UTC): ${this.authFailureAt || new Date().toISOString()}`, `Fehlercode: ${this.authFailureCode || "nicht verfügbar"}`, ...(this.authRenewal ? [] : [`Organisation: ${this.authTenant || "nicht angegeben"}`])].join("\n");
+        const info = ["Microsoft-Anmeldung: nicht abgeschlossen", `Zeitpunkt (UTC): ${this.authFailureAt || new Date().toISOString()}`, `Fehlercode: ${code}`].join("\n");
         if (!navigator.clipboard?.writeText) { this.authError = "Kopieren nicht möglich. Teile Zeitpunkt und Fehlercode manuell."; this.render(); return; }
         void navigator.clipboard.writeText(info).catch(() => { this.authError = "Kopieren nicht möglich. Teile Zeitpunkt und Fehlercode manuell."; this.render(); });
       }); append(card, copy);

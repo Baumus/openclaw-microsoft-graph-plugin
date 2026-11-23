@@ -35,7 +35,7 @@ describe("native approval snapshot store across module instances", () => {
       if (previous === undefined) delete (globalThis as Record<symbol, unknown>)[legacyKey];
       else (globalThis as Record<symbol, unknown>)[legacyKey] = previous;
     }
-  });
+  }, 20_000); // Includes the first cold import of the full plugin entry.
 
   it("shares one store between separately imported module instances", async () => {
     const first = await importRealm(1);

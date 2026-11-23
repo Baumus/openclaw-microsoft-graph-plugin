@@ -250,19 +250,34 @@ describe("guided Microsoft sign-in", () => {
     expect(view.container.querySelector("a[href='https://microsoft.com/devicelogin']")?.getAttribute("target")).toBe("_blank");
     view.dispose();
   });
-  it("shows a user-facing failure path and copies bounded diagnostics for an administrator", async () => {
+  it.each([
+    ["device_authorization_declined", "Die Anmeldung wurde bei Microsoft abgelehnt", "device_authorization_declined", true],
+    ["device_authorization_transport_failed", "Verbindung zum Microsoft-Anmeldedienst", "device_authorization_transport_failed", false],
+    ["device_authorization_invalid_response", "war nicht auswertbar", "device_authorization_invalid_response", false],
+    ["device_authorization_token_rejected", "Microsoft hat den Token-Abruf abgelehnt", "device_authorization_token_rejected", true],
+    ["device_authorization_invalid_token_fields", "fehlen gültige Felder", "device_authorization_invalid_token_fields", false],
+    ["credential_vault_write_failed", "lokalen verschlüsselten Speicher", "credential_vault_write_failed", false],
+    ["synthetic-private-raw-error", "Die genaue Ursache ist nicht bekannt", "nicht verfügbar", false],
+  ])("shows and copies only bounded diagnostics for %s", async (error, message, code, hasEntraLink) => {
     vi.useFakeTimers();
     try {
       const view = mount({ clientId, tenant }); await view.settle(); if (view.container.querySelector(".mg-steps")) clickByText(view.container, "Konten");
+      view.responses["microsoft-graph.credentials.device-status"] = { ok: true, value: { state: "failed", error } };
       clickByText(view.container, "Mit Microsoft verbinden"); await view.settle();
       await vi.advanceTimersByTimeAsync(4000); await view.settle();
       expect(view.container.textContent).toContain("Anmeldung nicht abgeschlossen");
       expect(view.container.textContent).toContain("Wir konnten die Anmeldung nicht als abgeschlossen erkennen");
-      expect(view.container.querySelector("details")?.textContent).toContain("Anmeldeprotokolle öffnen");
+      expect(view.container.textContent).toContain(message);
+      const details = view.container.querySelector(".mg-auth details");
+      expect(details?.textContent).toContain(`Fehlercode: ${code}`);
+      expect(Boolean(details?.querySelector('a[href="https://entra.microsoft.com/"]'))).toBe(hasEntraLink);
+      expect(view.container.textContent).not.toContain("synthetic-private-raw-error");
       const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
       clickByText(view.container, "Fehlerangaben für Admin kopieren"); await view.settle();
-      expect(writeText).toHaveBeenCalledWith(expect.stringContaining("Fehlercode: device_authorization_declined"));
+      expect(writeText).toHaveBeenCalledWith(expect.stringContaining(`Fehlercode: ${code}`));
       expect(writeText.mock.calls[0]?.[0]).not.toContain("ABCD-EFGH");
+      expect(writeText.mock.calls[0]?.[0]).not.toContain(tenant);
+      expect(writeText.mock.calls[0]?.[0]).not.toContain("synthetic-private-raw-error");
       view.dispose();
     } finally { vi.useRealTimers(); }
   });

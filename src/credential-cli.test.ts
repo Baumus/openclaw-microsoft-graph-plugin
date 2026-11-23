@@ -140,6 +140,17 @@ describe("single credential operator surfaces", () => {
       [CREDENTIAL_GATEWAY_METHODS.recover, { expectedBinding: "short", apply: false }],
     ] as const) expect(await invoke(method, params)).toEqual([true, { ok: false, error: "invalid_rpc_parameters" }]);
 
+    const params = { sessionId: "11111111-1111-4111-8111-111111111111" };
+    const status = vi.spyOn(DeviceCodeSignIn.prototype, "status");
+    for (const error of [
+      "device_authorization_transport_failed", "device_authorization_invalid_response",
+      "device_authorization_token_rejected", "device_authorization_invalid_token_fields", "credential_vault_write_failed",
+    ]) {
+      status.mockReturnValueOnce({ state: "failed", error });
+      expect(await invoke(CREDENTIAL_GATEWAY_METHODS.deviceStatus, params)).toEqual([true, { ok: true, value: { state: "failed", error } }]);
+    }
+    status.mockReturnValueOnce({ state: "failed", error: "synthetic-private-raw-response" });
+    expect(await invoke(CREDENTIAL_GATEWAY_METHODS.deviceStatus, params)).toEqual([true, { ok: false, error: "internal_error" }]);
   });
 
   it("routes the external-plugin CLI through the host gateway command with exact confirmations", async () => {

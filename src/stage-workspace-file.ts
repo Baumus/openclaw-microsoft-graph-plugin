@@ -9,6 +9,8 @@ import { saveMediaStream } from "openclaw/plugin-sdk/media-store";
 import { sanitizeAttachmentName } from "./attachment-download.js";
 import { ONEDRIVE_WRITE_MAX_BYTES, validTransferContentType } from "./graph.js";
 
+import { QUOTA_LOCK_ATTEMPTS } from "./staging-lock-limits.js";
+
 type WorkspaceStagingPhase = "source_open" | "owner_init" | "quota_reserve" | "media_save" | "receipt_validate" | "quota_publish";
 
 export class WorkspaceStagingError extends Error {
@@ -247,14 +249,14 @@ async function withQuotaLock<T>(stateDir: string, action: (directory: string) =>
   if (!await stagingAncestors(stateDir)) throw new Error("workspace_staging_namespace_invalid");
   const directory = join(resolve(stateDir), "media", STAGING_SUBDIR);
   const lock = join(directory, QUOTA_LOCK);
-  for (let attempt = 0; attempt < 500; attempt++) {
+  for (let attempt = 0; attempt < QUOTA_LOCK_ATTEMPTS; attempt++) {
     try { await mkdir(lock); break; }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       await recoverQuotaLock(stateDir).catch((failure: NodeJS.ErrnoException) => {
         if (!(failure instanceof QuotaLockChanged) && failure.code !== "ENOENT" && failure.code !== "not-found") throw failure;
       });
-      if (attempt === 499) throw new Error("workspace_staging_quota_exceeded");
+      if (attempt === QUOTA_LOCK_ATTEMPTS - 1) throw new Error("workspace_staging_quota_exceeded");
       await new Promise((done) => setTimeout(done, 20));
     }
   }
