@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.28.4
+
+- Show validated numeric Microsoft error codes for rejected device-code token requests in Control UI diagnostics without exposing provider text or credentials.
+
 ## 3.28.3
 
 - Distinguish Microsoft device sign-in transport, response, rejection, token-field and Vault failures without exposing credentials or raw responses.

@@ -97,7 +97,8 @@ describe("gateway-side device-code sign-in", () => {
     ["invalid_response", async () => response([], 400)],
     ["invalid_response", async () => response({ padding: "x".repeat(65536) })],
     ["invalid_response", async () => response({}, 503)],
-    ["token_rejected", async () => response({ error: "invalid_grant", error_description: "synthetic-private-error", correlation_id: tenant, error_codes: [70000], refresh_token: "synthetic-private-refresh", ...deviceResponse }, 400)],
+    ["token_rejected", async () => response({ error: "invalid_grant", error_description: "synthetic-private-error", correlation_id: tenant, error_codes: [70000, 53003], refresh_token: "synthetic-private-refresh", ...deviceResponse }, 400)],
+    ["token_rejected_without_codes", async () => response({ error: "invalid_grant", error_codes: [70000, "synthetic-private-error"] }, 400)],
     ["invalid_token_fields", async () => response({ refresh_token: "synthetic-private-refresh" })],
     ["invalid_token_fields", async () => response({ refresh_token: "synthetic-private-refresh", scope: " " })],
   ] as const)("reports %s without exposing response details", async (category, tokenResponse) => {
@@ -105,7 +106,7 @@ describe("gateway-side device-code sign-in", () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(response(deviceResponse)).mockImplementationOnce(tokenResponse);
     const signIn = new DeviceCodeSignIn(config, () => state, fetchFn, async () => undefined);
     const started = await signIn.start(clientId, tenant);
-    expect(await terminal(signIn, started.sessionId)).toEqual({ state: "failed", error: `device_authorization_${category}` });
+    expect(await terminal(signIn, started.sessionId)).toEqual({ state: "failed", error: `device_authorization_${category === "token_rejected_without_codes" ? "token_rejected" : category}`, ...(category === "token_rejected" ? { microsoftErrorCodes: [70000, 53003] } : {}) });
     expect(await inspectVaultCredential(state)).toEqual({ result: "missing" });
   });
 

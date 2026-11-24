@@ -8,6 +8,7 @@ import { createInterface } from "node:readline/promises";
 import { readCredential, selectScope, type CredentialBackendConfig } from "./credential.js";
 import { acquireVaultLock, clearVaultQuarantine, decodeVaultKey, inspectVaultCredential, readVaultCredential, vaultRecordBinding, type VaultCredential, type VaultRecord } from "./credential-vault.js";
 import { validatePolicy, type GraphPolicy } from "./policy.js";
+import { microsoftErrorCodes } from "./device-error-codes.js";
 import { DeviceCodeSignIn } from "./device-code.js";
 import { isMicrosoftDeviceVerificationUri } from "./device-verification.js";
 
@@ -324,9 +325,10 @@ function deviceStartResult(value: unknown): unknown {
   return value;
 }
 function deviceStatusResult(value: unknown): unknown {
-  const parsed = exactResult(value, ["state"], ["error", "scopes"]);
+  const parsed = exactResult(value, ["state"], ["error", "scopes", "microsoftErrorCodes"]);
   if (!["pending", "created", "failed"].includes(parsed.state as string)
     || (parsed.error !== undefined && (parsed.state !== "failed" || typeof parsed.error !== "string" || !SAFE_OPERATION_ERRORS.has(parsed.error)))
+    || (parsed.microsoftErrorCodes !== undefined && (parsed.error !== "device_authorization_token_rejected" || !microsoftErrorCodes(parsed.microsoftErrorCodes)))
     || (parsed.state === "created" && parsed.scopes === undefined)
     || (parsed.scopes !== undefined && (parsed.state !== "created" || !Array.isArray(parsed.scopes) || parsed.scopes.length === 0 || parsed.scopes.some((scope) => typeof scope !== "string" || !/^[A-Za-z][A-Za-z0-9._]*$/.test(scope))))) throw new Error("internal_error");
   return value;
