@@ -4,6 +4,15 @@ export const hostLocales = ["en", "ar", "de", "es", "fa", "fr", "hi", "id", "it"
 export type HostLocale = typeof hostLocales[number];
 const catalogs: Record<string, Record<string, string>> = {
   "en": {
+    "Der Zugang ist gesperrt. Starte die Wiederherstellung unter „Konten“.": "The credential is quarantined. Start recovery under Accounts.",
+    "Zur Wiederherstellung": "Go to recovery",
+    "Microsoft-Zugang wiederherstellen": "Recover Microsoft access",
+    "Im gespeicherten Microsoft-Zugang fehlen:": "Missing from the stored Microsoft grant:",
+    "Der Zugang ist gesperrt. Melde dich mit demselben Microsoft-Konto neu an. Erst nach erfolgreicher Anmeldung mit allen benötigten Rechten wird der gespeicherte Zugang ersetzt.": "The credential is quarantined. Sign in with the same Microsoft account. The stored credential is replaced only after sign-in succeeds with all required permissions.",
+    "Wiederherstellung starten": "Start recovery",
+    "Wähle dasselbe Microsoft-Konto wie bei dieser Verbindung.": "Choose the same Microsoft account used for this connection.",
+    "Der Microsoft-Zugang ist gesperrt. Stelle ihn wieder her, bevor du den Ordnerpfad prüfst.": "Microsoft access is quarantined. Recover it before checking the folder path.",
+    "Der Microsoft-Zugang ist gesperrt. Bestehende Kalenderfreigaben bleiben erhalten.": "Microsoft access is quarantined. Existing calendar grants are preserved.",
     "Microsoft Entra vor der Anmeldung einrichten": "Set up Microsoft Entra before signing in",
     "App-Registrierungen in Microsoft Entra öffnen": "Open app registrations in Microsoft Entra",
     "Wechsle zum richtigen Mandanten und öffne die App-Registrierung. Unter „Übersicht“ findest du Anwendungs-ID (Client-ID) und Verzeichnis-ID (Mandant). Verwende nicht die Objekt-ID.": "Switch to the correct tenant and open the app registration. On Overview, find the Application (client) ID and Directory (tenant) ID. Do not use the Object ID.",
@@ -354,6 +363,15 @@ const catalogs: Record<string, Record<string, string>> = {
     "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Status check interrupted. Check the connection; this page will retry."
   },
   "de": {
+    "Der Zugang ist gesperrt. Starte die Wiederherstellung unter „Konten“.": "Der Zugang ist gesperrt. Starte die Wiederherstellung unter „Konten“.",
+    "Zur Wiederherstellung": "Zur Wiederherstellung",
+    "Microsoft-Zugang wiederherstellen": "Microsoft-Zugang wiederherstellen",
+    "Im gespeicherten Microsoft-Zugang fehlen:": "Im gespeicherten Microsoft-Zugang fehlen:",
+    "Der Zugang ist gesperrt. Melde dich mit demselben Microsoft-Konto neu an. Erst nach erfolgreicher Anmeldung mit allen benötigten Rechten wird der gespeicherte Zugang ersetzt.": "Der Zugang ist gesperrt. Melde dich mit demselben Microsoft-Konto neu an. Erst nach erfolgreicher Anmeldung mit allen benötigten Rechten wird der gespeicherte Zugang ersetzt.",
+    "Wiederherstellung starten": "Wiederherstellung starten",
+    "Wähle dasselbe Microsoft-Konto wie bei dieser Verbindung.": "Wähle dasselbe Microsoft-Konto wie bei dieser Verbindung.",
+    "Der Microsoft-Zugang ist gesperrt. Stelle ihn wieder her, bevor du den Ordnerpfad prüfst.": "Der Microsoft-Zugang ist gesperrt. Stelle ihn wieder her, bevor du den Ordnerpfad prüfst.",
+    "Der Microsoft-Zugang ist gesperrt. Bestehende Kalenderfreigaben bleiben erhalten.": "Der Microsoft-Zugang ist gesperrt. Bestehende Kalenderfreigaben bleiben erhalten.",
     "Microsoft Entra vor der Anmeldung einrichten": "Microsoft Entra vor der Anmeldung einrichten",
     "App-Registrierungen in Microsoft Entra öffnen": "App-Registrierungen in Microsoft Entra öffnen",
     "Wechsle zum richtigen Mandanten und öffne die App-Registrierung. Unter „Übersicht“ findest du Anwendungs-ID (Client-ID) und Verzeichnis-ID (Mandant). Verwende nicht die Objekt-ID.": "Wechsle zum richtigen Mandanten und öffne die App-Registrierung. Unter „Übersicht“ findest du Anwendungs-ID (Client-ID) und Verzeichnis-ID (Mandant). Verwende nicht die Objekt-ID.",

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { microsoftErrorCodes } from "./device-error-codes.js";
-import { acquireVaultLock, createVaultCredential, decodeVaultKey, inspectVaultCredential, readVaultCredential, replaceVaultCredentialAfterReauthorization, vaultRecordBinding } from "./credential-vault.js";
+import { acquireVaultLock, createVaultCredential, decodeVaultKey, inspectVaultCredential, readVaultCredential, readVaultRecoveryBasis, replaceVaultCredentialAfterReauthorization, vaultRecordBinding } from "./credential-vault.js";
 import { requiredPolicyScopes } from "./credential-cli.js";
 import { selectScope } from "./credential.js";
 import { isMicrosoftDeviceVerificationUri } from "./device-verification.js";
@@ -12,7 +12,7 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 const SAFE_SESSION = /^[0-9a-fA-F-]{36}$/;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-type DeviceSession = { id: string; grantedScopes?: string[]; state: "pending" | "created" | "failed"; committing?: boolean; expiresAt: number; error?: string; microsoftErrorCodes?: number[]; interval: number; deviceCode: string; userCode: string; verificationUri: string; clientId: string; tenant: string; scopes: string[]; mode: "create" | "reauthorize"; expectedBinding?: string };
+type DeviceSession = { id: string; grantedScopes?: string[]; state: "pending" | "created" | "failed"; committing?: boolean; expiresAt: number; error?: string; microsoftErrorCodes?: number[]; interval: number; deviceCode: string; userCode: string; verificationUri: string; clientId: string; tenant: string; scopes: string[]; mode: "create" | "reauthorize" | "recover"; expectedBinding?: string; recoveryMarkerMac?: string };
 type StartResult = { sessionId: string; userCode: string; verificationUri: string; expiresAt: string; scopes: string[] };
 type StatusResult = { state: "pending" | "created" | "failed"; error?: string; microsoftErrorCodes?: number[]; scopes?: string[] };
 
@@ -51,7 +51,11 @@ export class DeviceCodeSignIn {
     return this.startMode(clientId, tenant, "reauthorize");
   }
 
-  private async startMode(clientId: string | undefined, tenant: string | undefined, mode: "create" | "reauthorize"): Promise<StartResult> {
+  async recover(): Promise<StartResult> {
+    return this.startMode(undefined, undefined, "recover");
+  }
+
+  private async startMode(clientId: string | undefined, tenant: string | undefined, mode: "create" | "reauthorize" | "recover"): Promise<StartResult> {
     if ((mode === "create" || clientId !== undefined || tenant !== undefined)
       && (typeof clientId !== "string" || typeof tenant !== "string" || !validClientId(clientId) || !validTenant(tenant))) throw new Error("invalid_rpc_parameters");
     if (this.starting) throw new Error("device_authorization_in_progress");
@@ -61,9 +65,10 @@ export class DeviceCodeSignIn {
       if (typeof key !== "string") throw new Error("credential_vault_unavailable");
       decodeVaultKey(key);
       const policy = validatePolicy(this.config.policy);
-      const scopes = checkedScopes(policy, mode === "create" && this.allowFolderSetup);
+      const scopes = checkedScopes(policy, mode !== "reauthorize" && this.allowFolderSetup);
       if (scopes.length < 2) throw new Error("invalid_policy");
       let expectedBinding: string | undefined;
+      let recoveryMarkerMac: string | undefined;
       if (mode === "create") {
         const inspected = await inspectVaultCredential(this.stateDir(), key);
         if (inspected.result === "quarantined") throw new Error("credential_vault_conflict_quarantined");
@@ -71,9 +76,11 @@ export class DeviceCodeSignIn {
         if (inspected.result !== "missing") throw new Error("credential_vault_conflict_exists");
       } else {
         const inspected = await inspectVaultCredential(this.stateDir(), key);
-        if (inspected.result === "quarantined") throw new Error("credential_vault_conflict_quarantined");
-        if (inspected.result !== "valid") throw new Error("credential_vault_unavailable");
-        const current = await readVaultCredential(this.stateDir(), key);
+        if (mode !== "recover" && inspected.result === "quarantined") throw new Error("credential_vault_conflict_quarantined");
+        if (inspected.result !== (mode === "recover" ? "quarantined" : "valid")) throw new Error("credential_vault_unavailable");
+        const recovery = mode === "recover" ? await readVaultRecoveryBasis(this.stateDir(), key) : undefined;
+        const current = recovery?.current ?? await readVaultCredential(this.stateDir(), key);
+        recoveryMarkerMac = recovery?.markerMac;
         // Reuse the authoritative vault identity, never browser storage.
         if (clientId === undefined && tenant === undefined) {
           clientId = current.credential.clientId; tenant = current.credential.tenant;
@@ -85,7 +92,7 @@ export class DeviceCodeSignIn {
       }
       if (typeof clientId !== "string" || typeof tenant !== "string" || !validClientId(clientId) || !validTenant(tenant)) throw new Error("invalid_rpc_parameters");
       if (this.session?.state === "pending" && this.session.expiresAt > Date.now()) {
-        if (this.session.clientId !== clientId || this.session.tenant !== tenant || this.session.mode !== mode || JSON.stringify(this.session.scopes) !== JSON.stringify(scopes)) throw new Error("device_authorization_in_progress");
+        if (this.session.clientId !== clientId || this.session.tenant !== tenant || this.session.mode !== mode || this.session.expectedBinding !== expectedBinding || this.session.recoveryMarkerMac !== recoveryMarkerMac || JSON.stringify(this.session.scopes) !== JSON.stringify(scopes)) throw new Error("device_authorization_in_progress");
         return { sessionId: this.session.id, userCode: this.session.userCode, verificationUri: this.session.verificationUri, expiresAt: new Date(this.session.expiresAt).toISOString(), scopes: this.session.scopes };
       }
       const result = await oauthPost(endpoint(tenant, "devicecode"), new URLSearchParams({ client_id: clientId, scope: scopes.join(" ") }), this.fetchFn);
@@ -100,7 +107,7 @@ export class DeviceCodeSignIn {
         || !Number.isSafeInteger(value.expires_in) || Number(value.expires_in) < 30 || Number(value.expires_in) > 3600
         || !Number.isSafeInteger(value.interval) || Number(value.interval) < 1 || Number(value.interval) > 60) throw new Error("device_authorization_invalid_response");
       const now = Date.now();
-      const session: DeviceSession = { id: randomUUID(), state: "pending", expiresAt: now + Math.min(Number(value.expires_in) * 1000, MAX_LIFETIME_MS), interval: Number(value.interval) * 1000, deviceCode: value.device_code, userCode: value.user_code, verificationUri: value.verification_uri, clientId, tenant, scopes, mode, expectedBinding };
+      const session: DeviceSession = { id: randomUUID(), state: "pending", expiresAt: now + Math.min(Number(value.expires_in) * 1000, MAX_LIFETIME_MS), interval: Number(value.interval) * 1000, deviceCode: value.device_code, userCode: value.user_code, verificationUri: value.verification_uri, clientId, tenant, scopes, mode, expectedBinding, recoveryMarkerMac };
       this.session = session;
       void this.poll(session, key).catch(() => { if (this.session === session && session.state === "pending") { session.state = "failed"; session.error = "device_authorization_failed"; session.deviceCode = ""; session.userCode = ""; } });
       return { sessionId: session.id, userCode: value.user_code, verificationUri: value.verification_uri, expiresAt: new Date(session.expiresAt).toISOString(), scopes };
@@ -155,10 +162,10 @@ export class DeviceCodeSignIn {
         const granted = [...new Set(value.scope.split(/\s+/).filter(Boolean))];
         const credential = { clientId: session.clientId, tenant: session.tenant, refreshToken: value.refresh_token, scopes: granted.some((scope) => scope.toLowerCase() === "offline_access") ? granted : [...granted, "offline_access"] };
         for (const scope of session.scopes.filter((scope) => scope !== "offline_access")) selectScope(credential, [scope]);
-        if (JSON.stringify(checkedScopes(validatePolicy(this.config.policy), session.mode === "create" && this.allowFolderSetup)) !== JSON.stringify(session.scopes)) throw new Error("credential_vault_conflict_policy_changed");
+        if (JSON.stringify(checkedScopes(validatePolicy(this.config.policy), session.mode !== "reauthorize" && this.allowFolderSetup)) !== JSON.stringify(session.scopes)) throw new Error("credential_vault_conflict_policy_changed");
         session.committing = true;
-        if (session.mode === "reauthorize") {
-          await replaceVaultCredentialAfterReauthorization(this.stateDir(), key, session.expectedBinding!, credential);
+        if (session.mode !== "create") {
+          await replaceVaultCredentialAfterReauthorization(this.stateDir(), key, session.expectedBinding!, credential, session.recoveryMarkerMac);
         } else {
           const lock = await acquireVaultLock(this.stateDir(), "device-code-sign-in");
           try {

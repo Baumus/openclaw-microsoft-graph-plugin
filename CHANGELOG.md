@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.28.6
+
+- Recover a quarantined Microsoft connection through fresh device sign-in, and link missing delegated permissions to Microsoft Entra guidance.
+
 ## 3.28.5
 
 - Guide Microsoft sign-in with linked Entra setup steps, connection-specific delegated permissions, and actionable AADSTS7000218 recovery.

@@ -311,6 +311,18 @@ describe("guided Microsoft sign-in", () => {
     expect(view.calls.some(call => call.method === "microsoft-graph.credentials.device-start")).toBe(false);
     view.dispose();
   });
+  it("links missing delegated rights and starts explicit recovery without browser IDs", async () => {
+    const view = mount({ clientId, tenant });
+    view.responses["microsoft-graph.credentials.status"] = { ok: true, value: { policyVersion: 2, credential: { result: "quarantined", missingScopes: ["Calendars.ReadWrite"] } } };
+    view.responses["microsoft-graph.credentials.reauthorize-start"] = view.responses["microsoft-graph.credentials.device-start"];
+    await view.settle();
+    if (view.container.querySelector(".mg-steps")) clickByText(view.container, "Konten");
+    expect(view.container.querySelector('a[href$="#calendarsreadwrite"]')?.textContent).toBe("Calendars.ReadWrite");
+    clickByText(view.container, "Wiederherstellung starten"); await view.settle();
+    expect(view.calls.find(call => call.method === "microsoft-graph.credentials.reauthorize-start")?.params).toEqual({ recover: true });
+    expect(view.container.textContent).toContain("Wähle dasselbe Microsoft-Konto wie bei dieser Verbindung.");
+    view.dispose();
+  });
   it("polls UI renewal to verified completion and handles cancellation without creating a new credential", async () => {
     vi.useFakeTimers();
     try {
