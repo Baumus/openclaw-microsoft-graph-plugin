@@ -304,18 +304,32 @@ async function replaceRecord(stateDir: string, current: VaultRecord, credential:
   catch { throw new Error("credential_vault_write_failed"); }
 }
 
+/** Snapshot the authenticated quarantine without clearing it or using the old token. */
+export async function readVaultRecoveryBasis(stateDir: string, keyValue: unknown) {
+  const lock = await acquireVaultLock(stateDir, "prepare-reauthorization-recovery");
+  try {
+    const current = await readVaultCredential(stateDir, keyValue);
+    const marker = await readMarker(stateDir, keyValue);
+    if (!marker) throw new Error("credential_vault_conflict_changed");
+    return { current, markerMac: marker.mac };
+  } finally { await lock.release().catch(() => undefined); }
+}
+
 /** Publish a newly consented credential only after OAuth scope validation. The
  * original record remains intact through sign-in and every pre-publication check. */
-export async function replaceVaultCredentialAfterReauthorization(stateDir: string, keyValue: unknown, expectedBinding: string, credential: VaultCredential): Promise<VaultRecord> {
+export async function replaceVaultCredentialAfterReauthorization(stateDir: string, keyValue: unknown, expectedBinding: string, credential: VaultCredential, recoveryMarkerMac?: string): Promise<VaultRecord> {
   const lock = await acquireVaultLock(stateDir, "reauthorize");
   try {
     const current = await readVaultCredential(stateDir, keyValue);
     if (vaultRecordBinding(current).binding !== expectedBinding) throw new Error("credential_vault_conflict_changed");
-    if (await readMarker(stateDir, keyValue)) throw new Error("credential_vault_conflict_quarantined");
+    const marker = await readMarker(stateDir, keyValue);
+    if (recoveryMarkerMac === undefined && marker) throw new Error("credential_vault_conflict_quarantined");
+    if (recoveryMarkerMac !== undefined && marker?.mac !== recoveryMarkerMac) throw new Error("credential_vault_conflict_changed");
     if (current.credential.clientId.toLowerCase() !== credential.clientId.toLowerCase()
       || current.credential.tenant.toLowerCase() !== credential.tenant.toLowerCase()) throw new Error("credential_vault_conflict_identity");
     if (!await lock.verifyStillHeld()) throw new Error("credential_vault_locked");
-    await publishInitialMarker(stateDir, current, keyValue, lock);
+    // Keep the original authenticated quarantine in place until a new record is durable.
+    if (!marker) await publishInitialMarker(stateDir, current, keyValue, lock);
     try {
       const published = await replaceRecord(stateDir, current, credential, keyValue, lock);
       await clearMarker(stateDir, keyValue, lock);
@@ -324,7 +338,7 @@ export async function replaceVaultCredentialAfterReauthorization(stateDir: strin
       // A verified unchanged record means the old credential can safely resume.
       // Ambiguous publication retains the authenticated marker and fails closed.
       const observed = await readVaultCredential(stateDir, keyValue).catch(() => undefined);
-      if (observed?.digest === current.digest && await lock.verifyStillHeld()) await clearMarker(stateDir, keyValue, lock);
+      if (!marker && observed?.digest === current.digest && await lock.verifyStillHeld()) await clearMarker(stateDir, keyValue, lock);
       throw error;
     }
   } finally { await lock.release().catch(() => undefined); }

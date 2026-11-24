@@ -265,6 +265,11 @@ function registerCredentialHandlers(api: GatewayApi, config: CliConfig, stateDir
   api.registerGatewayMethod(CREDENTIAL_GATEWAY_METHODS.deviceReauthorizeStart, gatewayHandler(async (input) => {
     // Existing explicit-ID callers remain supported; UI renewal needs no IDs.
     if (input && typeof input === "object" && !Array.isArray(input) && Object.keys(input).length === 0) return device.reauthorize();
+    if (input && typeof input === "object" && Object.hasOwn(input, "recover")) {
+      const params = exactParams(input, ["recover"]);
+      if (params.recover !== true) throw new Error("invalid_rpc_parameters");
+      return device.recover();
+    }
     const params = exactParams(input, ["clientId", "tenant"]);
     if (typeof params.clientId !== "string" || typeof params.tenant !== "string") throw new Error("invalid_rpc_parameters");
     return device.reauthorize(params.clientId, params.tenant);

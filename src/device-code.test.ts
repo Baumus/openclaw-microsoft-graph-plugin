@@ -256,4 +256,33 @@ describe("gateway-side device-code sign-in", () => {
     expect(await readFile(vaultQuarantinePath(state))).toEqual(marker);
   });
 
+  it.each(["success", "missing scope", "cancelled"])("recovers a quarantined credential only after fully consented sign-in (%s)", async (outcome) => {
+    const { state, key, config } = await setup();
+    await createVaultCredential(state, { clientId, tenant, refreshToken: "old-synthetic", scopes: ["Files.Read"] }, key);
+    await expect(refreshVaultCredential({ stateDir: state, key, exchange: async () => {
+      throw new Error("credential_refresh_outcome_uncertain");
+    } })).rejects.toThrow("credential_refresh_outcome_uncertain");
+    const before = await readFile(vaultCredentialPath(state));
+    const marker = await readFile(vaultQuarantinePath(state));
+    const fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response(deviceResponse))
+      .mockResolvedValueOnce(response({ refresh_token: "new-synthetic", scope: outcome === "missing scope" ? "User.Read" : requiredPolicyScopes(config.policy).join(" ") }));
+    let resume!: () => void;
+    const signIn = new DeviceCodeSignIn(config, () => state, fetchFn, () => new Promise<void>(resolve => { resume = resolve; }));
+    const started = await signIn.recover();
+    expect(await readFile(vaultQuarantinePath(state))).toEqual(marker);
+    if (outcome === "cancelled") signIn.cancel(started.sessionId);
+    resume();
+    const status = await terminal(signIn, started.sessionId);
+    if (outcome === "success") {
+      expect(status.state).toBe("created");
+      expect(await inspectVaultCredential(state, key)).toMatchObject({ result: "valid", generation: 2 });
+      expect((await readVaultCredential(state, key)).credential.refreshToken).toBe("new-synthetic");
+    } else {
+      expect(status).toMatchObject({ state: "failed", error: outcome === "cancelled" ? "device_authorization_cancelled" : "credential_scope_missing" });
+      expect(await readFile(vaultCredentialPath(state))).toEqual(before);
+      expect(await readFile(vaultQuarantinePath(state))).toEqual(marker);
+    }
+  });
+
 });

@@ -244,7 +244,7 @@ class ConfigurationPage {
     finally { if (timer) clearTimeout(timer); }
   }
   private async loadCalendars() {
-    if (!this.authorized || this.calendarCatalogState === "loading" || this.disposed) return;
+    if (!this.authorized || this.credential?.result === "quarantined" || this.calendarCatalogState === "loading" || this.disposed) return;
     const accountId = this.accountId;
     this.calendarCatalogState = "loading"; this.render();
     try {
@@ -597,9 +597,9 @@ class ConfigurationPage {
       if (panel) { panel.showPopover({ source: main.querySelector<HTMLElement>(`[aria-controls="${panel.id}"]`) ?? undefined }); this.positionInstructionsHelp(); }
       else this.instructionsHelpRoot = undefined;
     }
-    if (this.step === 1 && this.calendarCatalogState === "idle" && !this.calendarLoadScheduled) {
+    if (this.step === 1 && this.credential?.result !== "quarantined" && this.calendarCatalogState === "idle" && !this.calendarLoadScheduled) {
       this.calendarLoadScheduled = true;
-      queueMicrotask(() => { this.calendarLoadScheduled = false; if (this.step === 1 && this.calendarCatalogState === "idle" && !this.disposed) void this.loadCalendars(); });
+      queueMicrotask(() => { this.calendarLoadScheduled = false; if (this.step === 1 && this.credential?.result !== "quarantined" && this.calendarCatalogState === "idle" && !this.disposed) void this.loadCalendars(); });
     }
     if (focused) {
       const candidates = [...main.querySelectorAll<HTMLElement>("button, input, select, textarea, summary, [tabindex]")];
@@ -993,7 +993,7 @@ class ConfigurationPage {
     else if (!grants && !this.dirty) next = "Nächster Schritt: Einen Agentenzugriff auswählen und die Regeln speichern.";
     else if (this.dirty) next = "Nächster Schritt: Änderungen unter Prüfen speichern.";
     else if (this.applicationStatus !== "applied") next = "Nächster Schritt: Warten, bis das Gateway die gespeicherten Regeln angewendet hat.";
-    else if (this.credential?.result === "quarantined") next = "Der Zugang ist gesperrt. Stelle ihn über die Administrator-Wiederherstellung wieder her.";
+    else if (this.credential?.result === "quarantined") next = "Der Zugang ist gesperrt. Starte die Wiederherstellung unter „Konten“.";
     else if (this.credential?.result === "unavailable") next = "Der Zugangsstatus ist nicht verfügbar. Prüfe SecretRef und Gateway-Verbindung.";
     else if (this.credential?.result === "valid" && this.credential.missingScopes?.length) next = "Neue Microsoft-Berechtigungen fehlen. Folge unten der Reautorisierung; der bestehende Zugang bleibt bis zum erfolgreichen Abschluss erhalten.";
     else if (!connected) next = "Nächster Schritt: Unten mit Microsoft verbinden.";
@@ -1003,6 +1003,7 @@ class ConfigurationPage {
     else if (!grants && !this.dirty) append(card, this.action("Zugriff festlegen", () => { this.step = 1; this.render(); }, "primary"));
     else if (this.dirty) append(card, this.action("Zum Prüfen", () => { this.step = 3; this.render(); void this.validate(); }, "primary"));
     else if (grants && this.applicationStatus === "applied" && !connected && this.credential?.result === "missing") append(card, this.action("Mit Microsoft verbinden", () => { this.step = 5; this.render(); }, "primary"));
+    else if (this.credential?.result === "quarantined" && this.step !== 5) append(card, this.action("Zur Wiederherstellung", () => { this.step = 5; this.render(); }, "primary"));
     else if (this.credential?.result === "unavailable") append(card, this.action("Berechtigungen erneut prüfen", () => { void this.refreshCredential().then(() => this.render()); }, "secondary"));
     append(main, card);
   }
@@ -1057,15 +1058,16 @@ class ConfigurationPage {
     if (current()) this.render();
   }
   private async startAuth() {
-    if (!this.authorized || this.authBusy || this.authState === "pending" || !["missing", "valid"].includes(this.credential?.result ?? "") || !this.signInReady) return;
-    const renewal = this.credential?.result === "valid";
+    if (!this.authorized || this.authBusy || this.authState === "pending" || !["missing", "valid", "quarantined"].includes(this.credential?.result ?? "") || !this.signInReady) return;
+    const recovery = this.credential?.result === "quarantined";
+    const renewal = recovery || this.credential?.result === "valid";
     if (!renewal && (!validClientId(this.authClientId.trim()) || !validTenant(this.authTenant.trim()))) { this.authError = "Bitte eine gültige Microsoft App-ID und Tenant-ID oder -Domain eingeben."; this.render(); return; }
     const epoch = ++this.authEpoch;
     const current = () => this.authCurrent(epoch);
     this.authRenewal = renewal;
     this.authBusy = true; this.authError = ""; this.render();
     try {
-      const started = await this.credentialCall<DeviceStart>(renewal ? "microsoft-graph.credentials.reauthorize-start" : "microsoft-graph.credentials.device-start", renewal ? {} : { clientId: this.authClientId.trim(), tenant: this.authTenant.trim() });
+      const started = await this.credentialCall<DeviceStart>(renewal ? "microsoft-graph.credentials.reauthorize-start" : "microsoft-graph.credentials.device-start", renewal ? (recovery ? { recover: true } : {}) : { clientId: this.authClientId.trim(), tenant: this.authTenant.trim() });
       if (!current()) return;
       if (!isMicrosoftDeviceVerificationUri(started.verificationUri)) throw new Error("device_authorization_failed");
       if (!renewal && this.accountId === undefined) saveAppIds(this.authClientId.trim(), this.authTenant.trim());
@@ -1091,7 +1093,7 @@ class ConfigurationPage {
     } catch { if (current()) this.authError = this.signInError(""); }
     finally { if (current()) { this.authBusy = false; this.scheduleAuthCheck(); this.render(); } }
   }
-  private renderEntraSetup(card: HTMLElement) {
+  private renderEntraSetup(card: HTMLElement, missingScopes: string[] = []) {
     const section = el("details", "mg-admin-details");
     section.open = true;
     const steps = el("ol");
@@ -1108,7 +1110,7 @@ class ConfigurationPage {
     append(authentication, el("p", "", "Authentifizierung → Erweiterte Einstellungen → Öffentliche Clientflows zulassen → Ja → Speichern. Das ist für die Anmeldung per Gerätecode erforderlich. Du brauchst kein Client Secret."), link("Microsoft-Anleitung für öffentliche Clientflows", "https://learn.microsoft.com/en-us/troubleshoot/entra/entra-id/app-integration/confidential-client-application-authentication-error-aadsts7000218"));
     const permissions = el("li");
     append(permissions, el("p", "", "API-Berechtigungen → Berechtigung hinzufügen → Microsoft Graph → Delegierte Berechtigungen. Wähle nur die unten aufgeführten Berechtigungen und klicke auf „Berechtigungen hinzufügen“. Verwende keine Anwendungsberechtigungen."), link("Microsoft-Anleitung zum Hinzufügen von API-Berechtigungen", "https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-configure-app-access-web-apis#add-permissions-to-access-microsoft-graph"));
-    const scopes = this.dirty ? [] : this.folderSetup ? ["Files.Read"] : this.scopes;
+    const scopes = missingScopes.length ? missingScopes : this.dirty ? [] : this.folderSetup ? ["Files.Read"] : this.scopes;
     if (scopes.length) {
       const list = el("ul");
       for (const scope of scopes) {
@@ -1116,7 +1118,7 @@ class ConfigurationPage {
         append(item, link(scope, `https://learn.microsoft.com/en-us/graph/permissions-reference#${encodeURIComponent(scope.toLowerCase().replaceAll(".", ""))}`));
         append(list, item);
       }
-      append(permissions, el("p", "", "Für diese Verbindung benötigt:"), list, el("p", "mg-hint", "Für die automatische Sitzungserneuerung fordert OpenClaw zusätzlich offline_access an."));
+      append(permissions, el("p", "", missingScopes.length ? "Im gespeicherten Microsoft-Zugang fehlen:" : "Für diese Verbindung benötigt:"), list, el("p", "mg-hint", "Für die automatische Sitzungserneuerung fordert OpenClaw zusätzlich offline_access an."));
     } else {
       append(permissions, el("p", "mg-hint", "Die benötigten Graph-Berechtigungen sind hier nicht verfügbar. Prüfe zuerst die gespeicherten Zugriffsregeln."));
     }
@@ -1135,7 +1137,7 @@ class ConfigurationPage {
       append(card, el("p", "mg-hint", "Die vorhandene App und der vorhandene Mandant werden sicher wiederverwendet. Du musst keine Kennungen eingeben und keine neue App anlegen."));
       append(card, el("p", "mg-hint", "Melde dich auf der Microsoft-Seite mit demselben Konto an und prüfe die angeforderten Berechtigungen. Der bestehende Zugang bleibt bis zum erfolgreichen Abschluss erhalten. Teile Code und Zugangsdaten nicht im Chat."));
       append(card, el("p", "mg-hint", "Bei verweigertem Zugriff zuerst Regeln, Kontotyp und Einwilligung prüfen. Eine Anmeldung ersetzt keine erforderliche Administratorzustimmung."));
-      this.renderEntraSetup(card);
+      this.renderEntraSetup(card, missing);
       const start = this.action("Microsoft-Berechtigungen erneuern", () => { void this.startAuth(); }, "primary");
       start.disabled = this.authBusy || !this.signInReady; append(card, start);
       append(card, this.action("Berechtigungen erneut prüfen", () => { void this.refreshCredential().then(() => this.render()); }, "secondary"));
@@ -1145,12 +1147,13 @@ class ConfigurationPage {
     }
     const card = el("section", "mg-section mg-auth"); card.id = "microsoft-connect";
     const result = this.credential?.result;
-    if (result === "quarantined" || result === "unavailable" || !result) return;
+    if (result === "unavailable" || !result) return;
     if (this.accountId !== undefined && result === "missing" && this.authState !== "pending" && !this.signInReady) return;
     append(card, el("p", "mg-kicker", "MICROSOFT-KONTO VERBINDEN"));
     if (this.authState === "pending" && this.device) {
       append(card, el("h2", "", "Microsoft-Anmeldung abschließen"), el("p", "mg-hint", "Öffne die Microsoft-Seite, gib den Code ein und kehre hierher zurück."));
-      if (this.accountId !== undefined && !this.authRenewal) append(card, el("p", "mg-hint", "Wähle bei Microsoft ausdrücklich das Konto für diese Verbindung. Der Anzeigename in OpenClaw ist keine Microsoft-Kontobestätigung."));
+      if (this.authRenewal) append(card, el("p", "mg-hint", "Wähle dasselbe Microsoft-Konto wie bei dieser Verbindung."));
+      else if (this.accountId !== undefined) append(card, el("p", "mg-hint", "Wähle bei Microsoft ausdrücklich das Konto für diese Verbindung. Der Anzeigename in OpenClaw ist keine Microsoft-Kontobestätigung."));
       const link = el("a", "mg-button primary", "Microsoft-Anmeldeseite öffnen"); link.href = this.device.verificationUri; link.target = "_blank"; link.rel = "noopener noreferrer"; append(card, link);
       append(card, el("p", "mg-hint", "Öffnet einen neuen Tab. Diese Seite bleibt offen."));
       const code = el("p", "mg-auth-code", this.device.userCode); code.setAttribute("aria-label", localize("Microsoft-Anmeldecode"));
@@ -1179,13 +1182,21 @@ class ConfigurationPage {
         append(details, logLink);
       }
       append(card, details);
-      if (publicClientRejected) this.renderEntraSetup(card);
+      if (publicClientRejected || this.authFailureCode === "credential_scope_missing") this.renderEntraSetup(card, this.credential?.missingScopes);
       const copy = this.action("Fehlerangaben für Admin kopieren", () => {
         const info = ["Microsoft-Anmeldung: nicht abgeschlossen", `Zeitpunkt (UTC): ${this.authFailureAt || new Date().toISOString()}`, `Fehlercode: ${code}`, ...(microsoftDiagnostic ? [microsoftDiagnostic] : [])].join("\n");
         if (!navigator.clipboard?.writeText) { this.authError = "Kopieren nicht möglich. Teile Zeitpunkt und Fehlercode manuell."; this.render(); return; }
         void navigator.clipboard.writeText(info).catch(() => { this.authError = "Kopieren nicht möglich. Teile Zeitpunkt und Fehlercode manuell."; this.render(); });
       }); append(card, copy);
       append(card, this.action("Erneut anmelden", () => { this.authState = "idle"; this.authError = ""; void this.refreshCredential().then(() => this.render()); }, "ghost"));
+    } else if (result === "quarantined") {
+      append(card, el("h2", "", "Microsoft-Zugang wiederherstellen"),
+        el("p", "mg-warning", "Der Zugang ist gesperrt. Melde dich mit demselben Microsoft-Konto neu an. Erst nach erfolgreicher Anmeldung mit allen benötigten Rechten wird der gespeicherte Zugang ersetzt."));
+      this.renderEntraSetup(card, this.credential?.missingScopes);
+      const recover = this.action("Wiederherstellung starten", () => { void this.startAuth(); }, "primary");
+      recover.disabled = this.authBusy || !this.signInReady;
+      append(card, recover);
+      if (!this.signInReady) append(card, el("p", "mg-hint", "Speichere die Zugriffsregeln und warte, bis sie im Gateway angewendet sind."));
     } else {
       const stored = this.accountId === undefined ? savedAppIds() : undefined;
       if (stored && !this.editAppIds) {
@@ -1335,6 +1346,7 @@ class ConfigurationPage {
 
   private async addFolder() {
     if (this.locked) return;
+    if (this.credential?.result === "quarantined") { this.step = 5; this.render(); return; }
     let path = this.newFolderPath.trim().replace(/^"(.*)"$/, "$1").replaceAll("\\", "/");
     if (/^[a-z]:\//i.test(path)) {
       const parts = path.slice(3).split("/");
@@ -1376,7 +1388,10 @@ class ConfigurationPage {
     input.placeholder = "\\Projects\\Clients";
     const check = () => { this.newFolderPath = input.value.trim(); void this.addFolder(); };
     input.addEventListener("keydown", event => { if (event.key === "Enter" && !this.locked) { event.preventDefault(); check(); } });
-    append(add, this.action("Pfad prüfen", check));
+    if (this.credential?.result === "quarantined") {
+      append(add, el("p", "mg-warning", "Der Microsoft-Zugang ist gesperrt. Stelle ihn wieder her, bevor du den Ordnerpfad prüfst."));
+      append(add, this.action("Zur Wiederherstellung", () => { this.step = 5; this.render(); }));
+    } else append(add, this.action("Pfad prüfen", check));
     if (this.folderPreview) {
       const preview = el("div", "mg-folder-preview mg-status");
       append(preview, el("p", "", format("Im verbundenen OneDrive gefunden: {path}", { path: this.folderPreview.path })), this.action("Ordner übernehmen", () => this.acceptFolder(), "primary"));
@@ -1617,7 +1632,10 @@ class ConfigurationPage {
       : format("{count} Kalender freigegeben · Liste nicht vollständig prüfbar", { count: selected.length });
     append(card, el("p", "mg-calendar-summary", summary));
     if (this.calendarCatalogState === "loading") append(card, el("p", "mg-hint", "Verfügbare Kalender werden geladen …"));
-    if (this.calendarCatalogState === "error") {
+    if (this.credential?.result === "quarantined") {
+      append(card, el("p", "mg-warning", "Der Microsoft-Zugang ist gesperrt. Bestehende Kalenderfreigaben bleiben erhalten."));
+      append(card, this.action("Zur Wiederherstellung", () => { this.step = 5; this.render(); }));
+    } else if (this.calendarCatalogState === "error") {
       append(card, el("p", "mg-warning", "Kalenderliste nicht ladbar. Bestehende Freigaben bleiben erhalten; weitere Kalender können erst nach erneutem Laden ausgewählt werden."));
       append(card, this.action("Kalenderliste erneut laden", () => { void this.loadCalendars(); }));
     }
