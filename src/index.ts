@@ -16,6 +16,7 @@ import { registerCredentialCli, registerCredentialGatewayMethods } from "./crede
 import { registerConfigurationUiMethods } from "./config-ui-rpc.js";
 import { registerUpdateStatusMethod } from "./update-status.js";
 import { ContinuationStore, normalizedCriteria, type ContinuationBinding } from "./continuation.js";
+import { boundedCollectionOutput, modelTextBytes } from "./collection-output.js";
 import { authorizeOperation, authorizeRoot, GraphPolicySchema, normalizeRelativePath, validatePolicy, type AllowedRoot, type GraphPolicy, type OneDriveOperation } from "./policy.js";
 import { base64DecodedByteLengthStrict, base64JsonResponseLimit, canonicalGraphContinuation, validTransferContentType, decodeBase64Strict, DIRECT_ATTACHMENT_MAX_BYTES, driveCreateFolder, driveDelete, driveList, driveListContinuation, driveMetadataUpdate, drivePath, driveRead, driveReadInstructionsCandidate, driveSearchPath, driveSearchScoped, driveWriteSource, graphOperationSignal, graphRequest, normalizeDriveSearch, ONEDRIVE_READ_MAX_BYTES, ONEDRIVE_WRITE_MAX_BYTES, OUTLOOK_ATTACHMENT_MAX_BYTES, safeId, TODO_ATTACHMENT_MAX_BYTES, uploadAttachmentSession, validateDriveFolderInput, validateDriveMetadataInput, validateDriveWriteBytes, type DriveUploadSource } from "./graph.js";
 import { ONEDRIVE_AGENTS_MAX_FILE_BYTES, ONEDRIVE_AGENTS_MAX_PARALLEL, OneDriveAgentsSessionCache, oneDriveAgentsSessionCache } from "./onedrive-agents-instructions.js";
@@ -3225,7 +3226,38 @@ export function assertOwnedTodoList(value: unknown): void {
 }
 
 const TODO_TASK_FIELDS = ["id", "title", "body", "bodyLastModifiedDateTime", "status", "importance", "startDateTime", "dueDateTime", "reminderDateTime", "isReminderOn", "completedDateTime", "recurrence", "categories", "hasAttachments", "createdDateTime", "lastModifiedDateTime"];
+const TODO_TASK_SUMMARY_FIELDS = ["id", "title", "status", "importance", "dueDateTime"];
+const TODO_COLLECTION_OUTPUT_BYTES = 8192;
 const TODO_LIST_FIELDS = ["id", "displayName", "isOwner", "isShared", "wellknownListName"];
+
+function todoTaskSummaryPage(
+  config: RuntimeConfig,
+  action: string,
+  page: { items: Record<string, unknown>[]; truncated: boolean; scanned?: number; providerNextLink?: string },
+  paging?: { binding: ContinuationBinding; prefix: string },
+) {
+  const maximumBytes = Math.min(config.maxReadOutputBytes ?? TODO_COLLECTION_OUTPUT_BYTES, TODO_COLLECTION_OUTPUT_BYTES);
+  // Reserve the exact fixed-width opaque handle before issuing any retained state.
+  const reservedContinuation = `mgc1_${"x".repeat(43)}`;
+  const fitted = boundedCollectionOutput(page.items, maximumBytes, (items, hasRemaining) => {
+    const truncated = page.truncated || hasRemaining;
+    return {
+      ok: true, action, items, truncated, completeness: truncated ? "partial" : "complete",
+      view: "summary", detailAction: "get_task",
+      omittedFields: TODO_TASK_FIELDS.filter((field) => !TODO_TASK_SUMMARY_FIELDS.includes(field)),
+      ...(page.scanned === undefined ? {} : { scanned: page.scanned }),
+      outputLimited: hasRemaining,
+      ...(paging && (hasRemaining || page.providerNextLink) ? { continuation: reservedContinuation } : {}),
+    };
+  }, (value) => modelTextBytes(lifecycleResult("microsoft_todo_read", value)));
+  if (fitted.value.continuation && paging) {
+    fitted.value.continuation = continuationStore.issueState(paging.binding, paging.prefix, {
+      kind: "todo_task_summaries", pending: fitted.remaining,
+      ...(page.providerNextLink ? { providerNextLink: page.providerNextLink } : {}),
+    });
+  }
+  return fitted.value;
+}
 
 /** Complete, bounded default-list discovery. Never infer defaults from names or an arbitrary sole list. */
 async function resolveDefaultTodoList(config: RuntimeConfig, agentId: string | undefined, signal?: AbortSignal): Promise<string> {
@@ -3441,7 +3473,10 @@ async function todoRead(config: RuntimeConfig, agentId: string | undefined, p: a
           : p.taskId && p.listId && p.action === "list_attachments" ? todoTaskChildPath(p.listId, p.taskId, "attachments") : undefined;
   const todoCriteria = todoPrefix ? criteriaFor(p, { limit: max }) : undefined;
   const todoBinding = todoPrefix && todoCriteria ? continuationBinding(agentId, "todo", p.action, "me", todoCriteria) : undefined;
-  const continuedPath = p.continuation && todoPrefix && todoBinding ? continuationStore.resolve(p.continuation, todoBinding, todoPrefix) : undefined;
+  const verified = p.continuation && todoPrefix && todoBinding ? continuationStore.verify(p.continuation, todoBinding) : undefined;
+  const summaryState = verified && p.action === "list_tasks" && verified.providerNextLink === undefined
+    ? continuationStore.continuationState(verified, todoPrefix!) : undefined;
+  const continuedPath = verified && !summaryState ? continuationStore.providerPath(verified, todoPrefix!) : undefined;
   return withService(config, agentId, "todo", "read", "todo_read", signal, async (token, bounded) => {
     if (p.action === "list_lists" || p.action === "search_lists") {
       if (p.action === "search_lists" && !p.search) throw new Error("invalid_search");
@@ -3459,10 +3494,20 @@ async function todoRead(config: RuntimeConfig, agentId: string | undefined, p: a
     const taskPrefix = `/me/todo/lists/${listId}/tasks`;
     if (p.action === "list_tasks" || p.action === "search_tasks") {
       if (p.action === "search_tasks" && !todoHasTaskSearch(p)) throw new Error("invalid_search");
+      if (summaryState) {
+        if (summaryState.kind !== "todo_task_summaries" || !Array.isArray(summaryState.pending)) throw new Error("invalid_continuation");
+        const next = nextGraphPath(summaryState.providerNextLink, taskPrefix);
+        if (summaryState.pending.length) return todoTaskSummaryPage(config, p.action, {
+          items: summaryState.pending, truncated: next !== undefined, ...(next ? { providerNextLink: next } : {}),
+        }, { binding: todoBinding!, prefix: taskPrefix });
+        if (!next) throw new Error("invalid_continuation");
+        const data = await graphRequest(token, next, { signal: bounded });
+        return todoTaskSummaryPage(config, p.action, boundedCollectionPage(data, TODO_TASK_SUMMARY_FIELDS, max, taskPrefix), { binding: todoBinding!, prefix: taskPrefix });
+      }
       const initial = continuedPath ?? `${taskPrefix}?$top=${Math.min(max, MAX_RESULTS)}`;
-      if (p.action === "search_tasks") return { ok: true, action: p.action, ...(await todoSearchCollection(token, initial, taskPrefix, TODO_TASK_FIELDS, max, MAX_TODO_SCAN, (entry) => todoTaskMatches(entry, p), bounded)) };
+      if (p.action === "search_tasks") return todoTaskSummaryPage(config, p.action, await todoSearchCollection(token, initial, taskPrefix, TODO_TASK_SUMMARY_FIELDS, max, MAX_TODO_SCAN, (entry) => todoTaskMatches(entry, p), bounded));
       const data = await graphRequest(token, initial, { signal: bounded });
-      return { ok: true, action: p.action, ...publicPage(boundedCollectionPage(data, TODO_TASK_FIELDS, max, taskPrefix), todoBinding!, taskPrefix) };
+      return todoTaskSummaryPage(config, p.action, boundedCollectionPage(data, TODO_TASK_SUMMARY_FIELDS, max, taskPrefix), { binding: todoBinding!, prefix: taskPrefix });
     }
     if (!p.taskId) throw new Error("invalid_resource_id");
     const taskPath = todoTaskPath(p.listId, p.taskId);
