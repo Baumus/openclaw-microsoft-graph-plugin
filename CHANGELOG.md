@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.28.5
+
+- Guide Microsoft sign-in with linked Entra setup steps, connection-specific delegated permissions, and actionable AADSTS7000218 recovery.
+
 ## 3.28.4
 
 - Show validated numeric Microsoft error codes for rejected device-code token requests in Control UI diagnostics without exposing provider text or credentials.

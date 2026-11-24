@@ -1091,6 +1091,40 @@ class ConfigurationPage {
     } catch { if (current()) this.authError = this.signInError(""); }
     finally { if (current()) { this.authBusy = false; this.scheduleAuthCheck(); this.render(); } }
   }
+  private renderEntraSetup(card: HTMLElement) {
+    const section = el("details", "mg-admin-details");
+    section.open = true;
+    const steps = el("ol");
+    const link = (label: string, href: string) => {
+      const anchor = el("a", "", label);
+      anchor.href = href;
+      anchor.target = "_blank";
+      anchor.rel = "noopener noreferrer";
+      return anchor;
+    };
+    const registration = el("li");
+    append(registration, link("App-Registrierungen in Microsoft Entra öffnen", "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"), el("p", "mg-hint", "Wechsle zum richtigen Mandanten und öffne die App-Registrierung. Unter „Übersicht“ findest du Anwendungs-ID (Client-ID) und Verzeichnis-ID (Mandant). Verwende nicht die Objekt-ID."));
+    const authentication = el("li");
+    append(authentication, el("p", "", "Authentifizierung → Erweiterte Einstellungen → Öffentliche Clientflows zulassen → Ja → Speichern. Das ist für die Anmeldung per Gerätecode erforderlich. Du brauchst kein Client Secret."), link("Microsoft-Anleitung für öffentliche Clientflows", "https://learn.microsoft.com/en-us/troubleshoot/entra/entra-id/app-integration/confidential-client-application-authentication-error-aadsts7000218"));
+    const permissions = el("li");
+    append(permissions, el("p", "", "API-Berechtigungen → Berechtigung hinzufügen → Microsoft Graph → Delegierte Berechtigungen. Wähle nur die unten aufgeführten Berechtigungen und klicke auf „Berechtigungen hinzufügen“. Verwende keine Anwendungsberechtigungen."), link("Microsoft-Anleitung zum Hinzufügen von API-Berechtigungen", "https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-configure-app-access-web-apis#add-permissions-to-access-microsoft-graph"));
+    const scopes = this.dirty ? [] : this.folderSetup ? ["Files.Read"] : this.scopes;
+    if (scopes.length) {
+      const list = el("ul");
+      for (const scope of scopes) {
+        const item = el("li");
+        append(item, link(scope, `https://learn.microsoft.com/en-us/graph/permissions-reference#${encodeURIComponent(scope.toLowerCase().replaceAll(".", ""))}`));
+        append(list, item);
+      }
+      append(permissions, el("p", "", "Für diese Verbindung benötigt:"), list, el("p", "mg-hint", "Für die automatische Sitzungserneuerung fordert OpenClaw zusätzlich offline_access an."));
+    } else {
+      append(permissions, el("p", "mg-hint", "Die benötigten Graph-Berechtigungen sind hier nicht verfügbar. Prüfe zuerst die gespeicherten Zugriffsregeln."));
+    }
+    append(permissions, el("p", "mg-hint", "Wenn der Mandant Admin-Einwilligung verlangt, muss ein berechtigter Admin sie in „API-Berechtigungen“ erteilen. Starte danach die Microsoft-Anmeldung in OpenClaw."));
+    append(steps, registration, authentication, permissions);
+    append(section, el("summary", "", "Microsoft Entra vor der Anmeldung einrichten"), steps);
+    append(card, section);
+  }
   private renderSignIn(main: HTMLElement) {
     if (this.credential?.result === "valid" && this.authState !== "pending" && (this.authState !== "failed" || this.authFailureCode === "device_authorization_cancelled")) {
       const missing = this.credential.missingScopes ?? [];
@@ -1101,6 +1135,7 @@ class ConfigurationPage {
       append(card, el("p", "mg-hint", "Die vorhandene App und der vorhandene Mandant werden sicher wiederverwendet. Du musst keine Kennungen eingeben und keine neue App anlegen."));
       append(card, el("p", "mg-hint", "Melde dich auf der Microsoft-Seite mit demselben Konto an und prüfe die angeforderten Berechtigungen. Der bestehende Zugang bleibt bis zum erfolgreichen Abschluss erhalten. Teile Code und Zugangsdaten nicht im Chat."));
       append(card, el("p", "mg-hint", "Bei verweigertem Zugriff zuerst Regeln, Kontotyp und Einwilligung prüfen. Eine Anmeldung ersetzt keine erforderliche Administratorzustimmung."));
+      this.renderEntraSetup(card);
       const start = this.action("Microsoft-Berechtigungen erneuern", () => { void this.startAuth(); }, "primary");
       start.disabled = this.authBusy || !this.signInReady; append(card, start);
       append(card, this.action("Berechtigungen erneut prüfen", () => { void this.refreshCredential().then(() => this.render()); }, "secondary"));
@@ -1125,7 +1160,12 @@ class ConfigurationPage {
       const cancel = this.action("Anmeldung abbrechen", () => { void this.cancelAuth(); }, "ghost"); cancel.disabled = this.authBusy; append(card, cancel);
     } else if (this.authState === "failed" && this.authFailureCode !== "device_authorization_cancelled") {
       append(card, el("h2", "", "Anmeldung nicht abgeschlossen"), el("p", "mg-error", "Wir konnten die Anmeldung nicht als abgeschlossen erkennen."));
-      append(card, el("p", "", this.authError || "Wir kennen die Ursache noch nicht. Bitte deinen Admin um Hilfe."));
+      const publicClientRejected = this.authMicrosoftErrorCodes?.includes(7000218);
+      if (publicClientRejected) {
+        append(card, el("p", "", "Microsoft erwartet ein Client Secret, weil die App beim Gerätecode-Abruf nicht als öffentlicher Client erkannt wurde. Prüfe die registrierte App und aktiviere öffentliche Clientflows; starte danach eine neue Anmeldung."));
+      } else {
+        append(card, el("p", "", this.authError || "Wir kennen die Ursache noch nicht. Bitte deinen Admin um Hilfe."));
+      }
       append(card, el("p", "mg-hint", "Ein erneuter Versuch ohne Änderung hilft möglicherweise nicht."));
       append(card, el("p", "mg-hint", "Teile Zeitpunkt und technischen Fehlercode mit. Falls Microsoft einen weiteren Code zeigt, gib ihn zusätzlich an."));
       const details = el("details", "mg-admin-details"); append(details, el("summary", "", "Für den Admin"));
@@ -1139,6 +1179,7 @@ class ConfigurationPage {
         append(details, logLink);
       }
       append(card, details);
+      if (publicClientRejected) this.renderEntraSetup(card);
       const copy = this.action("Fehlerangaben für Admin kopieren", () => {
         const info = ["Microsoft-Anmeldung: nicht abgeschlossen", `Zeitpunkt (UTC): ${this.authFailureAt || new Date().toISOString()}`, `Fehlercode: ${code}`, ...(microsoftDiagnostic ? [microsoftDiagnostic] : [])].join("\n");
         if (!navigator.clipboard?.writeText) { this.authError = "Kopieren nicht möglich. Teile Zeitpunkt und Fehlercode manuell."; this.render(); return; }
@@ -1151,19 +1192,16 @@ class ConfigurationPage {
         append(card, el("h2", "", "Konto verbinden"), el("p", "mg-lead", "App-Kennungen sind in diesem Browser gespeichert. Anmeldung und Freigabe prüfen wir beim Verbinden."));
         append(card, el("p", "mg-status", "Microsoft-Konto · Anmeldung noch nicht geprüft"));
         append(card, el("p", "mg-hint", "Du musst nichts kopieren. Danach öffnest du den Microsoft-Link und gibst dort den angezeigten Code ein."));
+        this.renderEntraSetup(card);
         const start = this.action("Mit Microsoft verbinden", () => { void this.startAuth(); }, "primary"); start.disabled = this.authBusy || !this.signInReady; append(card, start);
         append(card, this.action("Andere App verwenden oder Einrichtung ändern", () => { this.editAppIds = true; this.render(); }, "ghost"));
       } else {
         append(card, el("h2", "", "Konto verbinden"), el("p", "mg-lead", "Bitte deinen Admin um Anwendungs-ID und Verzeichnis-ID. Ein Client Secret, Kennwort oder Einmalcode gehört nicht hierher."));
+        this.renderEntraSetup(card);
         const client = this.field(card, "Anwendungs-ID (Client-ID)", this.authClientId, value => { this.authClientId = value; }); client.placeholder = "00000000-0000-0000-0000-000000000000";
         const tenant = this.field(card, "Verzeichnis-ID (Mandant) oder Domain", this.authTenant, value => { this.authTenant = value; }); tenant.placeholder = "example.onmicrosoft.com";
         if (this.folderSetup) append(card, el("p", "mg-hint", "Für die OneDrive-Einrichtung wird bei Microsoft nur Lesezugriff angefragt. Agenten erhalten erst Zugriff, wenn du einen Ordner freigibst."));
         const start = this.action(this.folderSetup ? "OneDrive-Anmeldung starten" : "Anmeldung starten", () => { this.authClientId = client.value.trim(); this.authTenant = tenant.value.trim(); void this.startAuth(); }, "primary"); start.disabled = this.authBusy || !this.signInReady; append(card, start);
-        const admin = el("details", "mg-admin-details");
-        append(admin, el("summary", "", "Hinweis für Admins · App einrichten"));
-        append(admin, el("p", "mg-hint", "Microsoft Entra Admin Center → Entra ID → App-Registrierungen → vorhandene App → Übersicht. „Anwendungs-ID (Client-ID)“ ist die App-ID; „Verzeichnis-ID (Mandant)“ ist die Tenant-ID. Nicht die Objekt-ID verwenden. Bei mehreren Verzeichnissen zuerst zum richtigen Mandanten wechseln."));
-        append(admin, el("p", "mg-hint", "In der App öffentliche Clientanmeldung und benötigte delegierte Berechtigungen prüfen; falls nötig Admin-Einwilligung erteilen. Diese Schritte werden hier nicht automatisch geprüft."));
-        const entra = el("a", "mg-button secondary", "Einrichtung für Admin öffnen"); entra.href = "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"; entra.target = "_blank"; entra.rel = "noopener noreferrer"; append(admin, entra); append(card, admin);
       }
       if (!this.signInReady) append(card, el("p", "mg-warning", "Schließe zuerst die Einrichtung oben ab: Vault-Schlüssel, Agentenzugriff und angewendete Regeln."));
     }

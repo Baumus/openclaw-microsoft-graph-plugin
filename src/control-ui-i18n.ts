@@ -4,6 +4,18 @@ export const hostLocales = ["en", "ar", "de", "es", "fa", "fr", "hi", "id", "it"
 export type HostLocale = typeof hostLocales[number];
 const catalogs: Record<string, Record<string, string>> = {
   "en": {
+    "Microsoft Entra vor der Anmeldung einrichten": "Set up Microsoft Entra before signing in",
+    "App-Registrierungen in Microsoft Entra öffnen": "Open app registrations in Microsoft Entra",
+    "Wechsle zum richtigen Mandanten und öffne die App-Registrierung. Unter „Übersicht“ findest du Anwendungs-ID (Client-ID) und Verzeichnis-ID (Mandant). Verwende nicht die Objekt-ID.": "Switch to the correct tenant and open the app registration. On Overview, find the Application (client) ID and Directory (tenant) ID. Do not use the Object ID.",
+    "Authentifizierung → Erweiterte Einstellungen → Öffentliche Clientflows zulassen → Ja → Speichern. Das ist für die Anmeldung per Gerätecode erforderlich. Du brauchst kein Client Secret.": "Authentication → Advanced settings → Allow public client flows → Yes → Save. Device code sign-in requires this setting. You do not need a client secret.",
+    "Microsoft-Anleitung für öffentliche Clientflows": "Microsoft guide to enabling public client flows",
+    "API-Berechtigungen → Berechtigung hinzufügen → Microsoft Graph → Delegierte Berechtigungen. Wähle nur die unten aufgeführten Berechtigungen und klicke auf „Berechtigungen hinzufügen“. Verwende keine Anwendungsberechtigungen.": "API permissions → Add a permission → Microsoft Graph → Delegated permissions. Select only the permissions listed below, then select Add permissions. Do not use application permissions.",
+    "Microsoft-Anleitung zum Hinzufügen von API-Berechtigungen": "Microsoft guide to adding API permissions",
+    "Für diese Verbindung benötigt:": "Required for this connection:",
+    "Für die automatische Sitzungserneuerung fordert OpenClaw zusätzlich offline_access an.": "OpenClaw also requests offline_access to renew the session automatically.",
+    "Die benötigten Graph-Berechtigungen sind hier nicht verfügbar. Prüfe zuerst die gespeicherten Zugriffsregeln.": "The required Graph permissions are not available here. Check the saved access rules first.",
+    "Wenn der Mandant Admin-Einwilligung verlangt, muss ein berechtigter Admin sie in „API-Berechtigungen“ erteilen. Starte danach die Microsoft-Anmeldung in OpenClaw.": "If the tenant requires admin consent, an authorized admin must grant it under API permissions. Then start Microsoft sign-in in OpenClaw.",
+    "Microsoft erwartet ein Client Secret, weil die App beim Gerätecode-Abruf nicht als öffentlicher Client erkannt wurde. Prüfe die registrierte App und aktiviere öffentliche Clientflows; starte danach eine neue Anmeldung.": "Microsoft expects a client secret because it did not recognize the app as a public client during device code sign-in. Check the app registration and enable public client flows, then start a new sign-in.",
     "Anzeigename": "Display name",
     "Zum Beispiel Büro oder Privat. Dieser Name erscheint in der Kontenliste und im Kontowähler.": "For example, Work or Personal. This name appears in the account list and picker.",
     "Verbindung anlegen": "Create connection",
@@ -342,6 +354,18 @@ const catalogs: Record<string, Record<string, string>> = {
     "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.": "Status check interrupted. Check the connection; this page will retry."
   },
   "de": {
+    "Microsoft Entra vor der Anmeldung einrichten": "Microsoft Entra vor der Anmeldung einrichten",
+    "App-Registrierungen in Microsoft Entra öffnen": "App-Registrierungen in Microsoft Entra öffnen",
+    "Wechsle zum richtigen Mandanten und öffne die App-Registrierung. Unter „Übersicht“ findest du Anwendungs-ID (Client-ID) und Verzeichnis-ID (Mandant). Verwende nicht die Objekt-ID.": "Wechsle zum richtigen Mandanten und öffne die App-Registrierung. Unter „Übersicht“ findest du Anwendungs-ID (Client-ID) und Verzeichnis-ID (Mandant). Verwende nicht die Objekt-ID.",
+    "Authentifizierung → Erweiterte Einstellungen → Öffentliche Clientflows zulassen → Ja → Speichern. Das ist für die Anmeldung per Gerätecode erforderlich. Du brauchst kein Client Secret.": "Authentifizierung → Erweiterte Einstellungen → Öffentliche Clientflows zulassen → Ja → Speichern. Das ist für die Anmeldung per Gerätecode erforderlich. Du brauchst kein Client Secret.",
+    "Microsoft-Anleitung für öffentliche Clientflows": "Microsoft-Anleitung für öffentliche Clientflows",
+    "API-Berechtigungen → Berechtigung hinzufügen → Microsoft Graph → Delegierte Berechtigungen. Wähle nur die unten aufgeführten Berechtigungen und klicke auf „Berechtigungen hinzufügen“. Verwende keine Anwendungsberechtigungen.": "API-Berechtigungen → Berechtigung hinzufügen → Microsoft Graph → Delegierte Berechtigungen. Wähle nur die unten aufgeführten Berechtigungen und klicke auf „Berechtigungen hinzufügen“. Verwende keine Anwendungsberechtigungen.",
+    "Microsoft-Anleitung zum Hinzufügen von API-Berechtigungen": "Microsoft-Anleitung zum Hinzufügen von API-Berechtigungen",
+    "Für diese Verbindung benötigt:": "Für diese Verbindung benötigt:",
+    "Für die automatische Sitzungserneuerung fordert OpenClaw zusätzlich offline_access an.": "Für die automatische Sitzungserneuerung fordert OpenClaw zusätzlich offline_access an.",
+    "Die benötigten Graph-Berechtigungen sind hier nicht verfügbar. Prüfe zuerst die gespeicherten Zugriffsregeln.": "Die benötigten Graph-Berechtigungen sind hier nicht verfügbar. Prüfe zuerst die gespeicherten Zugriffsregeln.",
+    "Wenn der Mandant Admin-Einwilligung verlangt, muss ein berechtigter Admin sie in „API-Berechtigungen“ erteilen. Starte danach die Microsoft-Anmeldung in OpenClaw.": "Wenn der Mandant Admin-Einwilligung verlangt, muss ein berechtigter Admin sie in „API-Berechtigungen“ erteilen. Starte danach die Microsoft-Anmeldung in OpenClaw.",
+    "Microsoft erwartet ein Client Secret, weil die App beim Gerätecode-Abruf nicht als öffentlicher Client erkannt wurde. Prüfe die registrierte App und aktiviere öffentliche Clientflows; starte danach eine neue Anmeldung.": "Microsoft erwartet ein Client Secret, weil die App beim Gerätecode-Abruf nicht als öffentlicher Client erkannt wurde. Prüfe die registrierte App und aktiviere öffentliche Clientflows; starte danach eine neue Anmeldung.",
     "Anzeigename": "Anzeigename",
     "Zum Beispiel Büro oder Privat. Dieser Name erscheint in der Kontenliste und im Kontowähler.": "Zum Beispiel Büro oder Privat. Dieser Name erscheint in der Kontenliste und im Kontowähler.",
     "Verbindung anlegen": "Verbindung anlegen",

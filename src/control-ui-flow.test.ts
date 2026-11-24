@@ -255,6 +255,7 @@ describe("guided Microsoft sign-in", () => {
     ["device_authorization_transport_failed", "Verbindung zum Microsoft-Anmeldedienst", "device_authorization_transport_failed", false],
     ["device_authorization_invalid_response", "war nicht auswertbar", "device_authorization_invalid_response", false],
     ["device_authorization_token_rejected", "Microsoft hat den Token-Abruf abgelehnt", "device_authorization_token_rejected", true, [53003, 70000], "AADSTS53003, AADSTS70000"],
+    ["device_authorization_token_rejected", "aktiviere öffentliche Clientflows", "device_authorization_token_rejected", true, [7000218], "AADSTS7000218"],
     ["device_authorization_token_rejected", "Microsoft hat den Token-Abruf abgelehnt", "device_authorization_token_rejected", true, [53003, "synthetic-private-raw-error"]],
     ["device_authorization_invalid_token_fields", "fehlen gültige Felder", "device_authorization_invalid_token_fields", false],
     ["credential_vault_write_failed", "lokalen verschlüsselten Speicher", "credential_vault_write_failed", false],
@@ -305,7 +306,7 @@ describe("guided Microsoft sign-in", () => {
     expect(view.container.querySelector<HTMLDetailsElement>(".mg-auth details")!.open).toBe(true);
     expect(view.container.textContent).toContain("Anwendungs-ID (Client-ID)");
     expect(view.container.textContent).toContain("Verzeichnis-ID (Mandant)");
-    expect(view.container.textContent).toContain("Nicht die Objekt-ID");
+    expect(view.container.textContent).toContain("Verwende nicht die Objekt-ID");
     clickByText(view.container, "Anmeldung starten"); await view.settle();
     expect(view.calls.some(call => call.method === "microsoft-graph.credentials.device-start")).toBe(false);
     view.dispose();
@@ -350,7 +351,11 @@ describe("guided Microsoft sign-in", () => {
   it("keeps admin setup separate and saves only valid identifiers after a successful start", async () => {
     const view = mount(); await view.settle(); if (view.container.querySelector(".mg-steps")) clickByText(view.container, "Konten");
     expect(view.container.textContent).toContain("Bitte deinen Admin um Anwendungs-ID und Verzeichnis-ID");
-    expect(view.container.querySelector("details")?.textContent).toContain("Einrichtung für Admin öffnen");
+    const setup = view.container.querySelector<HTMLDetailsElement>(".mg-auth details");
+    expect(setup?.open).toBe(true);
+    expect(setup?.textContent).toContain("Öffentliche Clientflows zulassen → Ja → Speichern");
+    expect(setup?.textContent).toContain("Microsoft Graph → Delegierte Berechtigungen");
+    expect(setup?.querySelector('a[href$="#mailread"]')?.textContent).toBe("Mail.Read");
     const fields = [...view.container.querySelectorAll(".mg-auth input")];
     (fields[0] as HTMLInputElement).value = clientId; (fields[1] as HTMLInputElement).value = tenant;
     clickByText(view.container, "Anmeldung starten"); await view.settle();
