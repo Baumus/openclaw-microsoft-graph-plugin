@@ -149,6 +149,15 @@ describe("single credential operator surfaces", () => {
       status.mockReturnValueOnce({ state: "failed", error });
       expect(await invoke(CREDENTIAL_GATEWAY_METHODS.deviceStatus, params)).toEqual([true, { ok: true, value: { state: "failed", error } }]);
     }
+    const rejected = { state: "failed", error: "device_authorization_token_rejected", microsoftErrorCodes: [53003] } as const;
+    status.mockReturnValueOnce({ ...rejected, microsoftErrorCodes: [53003] });
+    expect(await invoke(CREDENTIAL_GATEWAY_METHODS.deviceStatus, params)).toEqual([true, { ok: true, value: rejected }]);
+    for (const codes of [[], [0], [-1], [1.5], [2147483648], ["53003"], Array(9).fill(53003)]) {
+      status.mockReturnValueOnce({ ...rejected, microsoftErrorCodes: codes as number[] });
+      expect(await invoke(CREDENTIAL_GATEWAY_METHODS.deviceStatus, params)).toEqual([true, { ok: false, error: "internal_error" }]);
+    }
+    status.mockReturnValueOnce({ state: "failed", error: "device_authorization_declined", microsoftErrorCodes: [53003] });
+    expect(await invoke(CREDENTIAL_GATEWAY_METHODS.deviceStatus, params)).toEqual([true, { ok: false, error: "internal_error" }]);
     status.mockReturnValueOnce({ state: "failed", error: "synthetic-private-raw-response" });
     expect(await invoke(CREDENTIAL_GATEWAY_METHODS.deviceStatus, params)).toEqual([true, { ok: false, error: "internal_error" }]);
   });

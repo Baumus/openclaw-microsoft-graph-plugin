@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { microsoftErrorCodes } from "./device-error-codes.js";
 import { acquireVaultLock, createVaultCredential, decodeVaultKey, inspectVaultCredential, readVaultCredential, replaceVaultCredentialAfterReauthorization, vaultRecordBinding } from "./credential-vault.js";
 import { requiredPolicyScopes } from "./credential-cli.js";
 import { selectScope } from "./credential.js";
@@ -11,9 +12,9 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 const SAFE_SESSION = /^[0-9a-fA-F-]{36}$/;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-type DeviceSession = { id: string; grantedScopes?: string[]; state: "pending" | "created" | "failed"; committing?: boolean; expiresAt: number; error?: string; interval: number; deviceCode: string; userCode: string; verificationUri: string; clientId: string; tenant: string; scopes: string[]; mode: "create" | "reauthorize"; expectedBinding?: string };
+type DeviceSession = { id: string; grantedScopes?: string[]; state: "pending" | "created" | "failed"; committing?: boolean; expiresAt: number; error?: string; microsoftErrorCodes?: number[]; interval: number; deviceCode: string; userCode: string; verificationUri: string; clientId: string; tenant: string; scopes: string[]; mode: "create" | "reauthorize"; expectedBinding?: string };
 type StartResult = { sessionId: string; userCode: string; verificationUri: string; expiresAt: string; scopes: string[] };
-type StatusResult = { state: "pending" | "created" | "failed"; error?: string; scopes?: string[] };
+type StatusResult = { state: "pending" | "created" | "failed"; error?: string; microsoftErrorCodes?: number[]; scopes?: string[] };
 
 async function oauthPost(url: string, body: URLSearchParams, fetchFn: typeof fetch, timeoutMs = 10_000): Promise<{ status: number; value: Record<string, unknown> }> {
   let response: Response;
@@ -116,7 +117,7 @@ export class DeviceCodeSignIn {
   status(sessionId: string): StatusResult {
     if (!SAFE_SESSION.test(sessionId) || !this.session || this.session.id !== sessionId) throw new Error("device_session_unavailable");
     if (this.session.state === "pending" && Date.now() >= this.session.expiresAt) { this.session.state = "failed"; this.session.error = "device_authorization_expired"; this.session.deviceCode = ""; this.session.userCode = ""; }
-    return { state: this.session.state, ...(this.session.error ? { error: this.session.error } : {}), ...(this.session.grantedScopes ? { scopes: this.session.grantedScopes } : {}) };
+    return { state: this.session.state, ...(this.session.error ? { error: this.session.error } : {}), ...(this.session.microsoftErrorCodes ? { microsoftErrorCodes: [...this.session.microsoftErrorCodes] } : {}), ...(this.session.grantedScopes ? { scopes: this.session.grantedScopes } : {}) };
   }
 
   private async poll(session: DeviceSession, key: string): Promise<void> {
@@ -141,6 +142,7 @@ export class DeviceCodeSignIn {
         session.state = "failed";
         session.error = value.error === "authorization_declined" ? "device_authorization_declined"
           : typeof value.error === "string" && value.error ? "device_authorization_token_rejected" : "device_authorization_invalid_response";
+        if (session.error === "device_authorization_token_rejected") session.microsoftErrorCodes = microsoftErrorCodes(value.error_codes);
         break;
       }
       if (typeof value.refresh_token !== "string" || !value.refresh_token.trim() || value.refresh_token.length > 32 * 1024

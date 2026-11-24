@@ -1,3 +1,4 @@
+import { microsoftErrorCodes } from "./device-error-codes.js";
 import { defineControlUiPlugin, type ControlUiHost } from "openclaw/plugin-sdk/control-ui";
 import type { ActivationIntent } from "./config-activation.js";
 import styles from "./control-ui.css" with { type: "text" };
@@ -15,7 +16,7 @@ type CredentialStatus = { policyVersion: 2; credential: { result: "missing" | "v
 type DeviceStart = { sessionId: string; userCode: string; verificationUri: string; expiresAt: string; scopes: string[] };
 type UpdateStatus = { updateAvailable: boolean; latestVersion?: string };
 type CalendarCatalog = { defaultCalendarId: string; calendars: Array<{ id: string; name: string }> };
-type DeviceStatus = { state: "pending" | "created" | "failed"; error?: string; scopes?: string[] };
+type DeviceStatus = { state: "pending" | "created" | "failed"; error?: string; microsoftErrorCodes?: unknown; scopes?: string[] };
 type CredentialReply<T> = { ok: true; value: T } | { ok: false; error: string };
 type ConfigSnapshot = { hash: string; config: { tools?: { deny?: string[] }; agents?: { entries?: Record<string, { tools?: { allow?: string[]; alsoAllow?: string[]; deny?: string[] } }> }; plugins?: { entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; parsed?: { plugins?: { $include?: unknown; entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> } }; configRevisionHash?: string; appliedConfigHash?: string };
 type SavePhase = "idle" | "validating" | "saving" | "applying" | "pending" | "unknown" | "failed" | "conflict" | "applied";
@@ -185,6 +186,7 @@ class ConfigurationPage {
     this.device = undefined;
     this.authState = "idle";
     this.authError = this.authFailureCode = this.authFailureAt = "";
+    this.authMicrosoftErrorCodes = undefined;
     this.authClientId = this.authTenant = "";
     this.editAppIds = false;
     this.calendarCatalog = undefined;
@@ -274,6 +276,7 @@ class ConfigurationPage {
   private editAppIds = false;
   private authFailureCode = "";
   private authFailureAt = "";
+  private authMicrosoftErrorCodes?: number[];
   private device?: DeviceStart;
   private authState: "idle" | "pending" | "created" | "failed" = "idle";
   private authError = "";
@@ -1019,6 +1022,13 @@ class ConfigurationPage {
   private signInError(code: string): string {
     return Object.hasOwn(SIGN_IN_ERRORS, code) ? SIGN_IN_ERRORS[code] : SIGN_IN_ERRORS.device_authorization_failed;
   }
+  private setAuthFailure(code: string, codes?: unknown) {
+    this.authState = "failed";
+    this.authFailureCode = code;
+    this.authFailureAt = new Date().toISOString();
+    this.authError = this.signInError(code);
+    this.authMicrosoftErrorCodes = code === "device_authorization_token_rejected" ? microsoftErrorCodes(codes) : undefined;
+  }
   private authCurrent(epoch: number, sessionId?: string): boolean {
     return !this.disposed && !this.signal.aborted && this.authorized && epoch === this.authEpoch
       && (sessionId === undefined || this.device?.sessionId === sessionId);
@@ -1036,13 +1046,13 @@ class ConfigurationPage {
       if (!current() || this.authState !== "pending") return;
       this.authError = "";
       if (result.state === "created") { this.authState = "created"; this.authError = ""; await this.refreshCredential(current); }
-      else if (result.state === "failed") { this.authState = "failed"; this.authFailureCode = result.error ?? ""; this.authFailureAt = new Date().toISOString(); this.authError = this.signInError(this.authFailureCode); }
-      else if (Date.now() >= Date.parse(device.expiresAt)) { this.authState = "failed"; this.authFailureCode = "device_authorization_expired"; this.authFailureAt = new Date().toISOString(); this.authError = this.signInError(this.authFailureCode); }
+      else if (result.state === "failed") { this.setAuthFailure(result.error ?? "", result.microsoftErrorCodes); }
+      else if (Date.now() >= Date.parse(device.expiresAt)) { this.setAuthFailure("device_authorization_expired"); }
       else this.scheduleAuthCheck();
     } catch {
       if (!current() || this.authState !== "pending") return;
       this.authError = "Statusprüfung unterbrochen. Verbindung prüfen; diese Seite versucht es erneut.";
-      if (Date.now() >= Date.parse(device.expiresAt)) { this.authState = "failed"; this.authFailureCode = "device_authorization_expired"; this.authFailureAt = new Date().toISOString(); this.authError = this.signInError(this.authFailureCode); } else this.scheduleAuthCheck();
+      if (Date.now() >= Date.parse(device.expiresAt)) { this.setAuthFailure("device_authorization_expired"); } else this.scheduleAuthCheck();
     }
     if (current()) this.render();
   }
@@ -1062,7 +1072,7 @@ class ConfigurationPage {
       this.device = started; this.authState = "pending"; this.authFailureCode = ""; this.scheduleAuthCheck();
     } catch (error) {
       if (!current()) return;
-      this.authState = "failed"; this.authFailureCode = error instanceof Error ? error.message : ""; this.authFailureAt = new Date().toISOString(); this.authError = this.signInError(this.authFailureCode);
+      this.setAuthFailure(error instanceof Error ? error.message : "");
     } finally { if (current()) { this.authBusy = false; this.scheduleAuthCheck(); this.render(); } }
   }
   private async cancelAuth() {
@@ -1077,7 +1087,7 @@ class ConfigurationPage {
       const result = await this.credentialCall<DeviceStatus>("microsoft-graph.credentials.device-cancel", { sessionId: device.sessionId });
       if (!current()) return;
       if (result.state === "created") { this.authState = "created"; this.authError = ""; await this.refreshCredential(current); }
-      else { this.authState = "failed"; this.authFailureCode = result.error ?? "device_authorization_cancelled"; this.authFailureAt = new Date().toISOString(); this.authError = this.signInError(this.authFailureCode); }
+      else { this.setAuthFailure(result.error ?? "device_authorization_cancelled", result.state === "failed" ? result.microsoftErrorCodes : undefined); }
     } catch { if (current()) this.authError = this.signInError(""); }
     finally { if (current()) { this.authBusy = false; this.scheduleAuthCheck(); this.render(); } }
   }
@@ -1121,13 +1131,16 @@ class ConfigurationPage {
       const details = el("details", "mg-admin-details"); append(details, el("summary", "", "Für den Admin"));
       const code = Object.hasOwn(SIGN_IN_ERRORS, this.authFailureCode) ? this.authFailureCode : "nicht verfügbar";
       append(details, el("p", "", `Fehlercode: ${code}`));
+      const microsoftDiagnostic = code === "device_authorization_token_rejected" && this.authMicrosoftErrorCodes
+        ? `Microsoft-Fehlercodes: ${this.authMicrosoftErrorCodes.map((value) => `AADSTS${value}`).join(", ")}` : undefined;
+      if (microsoftDiagnostic) append(details, el("p", "", microsoftDiagnostic));
       if (["device_authorization_start_rejected", "device_authorization_token_rejected", "device_authorization_declined"].includes(code)) {
         const logLink = el("a", "", "Anmeldeprotokolle öffnen"); logLink.href = "https://entra.microsoft.com/"; logLink.target = "_blank"; logLink.rel = "noopener noreferrer";
         append(details, logLink);
       }
       append(card, details);
       const copy = this.action("Fehlerangaben für Admin kopieren", () => {
-        const info = ["Microsoft-Anmeldung: nicht abgeschlossen", `Zeitpunkt (UTC): ${this.authFailureAt || new Date().toISOString()}`, `Fehlercode: ${code}`].join("\n");
+        const info = ["Microsoft-Anmeldung: nicht abgeschlossen", `Zeitpunkt (UTC): ${this.authFailureAt || new Date().toISOString()}`, `Fehlercode: ${code}`, ...(microsoftDiagnostic ? [microsoftDiagnostic] : [])].join("\n");
         if (!navigator.clipboard?.writeText) { this.authError = "Kopieren nicht möglich. Teile Zeitpunkt und Fehlercode manuell."; this.render(); return; }
         void navigator.clipboard.writeText(info).catch(() => { this.authError = "Kopieren nicht möglich. Teile Zeitpunkt und Fehlercode manuell."; this.render(); });
       }); append(card, copy);
