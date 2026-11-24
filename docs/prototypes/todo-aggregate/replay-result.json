@@ -1,0 +1,583 @@
+[
+  {
+    "variant": "#113",
+    "initialTokens": 2500,
+    "attempts": [
+      {
+        "phase": "initial",
+        "estimatedTokens": 2500,
+        "toolTokens": 0,
+        "admitted": true
+      },
+      {
+        "phase": "fanout",
+        "estimatedTokens": 2558,
+        "toolTokens": 58,
+        "admitted": true
+      },
+      {
+        "phase": "answer",
+        "estimatedTokens": 10719,
+        "toolTokens": 8219,
+        "admitted": true
+      }
+    ],
+    "modelCalls": 3,
+    "actualProviderModelCalls": 0,
+    "graphMockCalls": 5,
+    "peakReads": 4,
+    "runtimeMs": 36.4,
+    "userAnswer": "Teilabdeckung: 0/10 Listen vollständig. L1–L4: nur erste, bytebegrenzte Seite; darin keine offenen Aufgaben sichtbar. L5–L10: nicht gelesen (Parallelitätsgrenze). Keine belastbare Gesamtrangfolge.",
+    "dataComplete": false,
+    "ids": [],
+    "coverage": [
+      {
+        "listId": "L1",
+        "state": "output_limited"
+      },
+      {
+        "listId": "L2",
+        "state": "output_limited"
+      },
+      {
+        "listId": "L3",
+        "state": "output_limited"
+      },
+      {
+        "listId": "L4",
+        "state": "output_limited"
+      },
+      {
+        "listId": "L5",
+        "state": "request_concurrency_exceeded"
+      },
+      {
+        "listId": "L6",
+        "state": "request_concurrency_exceeded"
+      },
+      {
+        "listId": "L7",
+        "state": "request_concurrency_exceeded"
+      },
+      {
+        "listId": "L8",
+        "state": "request_concurrency_exceeded"
+      },
+      {
+        "listId": "L9",
+        "state": "request_concurrency_exceeded"
+      },
+      {
+        "listId": "L10",
+        "state": "request_concurrency_exceeded"
+      }
+    ]
+  },
+  {
+    "variant": "aggregate",
+    "initialTokens": 2500,
+    "attempts": [
+      {
+        "phase": "initial",
+        "estimatedTokens": 2500,
+        "toolTokens": 0,
+        "admitted": true
+      },
+      {
+        "phase": "answer",
+        "estimatedTokens": 2901,
+        "toolTokens": 401,
+        "admitted": true
+      }
+    ],
+    "modelCalls": 2,
+    "actualProviderModelCalls": 0,
+    "graphMockCalls": 11,
+    "peakReads": 3,
+    "runtimeMs": 66.4,
+    "userAnswer": "Alle 10 Listen vollständig geprüft.\nSynthetisch L10-30 (L10, 2030-01-01)\nSynthetisch L9-30 (L9, 2030-01-02)\nSynthetisch L8-30 (L8, 2030-01-03)\nSynthetisch L7-30 (L7, 2030-01-04)\nSynthetisch L6-30 (L6, 2030-01-05)",
+    "dataComplete": true,
+    "ids": [
+      "L10-30",
+      "L9-30",
+      "L8-30",
+      "L7-30",
+      "L6-30"
+    ],
+    "coverage": [
+      {
+        "listId": "L1",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L2",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L3",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L4",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L5",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L6",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L7",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L8",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L9",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L10",
+        "state": "complete",
+        "scanned": 33
+      }
+    ]
+  },
+  {
+    "variant": "#113",
+    "initialTokens": 30000,
+    "attempts": [
+      {
+        "phase": "initial",
+        "estimatedTokens": 30000,
+        "toolTokens": 0,
+        "admitted": true
+      },
+      {
+        "phase": "fanout",
+        "estimatedTokens": 30058,
+        "toolTokens": 58,
+        "admitted": true
+      },
+      {
+        "phase": "answer",
+        "estimatedTokens": 38219,
+        "toolTokens": 8219,
+        "admitted": false
+      }
+    ],
+    "modelCalls": 2,
+    "actualProviderModelCalls": 0,
+    "graphMockCalls": 5,
+    "peakReads": 4,
+    "runtimeMs": 30.1,
+    "userAnswer": null,
+    "dataComplete": false,
+    "ids": []
+  },
+  {
+    "variant": "aggregate",
+    "initialTokens": 30000,
+    "attempts": [
+      {
+        "phase": "initial",
+        "estimatedTokens": 30000,
+        "toolTokens": 0,
+        "admitted": true
+      },
+      {
+        "phase": "answer",
+        "estimatedTokens": 30401,
+        "toolTokens": 401,
+        "admitted": true
+      }
+    ],
+    "modelCalls": 2,
+    "actualProviderModelCalls": 0,
+    "graphMockCalls": 11,
+    "peakReads": 3,
+    "runtimeMs": 68.4,
+    "userAnswer": "Alle 10 Listen vollständig geprüft.\nSynthetisch L10-30 (L10, 2030-01-01)\nSynthetisch L9-30 (L9, 2030-01-02)\nSynthetisch L8-30 (L8, 2030-01-03)\nSynthetisch L7-30 (L7, 2030-01-04)\nSynthetisch L6-30 (L6, 2030-01-05)",
+    "dataComplete": true,
+    "ids": [
+      "L10-30",
+      "L9-30",
+      "L8-30",
+      "L7-30",
+      "L6-30"
+    ],
+    "coverage": [
+      {
+        "listId": "L1",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L2",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L3",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L4",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L5",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L6",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L7",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L8",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L9",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L10",
+        "state": "complete",
+        "scanned": 33
+      }
+    ]
+  },
+  {
+    "variant": "#113",
+    "initialTokens": 32760,
+    "attempts": [
+      {
+        "phase": "initial",
+        "estimatedTokens": 32760,
+        "toolTokens": 0,
+        "admitted": true
+      },
+      {
+        "phase": "fanout",
+        "estimatedTokens": 32818,
+        "toolTokens": 58,
+        "admitted": false
+      }
+    ],
+    "modelCalls": 1,
+    "actualProviderModelCalls": 0,
+    "graphMockCalls": 1,
+    "peakReads": 0,
+    "runtimeMs": 12.5,
+    "userAnswer": null,
+    "dataComplete": false,
+    "ids": []
+  },
+  {
+    "variant": "aggregate",
+    "initialTokens": 32760,
+    "attempts": [
+      {
+        "phase": "initial",
+        "estimatedTokens": 32760,
+        "toolTokens": 0,
+        "admitted": true
+      },
+      {
+        "phase": "answer",
+        "estimatedTokens": 33161,
+        "toolTokens": 401,
+        "admitted": false
+      }
+    ],
+    "modelCalls": 1,
+    "actualProviderModelCalls": 0,
+    "graphMockCalls": 11,
+    "peakReads": 3,
+    "runtimeMs": 63.8,
+    "userAnswer": null,
+    "dataComplete": false,
+    "ids": []
+  },
+  {
+    "variant": "aggregate",
+    "initialTokens": 2500,
+    "fault": "scan",
+    "attempts": [
+      {
+        "phase": "initial",
+        "estimatedTokens": 2500,
+        "toolTokens": 0,
+        "admitted": true
+      },
+      {
+        "phase": "answer",
+        "estimatedTokens": 2916,
+        "toolTokens": 416,
+        "admitted": true
+      }
+    ],
+    "modelCalls": 2,
+    "actualProviderModelCalls": 0,
+    "graphMockCalls": 11,
+    "peakReads": 3,
+    "runtimeMs": 63.7,
+    "userAnswer": "Teilabdeckung: 0/10 Listen vollständig. Die Rangfolge gilt nur für die gelesenen Aufgaben.\nSynthetisch L10-30 (L10, 2030-01-01)\nSynthetisch L9-30 (L9, 2030-01-02)\nSynthetisch L8-30 (L8, 2030-01-03)\nSynthetisch L7-30 (L7, 2030-01-04)\nSynthetisch L6-30 (L6, 2030-01-05)\nL1: Scanlimit\nL2: Scanlimit\nL3: Scanlimit\nL4: Scanlimit\nL5: Scanlimit\nL6: Scanlimit\nL7: Scanlimit\nL8: Scanlimit\nL9: Scanlimit\nL10: Scanlimit",
+    "dataComplete": false,
+    "ids": [
+      "L10-30",
+      "L9-30",
+      "L8-30",
+      "L7-30",
+      "L6-30"
+    ],
+    "coverage": [
+      {
+        "listId": "L1",
+        "state": "scan_limit",
+        "scanned": 31
+      },
+      {
+        "listId": "L2",
+        "state": "scan_limit",
+        "scanned": 31
+      },
+      {
+        "listId": "L3",
+        "state": "scan_limit",
+        "scanned": 31
+      },
+      {
+        "listId": "L4",
+        "state": "scan_limit",
+        "scanned": 31
+      },
+      {
+        "listId": "L5",
+        "state": "scan_limit",
+        "scanned": 31
+      },
+      {
+        "listId": "L6",
+        "state": "scan_limit",
+        "scanned": 31
+      },
+      {
+        "listId": "L7",
+        "state": "scan_limit",
+        "scanned": 31
+      },
+      {
+        "listId": "L8",
+        "state": "scan_limit",
+        "scanned": 31
+      },
+      {
+        "listId": "L9",
+        "state": "scan_limit",
+        "scanned": 31
+      },
+      {
+        "listId": "L10",
+        "state": "scan_limit",
+        "scanned": 31
+      }
+    ]
+  },
+  {
+    "variant": "aggregate",
+    "initialTokens": 2500,
+    "fault": "error",
+    "attempts": [
+      {
+        "phase": "initial",
+        "estimatedTokens": 2500,
+        "toolTokens": 0,
+        "admitted": true
+      },
+      {
+        "phase": "answer",
+        "estimatedTokens": 2911,
+        "toolTokens": 411,
+        "admitted": true
+      }
+    ],
+    "modelCalls": 2,
+    "actualProviderModelCalls": 0,
+    "graphMockCalls": 11,
+    "peakReads": 3,
+    "runtimeMs": 63.1,
+    "userAnswer": "Teilabdeckung: 9/10 Listen vollständig. Die Rangfolge gilt nur für die gelesenen Aufgaben.\nSynthetisch L9-30 (L9, 2030-01-02)\nSynthetisch L8-30 (L8, 2030-01-03)\nSynthetisch L7-30 (L7, 2030-01-04)\nSynthetisch L6-30 (L6, 2030-01-05)\nSynthetisch L5-30 (L5, 2030-01-06)\nL10: Lesefehler",
+    "dataComplete": false,
+    "ids": [
+      "L9-30",
+      "L8-30",
+      "L7-30",
+      "L6-30",
+      "L5-30"
+    ],
+    "coverage": [
+      {
+        "listId": "L1",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L2",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L3",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L4",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L5",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L6",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L7",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L8",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L9",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L10",
+        "state": "read_error",
+        "scanned": 0
+      }
+    ]
+  },
+  {
+    "variant": "aggregate",
+    "initialTokens": 2500,
+    "fault": "deadline",
+    "attempts": [
+      {
+        "phase": "initial",
+        "estimatedTokens": 2500,
+        "toolTokens": 0,
+        "admitted": true
+      },
+      {
+        "phase": "answer",
+        "estimatedTokens": 2913,
+        "toolTokens": 413,
+        "admitted": true
+      }
+    ],
+    "modelCalls": 2,
+    "actualProviderModelCalls": 0,
+    "graphMockCalls": 8,
+    "peakReads": 3,
+    "runtimeMs": 40.3,
+    "userAnswer": "Teilabdeckung: 4/10 Listen vollständig. Die Rangfolge gilt nur für die gelesenen Aufgaben.\nSynthetisch L5-30 (L5, 2030-01-06)\nSynthetisch L4-30 (L4, 2030-01-07)\nSynthetisch L3-30 (L3, 2030-01-08)\nSynthetisch L2-30 (L2, 2030-01-09)\nSynthetisch L5-31 (L5, 2030-01-16)\nL1: Zeitlimit\nL6: Zeitlimit\nL7: Zeitlimit\nL8: nicht begonnen\nL9: nicht begonnen\nL10: nicht begonnen",
+    "dataComplete": false,
+    "ids": [
+      "L5-30",
+      "L4-30",
+      "L3-30",
+      "L2-30",
+      "L5-31"
+    ],
+    "coverage": [
+      {
+        "listId": "L1",
+        "state": "deadline",
+        "scanned": 0
+      },
+      {
+        "listId": "L2",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L3",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L4",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L5",
+        "state": "complete",
+        "scanned": 33
+      },
+      {
+        "listId": "L6",
+        "state": "deadline",
+        "scanned": 0
+      },
+      {
+        "listId": "L7",
+        "state": "deadline",
+        "scanned": 0
+      },
+      {
+        "listId": "L8",
+        "state": "not_started",
+        "scanned": 0
+      },
+      {
+        "listId": "L9",
+        "state": "not_started",
+        "scanned": 0
+      },
+      {
+        "listId": "L10",
+        "state": "not_started",
+        "scanned": 0
+      }
+    ]
+  }
+]

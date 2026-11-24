@@ -1,0 +1,4 @@
+{"count":5,"route":"fits","shouldCompact":false,"estimatedPromptTokens":965,"pressureSource":"transcript_estimate","promptBudgetBeforeReserve":30720,"overflowTokens":0,"toolResultReducibleChars":0,"effectiveReserveTokens":2048}
+{"count":240,"route":"fits","shouldCompact":false,"estimatedPromptTokens":30461,"pressureSource":"transcript_estimate","promptBudgetBeforeReserve":30720,"overflowTokens":0,"toolResultReducibleChars":0,"effectiveReserveTokens":2048}
+{"count":245,"route":"compact_only","shouldCompact":true,"estimatedPromptTokens":31091,"pressureSource":"transcript_estimate","promptBudgetBeforeReserve":30720,"overflowTokens":371,"toolResultReducibleChars":0,"effectiveReserveTokens":2048}
+{"count":275,"route":"compact_only","shouldCompact":true,"estimatedPromptTokens":34871,"pressureSource":"transcript_estimate","promptBudgetBeforeReserve":30720,"overflowTokens":4151,"toolResultReducibleChars":0,"effectiveReserveTokens":2048}
