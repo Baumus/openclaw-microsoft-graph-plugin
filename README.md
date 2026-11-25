@@ -480,3 +480,19 @@ IDs and the corresponding resources. Pass the same `accountId` on every tool
 call for that connection, including pagination, OneDrive instruction
 acknowledgements, and follow-up writes. Omission is not an automatic account
 selection: it always targets the legacy connection.
+
+
+### Cross-list Microsoft To Do overview
+
+Use `microsoft_todo_read` with `{"action":"aggregate_open_tasks","limit":5}`
+(and the existing account selector where applicable). It reads at most 20 visible
+lists, up to four pages and 100 tasks per list. It filters out completed tasks
+before ordering by earliest due instant, with undated tasks last. The read
+shares the existing request slots and has a five-second maximum deadline.
+
+`completeness: "partial"` means the ranking covers only usable rows actually
+read. Inspect `inventoryComplete` and the per-list `coverage`; unknown statuses
+and dates that cannot be safely converted (e.g. a non-UTC timezone without an
+offset) are reported as invalid rows. `outputLimited` and
+`coverageOutputLimited` mark omissions made to fit the response byte budget.
+Use `get_task` with the same account and the exact `listId` and `taskId` to get details.
