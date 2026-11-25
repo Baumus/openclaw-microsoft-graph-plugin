@@ -97,7 +97,7 @@ describe("trusted OneDrive workspace context across native module imports", { ti
         .toEqual({ block: true, blockReason: "workspace_context_unavailable" });
     }
     expect(await hooks.before_tool_call({ toolName: "onedrive_upload", toolCallId: "forged", params: { ...params, workspaceDir: "/etc" } }, hookContext))
-      .toEqual({ block: true, blockReason: "invalid_tool_parameters" });
+      .toEqual({ block: true, blockReason: expect.stringContaining("invalid_tool_parameters:") });
     hooks.session_end({}, hookContext);
   });
 
