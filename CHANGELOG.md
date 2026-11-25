@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Microsoft To Do compatibility change:** Once the task-summary change lands, `list_tasks` and `search_tasks` will return summaries (ID, title, status, importance, and due date when available), not full task records. Update integrations that read notes, categories, or other task details from these results to call `get_task` with the list and task IDs. Follow continuations for lists and narrow searches that report partial results.
+
 ## 3.28.6
 
 - Recover a quarantined Microsoft connection through fresh device sign-in, and link missing delegated permissions to Microsoft Entra guidance.
