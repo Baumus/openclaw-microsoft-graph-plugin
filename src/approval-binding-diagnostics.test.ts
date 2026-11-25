@@ -45,6 +45,7 @@ describe("approval binding diagnostics", () => {
       expect(approvalDiagnosticCategory(value)).toBe("unknown");
     }
     expect(approvalDiagnosticCategory("approval_context_invalid_or_changed")).toBe("approval_binding");
+    expect(approvalDiagnosticCategory("invalid_tool_parameters: private-token-value")).toBe("parameters");
   });
   it("does not let diagnostic logger failure change a hook denial", async () => {
     const logger = { info: () => { throw new Error("synthetic logger failure"); }, warn: vi.fn() };
