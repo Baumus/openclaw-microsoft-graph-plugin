@@ -114,7 +114,7 @@ describe("existing To Do write default selector", () => {
   ])("rejects $error before credentials or provider access", async ({ options, params, error }) => {
     const { hook, ctx, event } = runtime(options);
     const { fetchSpy } = provider([]);
-    expect(await hook(event(params as any), ctx)).toEqual({ block: true, blockReason: error });
+    expect(await hook(event(params as any), ctx)).toEqual({ block: true, blockReason: error === "invalid_tool_parameters" ? expect.stringContaining("invalid_tool_parameters:") : error });
     expect(mocks.tokenForAuthorizedOperation).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
   });

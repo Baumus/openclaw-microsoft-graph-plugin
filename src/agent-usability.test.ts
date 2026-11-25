@@ -61,9 +61,38 @@ describe("agent-facing Microsoft Graph contracts", () => {
       expect(tools[name].parameters.properties.limit.maximum).toBe(100);
       for (const limit of [0, 101, 1.5, "100"]) {
         const invalid = name === "onedrive_list" ? { ...params, limit } : { action: "list_folders", limit };
-        expect(await hooks.before_tool_call({ toolName: name, params: invalid }, context)).toMatchObject({ block: true, blockReason: "invalid_tool_parameters" });
+        expect(await hooks.before_tool_call({ toolName: name, params: invalid }, context)).toMatchObject({ block: true, blockReason: expect.stringContaining("invalid_tool_parameters:") });
       }
     }
+  });
+
+  it("rejects guessed To Do completion flags with actionable guidance before provider access", async () => {
+    const { hooks, context, tools } = runtime();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    credential.tokenForAuthorizedOperation.mockClear();
+    try {
+      const params = { action: "search_tasks", listId: "private-owned-list", limit: 50, isCompleted: false };
+      const before = structuredClone(params);
+      const gate = await hooks.before_tool_call({ toolName: "microsoft_todo_read", params }, context);
+      expect(gate).toEqual({ block: true, blockReason: expect.stringContaining("invalid_tool_parameters: Unsupported fields are not allowed.") });
+      expect(gate.blockReason).toContain("tool_describe");
+      expect(gate.blockReason).toContain("Do not retry unchanged");
+      expect(gate.blockReason).not.toMatch(/private-owned-list|isCompleted|false/);
+      expect(params).toEqual(before);
+      expect(gate.requireApproval).toBeUndefined();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(credential.tokenForAuthorizedOperation).not.toHaveBeenCalled();
+
+      for (const status of [undefined, "notStarted", "inProgress", "completed", "waitingOnOthers", "deferred"]) {
+        expect(await hooks.before_tool_call({ toolName: "microsoft_todo_read", params: { action: "search_tasks", listId: params.listId, limit: 50, status } }, context)).not.toMatchObject({ block: true });
+      }
+      const definition = getToolPluginMetadata(entry)!.tools.find((tool) => tool.name === "microsoft_todo_read")!;
+      for (const help of [definition.description, tools.microsoft_todo_read.description, tools.microsoft_todo_read.parameters.properties.action.description]) {
+        expect(help).toMatch(/not isCompleted/);
+        expect(help).toMatch(/notStarted\/inProgress\/completed\/waitingOnOthers\/deferred/);
+        expect(help).toMatch(/not just notStarted/);
+      }
+    } finally { fetchSpy.mockRestore(); }
   });
 
   it("rejects undocumented new actions and nested fields", () => {
@@ -142,7 +171,7 @@ describe("agent-facing Microsoft Graph contracts", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     try {
       const invalid = await hooks.before_tool_call({ toolName: "outlook_mail_write", toolCallId: "invalid-budget", params: { action: "send_draft", messageId: "draft-1", timeoutMs: 600_001 } }, context);
-      expect(invalid).toEqual({ block: true, blockReason: "invalid_tool_parameters" });
+      expect(invalid).toEqual({ block: true, blockReason: expect.stringContaining("invalid_tool_parameters:") });
       expect(invalid.requireApproval).toBeUndefined();
 
       const deniedDelete = await hooks.before_tool_call({ toolName: "onedrive_delete", toolCallId: "delete-denied", params: { rootLabel: "synthetic_documents", relativePath: "file.txt", timeoutMs: 180_000 } }, context);
