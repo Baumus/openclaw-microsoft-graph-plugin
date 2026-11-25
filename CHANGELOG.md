@@ -1,8 +1,11 @@
 # Changelog
 
-## Unreleased
+## 3.29.0
 
-- **Microsoft To Do compatibility change:** Once the task-summary change lands, `list_tasks` and `search_tasks` will return summaries (ID, title, status, importance, and due date when available), not full task records. Update integrations that read notes, categories, or other task details from these results to call `get_task` with the list and task IDs. Follow continuations for lists and narrow searches that report partial results.
+- Add a bounded, read-only aggregate of open Microsoft To Do tasks across lists, with explicit coverage and output limits.
+- Make tool validation errors easier to act on.
+
+- **Microsoft To Do compatibility change:** `list_tasks` and `search_tasks` return summaries (ID, title, status, importance, and due date when available), not full task records. Update integrations that read notes, categories, or other task details from these results to call `get_task` with the list and task IDs. Follow continuations for lists and narrow searches that report partial results.
 
 ## 3.28.6
 
