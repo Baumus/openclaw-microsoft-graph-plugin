@@ -376,6 +376,14 @@ Use the returned draft `messageId` in a second `outlook_mail_write` call:
 
 The media URI must be a real OpenClaw private-media artifact, not a path or invented URI. PNG, JPEG, and GIF are supported for inline placement; the plugin checks their file signatures. Each image needs a distinct CID, and the same CID must appear in its HTML `<img src>` reference. For an existing draft, use `update_draft` to position or reposition the reference, then `add_attachment` for a new image. Ordinary attachments omit `inlineContentId` and retain their previous behavior. Review the completed draft before `send_draft`; draft changes and attachment upload are separate writes, so either can succeed if the other fails. Rendering details can differ between email clients.
 
+## Reading To Do tasks
+
+`list_tasks` and `search_tasks` return summaries: exact `id`, `title`, `status`, `importance`, and `dueDateTime` when supplied by Graph. `view: "summary"`, `omittedFields`, and `detailAction: "get_task"` identify the deliberately omitted details; retrieve those with the existing `get_task` action and exact `listId`/`taskId`. Search still matches the original title, body, and categories before projecting summaries. The full-detail action is unchanged and can return large content.
+
+Each task collection result is limited to 8 KiB of UTF-8 JSON, including lifecycle metadata and one additional layer of JSON string escaping for host dispatch. A smaller `maxReadOutputBytes` further lowers this ceiling; other tools retain their existing budgets. Whole tasks are paged, never string-clipped. `list_tasks` retains fetched-but-unreturned summaries before following the validated Graph next link. Follow its opaque, caller/criteria-bound continuation within five minutes; after expiry or a plugin restart, restart listing. As with other Graph paging, concurrent provider changes are not a snapshot guarantee.
+
+`truncated: true` / `completeness: "partial"` never proves absence. `outputLimited: true` means the output byte ceiling left records unreturned. Capped `search_tasks` intentionally has no continuation: narrow the search if incomplete. A single summary that cannot fit fails explicitly with `invalid_collection_item_too_large`; no successful empty result, shortened title, or skipped task is substituted.
+
 ## Creating a task in the default To Do list
 
 Use the existing `microsoft_todo_write` tool with `action: "create_task"`, `title`, and exactly one of `listId` or `listSelector: "default"`:
