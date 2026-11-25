@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("./credential.js", async () => {
@@ -18,13 +19,14 @@ vi.mock("./credential.js", async () => {
 import entry from "./index.js";
 import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 
-function registeredTools(policy = graphPolicyFixture()) {
+function registeredTools(policy = graphPolicyFixture(), limits = {}) {
   const factories: Array<(context: any) => any> = [];
   const hooks: Record<string, (...args: any[]) => Promise<any> | any> = {};
   entry.register({
     pluginConfig: {
       enabled: true,
       policy,
+      ...limits,
     },
     registerTool: (factory: any) => factories.push(factory),
     on: (name: string, handler: any) => { hooks[name] = handler; },
@@ -131,6 +133,89 @@ describe("execution contracts", () => {
       expect(taskResult.items[0]).not.toHaveProperty("providerOnly");
       expect(itemResult.item).not.toHaveProperty("providerOnly");
       for (const [input] of fetchSpy.mock.calls) expect(new URL(String(input)).searchParams.has("$select")).toBe(false);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("reads ten lists through the registered To Do action and filters before global ranking", async () => {
+    let active = 0, peak = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/lists")) return Response.json({
+        value: Array.from({ length: 10 }, (_, i) => ({ id: `list-${i}=`, displayName: `List ${i}` })),
+      });
+      const id = Number(/list-(\d+)/.exec(url.pathname)?.[1]);
+      peak = Math.max(peak, ++active);
+      await delay(2);
+      active--;
+      if (!url.searchParams.has("$skiptoken")) return Response.json({
+        value: Array.from({ length: 25 }, (_, i) => ({ id: `done-${i}`, status: "completed" })),
+        "@odata.nextLink": `https://graph.microsoft.com${url.pathname}?$skiptoken=2`,
+      });
+      return Response.json({ value: [{
+        id: `task-${id}`, title: `Open ${id}`, status: "waitingOnOthers",
+        dueDateTime: { dateTime: `2030-01-${20 - id}T10:00:00.0000000`, timeZone: "UTC" },
+        body: { content: "not projected" },
+      }] });
+    });
+    try {
+      const reply = await registeredTools(graphPolicyFixture(), { maxConcurrent: 2 }).microsoft_todo_read
+        .execute("aggregate", { action: "aggregate_open_tasks" });
+      expect(reply.details).toMatchObject({ ok: true, completeness: "complete", listsComplete: 10, matchedInScan: 10 });
+      expect(reply.details.items.map((entry: { taskId: string }) => entry.taskId)).toEqual(["task-9", "task-8", "task-7", "task-6", "task-5"]);
+      expect(reply.details.items[0]).toMatchObject({ listId: "list-9=", dueDateTime: "2030-01-11T10:00:00.000Z" });
+      expect(reply.content[0].text).not.toContain("not projected");
+      expect(fetchSpy).toHaveBeenCalledTimes(21);
+      expect(peak).toBe(2);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("reports partial aggregate coverage, rejects cross-list continuation and never retries 429", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/lists")) return Response.json({
+        value: [{ id: "limited" }, { id: "foreign-link" }, { id: "throttled" }],
+        "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/todo/lists?$skiptoken=more",
+      });
+      if (url.pathname.includes("throttled")) return new Response(null, { status: 429 });
+      const next = url.pathname.includes("foreign-link") ? "/v1.0/me/todo/lists/other/tasks" : url.pathname;
+      return Response.json({ value: [], "@odata.nextLink": `https://graph.microsoft.com${next}?$skiptoken=more` });
+    });
+    try {
+      const { details } = await registeredTools().microsoft_todo_read.execute("partial", { action: "aggregate_open_tasks" });
+      expect(details).toMatchObject({ ok: true, completeness: "partial", inventoryComplete: false, noResults: false,
+        coverage: [
+          { listId: "limited", state: "scan_limit", scanned: 0 },
+          { listId: "foreign-link", state: "read_error" },
+          { listId: "throttled", state: "read_error" },
+        ] });
+      expect(fetchSpy).toHaveBeenCalledTimes(7);
+      expect(fetchSpy.mock.calls.some(([url]) => String(url).includes("/other/"))).toBe(false);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("preserves To Do permission checks and reports matches omitted by the byte cap", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      Response.json({ value: String(input).includes("/tasks")
+        ? [{ id: "large", title: "💡".repeat(1000), status: "deferred" }]
+        : [{ id: "list" }] }));
+    try {
+      const policy = graphPolicyFixture();
+      policy.services.todo = { agents: { main: { operations: ["create"], resources: ["me"] } } };
+      const denied = await registeredTools(policy).microsoft_todo_read
+        .execute("denied", { action: "aggregate_open_tasks" });
+      expect(denied.details).toMatchObject({ ok: false, error: "access_denied" });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      const reply = await registeredTools(graphPolicyFixture(), { maxReadOutputBytes: 1024 }).microsoft_todo_read
+        .execute("bounded", { action: "aggregate_open_tasks" });
+      expect(reply.details).toMatchObject({ ok: true, completeness: "complete", matchedInScan: 1,
+        items: [], outputLimited: true, noResults: false });
+      expect(Buffer.byteLength(JSON.stringify(reply.content[0].text))).toBeLessThanOrEqual(1024);
     } finally {
       fetchSpy.mockRestore();
     }

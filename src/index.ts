@@ -1,3 +1,4 @@
+import { readTodoAggregate } from "./todo-aggregate.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { AccountSelector, AccountsSchema, accountStateDir, selectAccount, type AccountConfig } from "./accounts.js";
 import { describeParameters } from "./agent-parameter-guidance.js";
@@ -367,7 +368,7 @@ export function lifecycleResult(toolName: string, value: unknown): unknown {
   const record = value as Record<string, unknown>;
   const mutation = classifyApproval(toolName, {}) !== "none" && !toolName.endsWith("_read") && toolName !== "onedrive_agents_instructions";
   const ok = record.ok !== false;
-  const incomplete = record.truncated === true || record.completeness === "partial" || record.completeness === "unknown" || record.outcome === "partial" || record.outcome === "applied_with_warning";
+  const incomplete = record.truncated === true || record.completeness === "partial" || record.completeness === "unknown" || record.outcome === "partial" || record.outcome === "applied_with_warning" || (record.action === "aggregate_open_tasks" && (record.outputLimited === true || record.coverageOutputLimited === true));
   const code = typeof record.error === "string" ? record.error : ok ? incomplete ? "partial_results" : "ok" : "operation_failed";
   const credentialFailure = code.startsWith("credential_") || code === "authentication_failed";
   const providerAuthorizationFailure = code === "provider_error_401" || code === "provider_error_403" || code === "provider_access_denied";
@@ -752,7 +753,7 @@ const ACTION_SCHEMA_GUIDANCE: Readonly<Record<string, string>> = {
   outlook_mail_write: "reply_draft: native answer to one exact original; bodyHtml/bodyText is ONLY the new answer, never include quoted history. Omitting content creates the native draft unchanged; reply_all_draft: only when all recipients are intended; create_draft: only for a new, independent message with subject and body. If the original message is ambiguous or missing, ask the user; do not fall back to create_draft. prepend_reply_draft: prepend only new bodyHtml/bodyText to an existing draft while retaining its opaque HTML and images (not idempotent; read before retry). update_draft/update_properties: messageId and changed fields; forward_draft: messageId and content; copy/move: messageId and exactly one destination or destinationFolderId; mark_read: messageId and isRead; add_attachment: messageId, attachmentName and exactly one of sourceWorkspacePath relative to this agent workspace or an existing attachmentMediaUri. The plugin privately stages and fingerprints the file before native approval. add_message_attachment: existing draft messageId, original sourceMessageId, optional .eml attachmentName; attaches original MIME up to 150 MB using direct or upload-session transport, requires read and update access, never sends. For an inline image, place <img src=\"cid:IMAGE_ID\"> at the desired position in bodyHtml, then add_attachment with the same inlineContentId=IMAGE_ID and an image MIME type; send_draft/delete: messageId. Native approval remains sole authority.",
   outlook_contacts_read: "list_contacts: optional limit/continuation; search_contacts: search plus optional limit, capped client-side scan; get_contact: exact contactId. Search may be incomplete; never treat a truncated search as proof of absence.",
   outlook_contacts_write: "create: at least one name or email field; update: exact contactId and at least one changed field; delete: exact contactId. Search and disambiguate before changing an existing contact. Addresses require all five components or null to clear; omitted addresses/faxes are unchanged, empty fax clears. Fax writes return provider readback, never a caller-input echo. Native approval remains sole authority.",
-  microsoft_todo_read: "list_lists: no ID; search_lists: search; list_tasks/search_tasks: listId from list_lists; get_task/list_checklist/list_linked_resources/list_attachments: listId and taskId; get_attachment: also attachmentId. Follow continuation where offered; narrow capped search.",
+  microsoft_todo_read: "list_lists: no ID; search_lists: search; aggregate_open_tasks: optional limit (5 by default, up to 20); inspect coverage and output limits; list_tasks/search_tasks: listId from list_lists; get_task/list_checklist/list_linked_resources/list_attachments: listId and taskId; get_attachment: also attachmentId. Follow continuation where offered; narrow capped search.",
   microsoft_todo_write: "create_list: title; update_list/delete_list: listId; create_task: title and exactly one of listId or listSelector default; the actual owned non-shared default list is resolved before approval (requires read and create); update_task/delete_task: listId and taskId; add_checklist/update_checklist/delete_checklist/add_linked_resource/update_linked_resource/delete_linked_resource/add_attachment/delete_attachment: listId, taskId and the relevant child ID for update/delete. Native approval is separate from deprecated chat fields.",
 };
 const APPROVAL_BEARING_TOOLS = new Set(["onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete", "outlook_calendar_write", "outlook_mail_write", "outlook_contacts_write", "microsoft_todo_write"]);
@@ -1316,7 +1317,7 @@ const contactsWriteSchema = Type.Object({
   contactId: Type.Optional(resourceId), chatConfirmed, chatConfirmationToken, ...contactFields,
 }, { additionalProperties: false });
 const todoReadSchema = Type.Object({
-  action: Type.Union([Type.Literal("list_lists"), Type.Literal("search_lists"), Type.Literal("list_tasks"), Type.Literal("search_tasks"), Type.Literal("get_task"), Type.Literal("list_checklist"), Type.Literal("list_linked_resources"), Type.Literal("list_attachments"), Type.Literal("get_attachment")]),
+  action: Type.Union([Type.Literal("list_lists"), Type.Literal("search_lists"), Type.Literal("aggregate_open_tasks"), Type.Literal("list_tasks"), Type.Literal("search_tasks"), Type.Literal("get_task"), Type.Literal("list_checklist"), Type.Literal("list_linked_resources"), Type.Literal("list_attachments"), Type.Literal("get_attachment")]),
   listId: Type.Optional(resourceId), taskId: Type.Optional(resourceId), attachmentId: Type.Optional(resourceId), limit, continuation,
   search: Type.Optional(Type.String({ minLength: 1, maxLength: 300 })),
   searchFields: Type.Optional(Type.Array(Type.Union([Type.Literal("title"), Type.Literal("body"), Type.Literal("categories")]), { minItems: 1, maxItems: 3 })),
@@ -1351,6 +1352,7 @@ export const READ_ACTION_FIELDS = {
   todo: {
     list_lists: ["action", "limit", "continuation"],
     search_lists: ["action", "search", "limit"],
+    aggregate_open_tasks: ["action", "limit"],
     list_tasks: ["action", "listId", "limit", "continuation"],
     search_tasks: ["action", "listId", "search", "searchFields", "status", "importance", "categories", "isReminderOn", "hasAttachments", "limit"],
     get_task: ["action", "listId", "taskId"],
@@ -1758,7 +1760,7 @@ export function classifyApproval(toolName: string, rawParams: unknown): Approval
     outlook_calendar_read: new Set(["list_calendars", "list_events", "search_events", "get_event", "get_schedule", "list_attachments", "download_attachment"]),
     outlook_mail_read: new Set(["list_folders", "list_messages", "search_messages", "get_message", "list_attachments", "download_attachment"]),
     outlook_contacts_read: new Set(["list_contacts", "search_contacts", "get_contact"]),
-    microsoft_todo_read: new Set(["list_lists", "search_lists", "list_tasks", "search_tasks", "get_task", "list_checklist", "list_linked_resources", "list_attachments", "get_attachment"]),
+    microsoft_todo_read: new Set(["list_lists", "search_lists", "aggregate_open_tasks", "list_tasks", "search_tasks", "get_task", "list_checklist", "list_linked_resources", "list_attachments", "get_attachment"]),
   };
   if (toolName in readOnlyActions) return action && readOnlyActions[toolName].has(action) ? "none" : "warning";
   const mutatingTools = new Set(["onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete", "outlook_calendar_write", "outlook_mail_write", "outlook_contacts_write", "microsoft_todo_write"]);
@@ -1989,7 +1991,7 @@ const plugin = defineToolPlugin({
       accountTool({ name: "outlook_mail_write", label: "Outlook Mail Write", optional: true, description: "Own-mailbox draft fields, reply/reply-all/forward drafts, copy/move, workspace-relative sourceWorkspacePath (64 MiB staging limit) or private attachmentMediaUri (150 MB), exactly one source, hash-bound before native approval and reverified before credentials; original-message .eml attachments up to 150 MB to existing drafts, send, and delete. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: mailWriteSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("outlook_mail_write", mailWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId))) }),
       accountTool({ name: "outlook_contacts_read", label: "Outlook Contacts Read", optional: true, description: TOOL_GUIDANCE.outlook_contacts_read, parameters: contactsReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_contacts_read", contactsReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => contactsRead(config, toolContext.agentId, params, signal)) }),
       accountTool({ name: "outlook_contacts_write", label: "Outlook Contacts Write", optional: true, description: TOOL_GUIDANCE.outlook_contacts_write, parameters: contactsWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_contacts_write", contactsWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => contactsWrite(config, toolContext.agentId, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
-      accountTool({ name: "microsoft_todo_read", label: "Microsoft To Do Read", optional: true, description: "Bounded own-account list/task reads and client-side search, including checklist, linked-resource, and attachment collections.", parameters: todoReadSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_read", todoReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoRead(config, toolContext.agentId, params, signal)) }),
+      accountTool({ name: "microsoft_todo_read", label: "Microsoft To Do Read", optional: true, description: "Use aggregate_open_tasks for a compact cross-list overview of open tasks, ordered by earliest due date; limit defaults to 5 (max 20). Check completeness and coverageOutputLimited before making global claims. Use get_task with exact listId/taskId for details. Also supports single-list reads and search, checklists, linked resources, and attachments.", parameters: todoReadSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_read", todoReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoRead(config, toolContext.agentId, params, signal)) }),
       accountTool({ name: "microsoft_todo_write", label: "Microsoft To Do Write", optional: true, description: 'Create tasks with an exact listId or listSelector:"default" (default selection requires read and create access and resolves before approval). Owned non-shared list/task settings, checklist, linked-resource, and private-media attachment mutations up to 25 MB. Warning-level actions use configurable native approval; critical actions require native allow-once approval.', parameters: todoWriteSchema, factory: ({ config, toolContext, api }) => concrete("microsoft_todo_write", todoWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => todoWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
       accountTool({ name: "onedrive_agents_instructions", label: "OneDrive AGENTS.md Instructions", optional: true, description: "Batch-discover the bounded root-to-directory AGENTS.md chain for a centrally trusted OneDrive root. Ordinary OneDrive tools invoke this preflight automatically and require a session-bound acknowledgement before proceeding.", parameters: agentsInstructionsSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_agents_instructions", agentsInstructionsSchema, toolContext.agentId, toolContext.sessionId, api.logger, ({ rootLabel, relativeDirectory = "", acknowledgement }, signal) => oneDriveAgentsInstructions(config, { agentId: toolContext.agentId, sessionId: toolContext.sessionId }, { rootLabel, relativeDirectory, acknowledgement }, signal)) }),
       accountTool({ name: "microsoft_graph_capabilities", label: "Microsoft Graph Capabilities", optional: true, description: TOOL_GUIDANCE.microsoft_graph_capabilities, parameters: Type.Object({}, { additionalProperties: false }), factory: ({ config, toolContext, api }) => concrete("microsoft_graph_capabilities", Type.Object({}, { additionalProperties: false }), toolContext.agentId, toolContext.sessionId, api.logger, async () => {
@@ -3428,6 +3430,40 @@ async function contactsWrite(config: RuntimeConfig, agentId: string | undefined,
 
 async function todoRead(config: RuntimeConfig, agentId: string | undefined, p: any, signal?: AbortSignal) {
   assertReadActionFields(p, READ_ACTION_FIELDS.todo);
+  if (p.action === "aggregate_open_tasks") {
+    if (p.limit !== undefined && p.limit > 20) throw new Error("invalid_limit");
+    const timeout = Math.min(5000, config.readOperationTimeoutMs ?? DEFAULT_READ_OPERATION_TIMEOUT_MS);
+    const slots = config.maxConcurrent ?? 4;
+    return withService(config, agentId, "todo", "read", "todo_read", signal, async (token, bounded) => {
+      const result = await readTodoAggregate({
+        read: (path) => graphRequest(token, path, { signal: bounded, readRetries: 0, maxBytes: 512 * 1024 }),
+        nextPath: nextGraphPath,
+        bounded,
+        callerSignal: signal,
+        limit: p.limit ?? 5,
+        // The enclosing read already holds one shared slot; extra workers
+        // compete for the same slots as other tool calls.
+        runWorkers: async (worker, count) => {
+          if (count === 0) return;
+          const extras = Math.min(count - 1, Math.max(0, slots - activeRequests));
+          await Promise.all([worker(), ...Array.from({ length: extras }, () => withConcurrency(slots, worker))]);
+        },
+      });
+      const outputBytes = Math.min(4096, config.maxReadOutputBytes ?? 4096);
+      const fits = () => Buffer.byteLength(JSON.stringify(JSON.stringify(lifecycleResult("microsoft_todo_read", result))), "utf8") <= outputBytes;
+      while (!fits() && result.items.length > 0) {
+        result.items.pop();
+        result.outputLimited = true;
+      }
+      while (!fits() && result.coverage.length > 0) {
+        result.coverage.pop();
+        result.coverageOutputLimited = true;
+      }
+      if (!fits()) throw new Error("invalid_collection_item_too_large");
+      return result;
+    }, "me", timeout);
+  }
+
   if (p.searchFields !== undefined && p.search === undefined) throw new Error("invalid_search");
   const max = boundedLimit(p.limit);
   const pageableTodoActions = new Set(["list_lists", "list_tasks", "list_checklist", "list_linked_resources", "list_attachments"]);
