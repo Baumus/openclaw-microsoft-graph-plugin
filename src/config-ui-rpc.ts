@@ -3,7 +3,7 @@ import { ensureDirectoryWithinRoot } from "@openclaw/fs-safe/advanced";
 import { ActivationJournal } from "./config-activation.js";
 import { createHash } from "node:crypto";
 import { canonicalPolicy } from "./config-policy-identity.js";
-import { requiredPolicyScopes } from "./credential-cli.js";
+import { credentialVaultStatus, requiredPolicyScopes } from "./credential-cli.js";
 import { validatePolicy } from "./policy.js";
 import { tokenForAuthorizedOperation } from "./credential.js";
 import { canonicalGraphContinuation, graphRequest, safeId } from "./graph.js";
@@ -104,13 +104,20 @@ function registerConfigurationHandlers(api: GatewayApi, config?: { policy?: unkn
         const rootDir = stateDir();
         const connectionDir = accountStateDir(rootDir, accountId);
         if (accountId && !(await ensureDirectoryWithinRoot({ rootDir, requestedPath: connectionDir, scopeLabel: "Microsoft Graph connection storage", mode: 0o700 })).ok) throw Error("connection_storage_unavailable");
+        const status = await credentialVaultStatus({ ...config, policy }, connectionDir);
+        if (status.credential.result !== "valid") throw new Error("credential_reauthorization_required");
+        if (!("oneDriveRead" in status.credential) || !status.credential.oneDriveRead) throw new Error("credential_scope_missing");
         const token = await tokenForAuthorizedOperation({ config, policy, allowedScopes: ["Files.Read"], stateDir: connectionDir, signal: controller.signal, requestTimeoutMs: config.requestTimeoutMs ?? 5000 });
         const selector = segments.length ? `/me/drive/root:/${segments.map(encodeURIComponent).join("/")}:` : "/me/drive/root";
         const item = await graphRequest(token, `${selector}?$select=id,name,folder,parentReference`, { signal: controller.signal, maxBytes: 16_384 });
         if (typeof item?.id !== "string" || !item.id || !item.folder || typeof item?.parentReference?.driveId !== "string" || !item.parentReference.driveId) throw new Error("not_folder");
         respond(true, { path, drive_id: item.parentReference.driveId, item_id: item.id });
       } finally { clearTimeout(timer); }
-    } catch { respond(false, undefined, { code: "INVALID_REQUEST", message: "OneDrive folder could not be verified" }); }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "";
+      const message = ["credential_scope_missing", "credential_reauthorization_required"].includes(reason) ? reason : "OneDrive folder could not be verified";
+      respond(false, undefined, { code: "INVALID_REQUEST", message });
+    }
   }, { scope: "operator.admin" });
   api.registerGatewayMethod("microsoft-graph.configuration.calendars", async ({ params, respond, accountId }) => {
     try {

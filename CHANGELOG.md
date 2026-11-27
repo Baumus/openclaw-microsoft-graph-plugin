@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.29.2
+
+- Let already connected named accounts authorize read-only OneDrive folder discovery before granting their first folder. Check the saved credential before requesting a token for folder verification.
+
 ## 3.29.1
 
 - Document a read-only Outlook agenda workflow and add links to GitHub Sponsors. No runtime or permission changes.

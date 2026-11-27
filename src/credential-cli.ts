@@ -130,7 +130,9 @@ export async function credentialVaultStatus(config: CliConfig, stateDir: string)
   const stored = await readVaultCredential(stateDir, keyFor(config));
   if (vaultRecordBinding(stored).binding !== credential.binding) throw new Error("credential_vault_conflict");
   const missingScopes = requiredPolicyScopes(policy).filter((scope) => { try { selectScope(stored.credential, [scope]); return false; } catch { return true; } });
-  return { policyVersion: policy.version, credential: { ...credential, missingScopes } };
+  let oneDriveRead = false;
+  try { selectScope(stored.credential, ["Files.Read"]); oneDriveRead = true; } catch { /* Optional setup scope. */ }
+  return { policyVersion: policy.version, credential: { ...credential, missingScopes, oneDriveRead } };
 }
 
 async function writePassCredential(secretRef: string, credential: VaultCredential): Promise<void> {
@@ -270,6 +272,11 @@ function registerCredentialHandlers(api: GatewayApi, config: CliConfig, stateDir
       if (params.recover !== true) throw new Error("invalid_rpc_parameters");
       return device.recover();
     }
+    if (input && typeof input === "object" && Object.hasOwn(input, "oneDriveSetup")) {
+      const params = exactParams(input, ["oneDriveSetup"]);
+      if (params.oneDriveSetup !== true) throw new Error("invalid_rpc_parameters");
+      return device.authorizeOneDrive();
+    }
     const params = exactParams(input, ["clientId", "tenant"]);
     if (typeof params.clientId !== "string" || typeof params.tenant !== "string") throw new Error("invalid_rpc_parameters");
     return device.reauthorize(params.clientId, params.tenant);
@@ -301,7 +308,8 @@ function validateMetadata(value: Record<string, unknown>): void {
 function credentialStatusResult(value: unknown): unknown {
   const status = exactResult(value, ["policyVersion", "credential"]);
   if (status.policyVersion !== 2) throw new Error("internal_error");
-  const credential = exactResult(status.credential, ["result"], ["generation", "keyId", "digest", "binding", "missingScopes"]);
+  const credential = exactResult(status.credential, ["result"], ["generation", "keyId", "digest", "binding", "missingScopes", "oneDriveRead"]);
+  if (credential.oneDriveRead !== undefined && typeof credential.oneDriveRead !== "boolean") throw new Error("internal_error");
   if (credential.result === "missing" || credential.result === "unavailable") {
     if (Object.keys(credential).length !== 1) throw new Error("internal_error");
   } else if (credential.result === "valid" || credential.result === "quarantined") {

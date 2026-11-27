@@ -286,3 +286,23 @@ describe("gateway-side device-code sign-in", () => {
   });
 
 });
+
+it("adds only read scope for first OneDrive folder on a connected named calendar account", async () => {
+  const { state, key, config } = await setup();
+  config.policy.services.onedrive.allowed_roots = [];
+  const existing = requiredPolicyScopes(config.policy);
+  expect(existing.length).toBeGreaterThan(0);
+  expect(existing).not.toContain("Files.Read");
+  await createVaultCredential(state, { clientId, tenant, refreshToken: "synthetic-before", scopes: existing }, key);
+  const fetch = vi.fn<typeof globalThis.fetch>()
+    .mockResolvedValueOnce(response(deviceResponse))
+    .mockResolvedValueOnce(response({ refresh_token: "synthetic-after", scope: [...existing, "Files.Read"].join(" ") }));
+  const legacy = new DeviceCodeSignIn(config, () => state, fetch, async () => {});
+  await expect(legacy.authorizeOneDrive()).rejects.toThrow("invalid_rpc_parameters");
+  expect(fetch).not.toHaveBeenCalled();
+  const named = new DeviceCodeSignIn(config, () => state, fetch, async () => {}, true);
+  const started = await named.authorizeOneDrive();
+  expect(started.scopes).toEqual([...existing, "Files.Read", "offline_access"].sort());
+  expect((await terminal(named, started.sessionId)).state).toBe("created");
+  expect((await readVaultCredential(state, key)).credential.scopes).toContain("Files.Read");
+});
