@@ -55,6 +55,12 @@ The [detailed configuration guide](#configuration-reference) has the exact key c
 
 Wait until the Control UI confirms that the Gateway has applied your rules. Run the [local checks](#validate-the-setup), then ask an explicitly allowed agent for one read-only item within its grant. Confirm that an ungranted agent or resource is denied. A visible installed-plugin entry alone does not prove the running Gateway can serve the request.
 
+**Try a practical first request:** [Get your Outlook agenda in OpenClaw with read-only access](docs/OUTLOOK_AGENDA.md).
+
+## Support this project
+
+If this plugin is part of your Microsoft 365 workflow, [sponsor its maintenance](https://github.com/sponsors/Baumus). Sponsorship helps fund maintenance resources for compatibility checks, regression testing, bug fixes, and clearer setup documentation. The plugin remains open source and freely available. Sponsorship does not include dedicated support or guaranteed response times.
+
 ## OneDrive file downloads
 
 An agent with read access to a OneDrive folder in the Control UI can use `onedrive_download` for any file type in that grant, including Word, PowerPoint, custom binary, and HTML files. Locate the file with list/search, then supply the exact `rootLabel` and `relativePath`. Downloads return an opaque `media://inbound/...` file reference, byte count, and SHA-256—not inline file bytes or a host path.

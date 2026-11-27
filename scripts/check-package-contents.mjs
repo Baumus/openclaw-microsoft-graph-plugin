@@ -21,6 +21,7 @@ const expected = [
   "docs/CONTACT_FIELDS.md",
   "docs/OAUTH_ACCESS_MATRIX.md",
   "docs/SUPPORT.md",
+  "docs/OUTLOOK_AGENDA.md",
   "examples/microsoft-graph-policy.json5",
   "examples/microsoft-graph-policy-v2.json5",
   "openclaw.plugin.json",
