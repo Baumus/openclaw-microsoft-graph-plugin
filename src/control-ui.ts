@@ -12,7 +12,7 @@ import { validClientId, validTenant } from "./app-identifiers.js";
 type Grant = { operations: string[]; resources?: string[] };
 type Root = { label: string; path: string; drive_id: string; item_id: string; include_descendants: true; agents_instructions?: "trusted"; permissions: Record<"read" | "write" | "delete", boolean>; agents: Record<string, { permissions: Partial<Record<"read" | "write" | "delete", boolean>> }> };
 type Policy = { version: 2; rules: { default: "deny"; warningApprovalsByService?: Partial<Record<"onedrive" | "calendar" | "mail" | "contacts" | "todo", boolean>> }; services: { onedrive: { allowed_roots: Root[] }; calendar: { agents: Record<string, Grant> }; mail: { agents: Record<string, Grant> }; contacts?: { agents: Record<string, Grant> }; todo: { agents: Record<string, Grant> } } };
-type CredentialStatus = { policyVersion: 2; credential: { result: "missing" | "valid" | "quarantined" | "unavailable"; missingScopes?: string[] } };
+type CredentialStatus = { policyVersion: 2; credential: { result: "missing" | "valid" | "quarantined" | "unavailable"; missingScopes?: string[]; oneDriveRead?: boolean } };
 type DeviceStart = { sessionId: string; userCode: string; verificationUri: string; expiresAt: string; scopes: string[] };
 type UpdateStatus = { updateAvailable: boolean; latestVersion?: string };
 type CalendarCatalog = { defaultCalendarId: string; calendars: Array<{ id: string; name: string }> };
@@ -1057,7 +1057,7 @@ class ConfigurationPage {
     }
     if (current()) this.render();
   }
-  private async startAuth() {
+  private async startAuth(oneDriveSetup = false) {
     if (!this.authorized || this.authBusy || this.authState === "pending" || !["missing", "valid", "quarantined"].includes(this.credential?.result ?? "") || !this.signInReady) return;
     const recovery = this.credential?.result === "quarantined";
     const renewal = recovery || this.credential?.result === "valid";
@@ -1067,7 +1067,7 @@ class ConfigurationPage {
     this.authRenewal = renewal;
     this.authBusy = true; this.authError = ""; this.render();
     try {
-      const started = await this.credentialCall<DeviceStart>(renewal ? "microsoft-graph.credentials.reauthorize-start" : "microsoft-graph.credentials.device-start", renewal ? (recovery ? { recover: true } : {}) : { clientId: this.authClientId.trim(), tenant: this.authTenant.trim() });
+      const started = await this.credentialCall<DeviceStart>(renewal ? "microsoft-graph.credentials.reauthorize-start" : "microsoft-graph.credentials.device-start", renewal ? (recovery ? { recover: true } : oneDriveSetup ? { oneDriveSetup: true } : {}) : { clientId: this.authClientId.trim(), tenant: this.authTenant.trim() });
       if (!current()) return;
       if (!isMicrosoftDeviceVerificationUri(started.verificationUri)) throw new Error("device_authorization_failed");
       if (!renewal && this.accountId === undefined) saveAppIds(this.authClientId.trim(), this.authTenant.trim());
@@ -1345,7 +1345,7 @@ class ConfigurationPage {
   private folderPreview?: { path: string; drive_id: string; item_id: string };
 
   private async addFolder() {
-    if (this.locked) return;
+    if (this.locked || (this.accountId !== undefined && this.credential?.oneDriveRead === false)) return;
     if (this.credential?.result === "quarantined") { this.step = 5; this.render(); return; }
     let path = this.newFolderPath.trim().replace(/^"(.*)"$/, "$1").replaceAll("\\", "/");
     if (/^[a-z]:\//i.test(path)) {
@@ -1391,6 +1391,11 @@ class ConfigurationPage {
     if (this.credential?.result === "quarantined") {
       append(add, el("p", "mg-warning", "Der Microsoft-Zugang ist gesperrt. Stelle ihn wieder her, bevor du den Ordnerpfad prüfst."));
       append(add, this.action("Zur Wiederherstellung", () => { this.step = 5; this.render(); }));
+    } else if (this.accountId !== undefined && this.credential?.result === "valid" && this.credential.oneDriveRead === false) {
+      append(add, el("p", "mg-warning", "Für die Ordnerprüfung fehlt der Microsoft-Lesezugriff auf OneDrive (Files.Read). Noch kein Agent erhält dadurch Ordnerzugriff."));
+      const connect = this.action("OneDrive verbinden", () => { this.step = 5; void this.startAuth(true); this.render(); }, "primary");
+      connect.disabled = !this.signInReady || this.authBusy || this.authState === "pending";
+      append(add, connect);
     } else append(add, this.action("Pfad prüfen", check));
     if (this.folderPreview) {
       const preview = el("div", "mg-folder-preview mg-status");
