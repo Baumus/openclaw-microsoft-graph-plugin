@@ -28,7 +28,7 @@ function mount(locale = "de", roots?: Root[]) {
       if (method === "microsoft-graph.configuration.validate") return { valid: true, requiredScopes: [] };
       if (method === "microsoft-graph.configuration.applicationStatus") return { activePolicyHash: null };
       if (method === "microsoft-graph.updateStatus") return { updateAvailable: false };
-      if (method === "microsoft-graph.configuration.resolveFolder") return { path: "/Synthetic/New", drive_id: "synthetic-drive", item_id: "new-item" };
+      if (method === "microsoft-graph.configuration.resolveFolder") return { path: params.path, drive_id: "synthetic-drive", item_id: "new-item" };
       if (method === "config.patch") { const patch = JSON.parse(params.raw as string).plugins.entries["microsoft-graph"].config.policy; saved.services.onedrive.allowed_roots = patch.services.onedrive.allowed_roots; return {}; }
       throw new Error(`Unexpected RPC ${method}`);
     }, ui: { registerPage: (value: typeof page) => { page = value; return () => {}; }, registerNavigation: () => () => {} } };
@@ -196,4 +196,25 @@ describe("OneDrive root instruction opt-in", () => {
     expect(h.container.querySelector(".mg-instructions-control label")!.textContent).toBe("Use AGENTS.md as working instructions");
     expect(h.container.querySelector(".mg-instructions-help")!.textContent).toContain("Acknowledgement does not guarantee full compliance.");
   });
+});
+
+it("selects the pinned drive root explicitly and stages no implicit agent grant", async () => {
+  const h = mount("en", []); await h.settle(); h.click("OneDrive folders"); await h.settle();
+  const input = h.container.querySelector<HTMLInputElement>(".mg-add-folder input")!;
+  input.value = "/";
+  h.click("Check path"); await h.settle();
+  expect(h.calls.filter(call => call.method.endsWith(".resolveFolder"))).toHaveLength(0);
+  h.click("Check My files (/)"); await h.settle();
+  expect(h.calls.filter(call => call.method.endsWith(".resolveFolder"))).toEqual([
+    { method: "microsoft-graph.configuration.resolveFolder", params: { path: "/" } },
+  ]);
+  expect(h.container.textContent).toContain("all current and future subfolders");
+  h.click("Add OneDrive root"); await h.settle();
+  const candidate = await h.candidate();
+  expect(candidate.services.onedrive.allowed_roots).toEqual([{
+    label: "folder_1", path: "/", drive_id: "synthetic-drive", item_id: "new-item", include_descendants: true,
+    permissions: {read: false, write: false, delete: false}, agents: {},
+  }]);
+  expect(() => authorizeRoot(validatePolicy(candidate), "reader", "folder_1", "read")).toThrow("access_denied");
+  expect(h.calls.some(call => call.method === "config.patch")).toBe(false);
 });
