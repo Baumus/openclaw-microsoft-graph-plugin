@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.30.0
+
+- Explicitly select the OneDrive root (My files) with a whole-drive scope warning; adding it does not grant any agent access until reviewed and saved.
+
 ## 3.29.2
 
 - Let already connected named accounts authorize read-only OneDrive folder discovery before granting their first folder. Check the saved credential before requesting a token for folder verification.

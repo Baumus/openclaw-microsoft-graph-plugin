@@ -1280,7 +1280,7 @@ class ConfigurationPage {
     for (const root of roots) {
       const row = el("div", "mg-agent-folder");
       const path = root.path.replaceAll("/", "\\");
-      const folderName = root.path.split("/").filter(Boolean).at(-1) ?? root.label;
+      const folderName = root.path.split("/").filter(Boolean).at(-1) ?? (root.path === "/" ? "Eigene Dateien (/)" : root.label);
       row.setAttribute("role", "group");
       row.setAttribute("aria-label", path);
       const identity = el("div", "mg-agent-folder-identity");
@@ -1344,7 +1344,7 @@ class ConfigurationPage {
 
   private folderPreview?: { path: string; drive_id: string; item_id: string };
 
-  private async addFolder() {
+  private async addFolder(selectDriveRoot = false) {
     if (this.locked || (this.accountId !== undefined && this.credential?.oneDriveRead === false)) return;
     if (this.credential?.result === "quarantined") { this.step = 5; this.render(); return; }
     let path = this.newFolderPath.trim().replace(/^"(.*)"$/, "$1").replaceAll("\\", "/");
@@ -1353,7 +1353,8 @@ class ConfigurationPage {
       const root = parts.findIndex(part => /^OneDrive(?: - .+)?$/i.test(part));
       path = root < 0 ? "" : "/" + parts.slice(root + 1).join("/");
     }
-    if (!path.startsWith("/") || path.startsWith("//") || path === "/" || path.split("/").some(part => part === "." || part === "..")) { this.error = "Bitte einen OneDrive-Ordnerpfad eingeben."; this.render(); return; }
+    if (selectDriveRoot) path = "/";
+    if (!path.startsWith("/") || path.startsWith("//") || (!selectDriveRoot && path === "/") || path.split("/").some(part => part === "." || part === "..")) { this.error = "Bitte einen OneDrive-Ordnerpfad eingeben."; this.render(); return; }
     this.folderPreview = undefined;
     this.busy = true; this.error = ""; this.render();
     try {
@@ -1396,10 +1397,14 @@ class ConfigurationPage {
       const connect = this.action("OneDrive verbinden", () => { this.step = 5; void this.startAuth(true); this.render(); }, "primary");
       connect.disabled = !this.signInReady || this.authBusy || this.authState === "pending";
       append(add, connect);
-    } else append(add, this.action("Pfad prüfen", check));
+    } else {
+      append(add, this.action("Pfad prüfen", check), this.action("Eigene Dateien (/) prüfen", () => { void this.addFolder(true); }));
+    }
     if (this.folderPreview) {
       const preview = el("div", "mg-folder-preview mg-status");
-      append(preview, el("p", "", format("Im verbundenen OneDrive gefunden: {path}", { path: this.folderPreview.path })), this.action("Ordner übernehmen", () => this.acceptFolder(), "primary"));
+      if (this.folderPreview.path === "/") {
+        append(preview, el("p", "mg-warning", "Eigene Dateien umfasst das gesamte OneDrive des ausgewählten Kontos, einschließlich aller heutigen und zukünftigen Unterordner."), this.action("OneDrive-Stamm übernehmen", () => this.acceptFolder(), "primary"));
+      } else append(preview, el("p", "", format("Im verbundenen OneDrive gefunden: {path}", { path: this.folderPreview.path })), this.action("Ordner übernehmen", () => this.acceptFolder(), "primary"));
       append(add, preview);
     }
     append(body, add);
@@ -1419,7 +1424,7 @@ class ConfigurationPage {
     for (const [index, root] of roots.entries()) {
       const card = el("article", "mg-root-card");
       const header = el("div", "mg-root-header");
-      const name = root.path.split("/").filter(Boolean).at(-1) || root.path;
+      const name = root.path.split("/").filter(Boolean).at(-1) || "Eigene Dateien (/)";
       const folderHeading = el("h3", "", name);
       folderHeading.tabIndex = -1; folderHeading.dataset.folder = root.label;
       const identity = el("div", "mg-root-identity"); append(identity, folderHeading, el("p", "mg-root-path", root.path));
