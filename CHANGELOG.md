@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.29.1
+
+- Document a read-only Outlook agenda workflow and add links to GitHub Sponsors. No runtime or permission changes.
+
 ## 3.29.0
 
 - Add a bounded, read-only aggregate of open Microsoft To Do tasks across lists, with explicit coverage and output limits.

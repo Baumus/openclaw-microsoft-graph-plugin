@@ -1,6 +1,6 @@
 {
   "name": "@baumus/openclaw-microsoft-graph",
-  "version": "3.29.0",
+  "version": "3.29.1",
   "description": "Bring Outlook mail, calendar, contacts, OneDrive files, and Microsoft To Do into OpenClaw with per-agent access you control.",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,6 +17,7 @@
     "docs/CONTACT_FIELDS.md",
     "docs/OAUTH_ACCESS_MATRIX.md",
     "docs/SUPPORT.md",
+    "docs/OUTLOOK_AGENDA.md",
     "examples/microsoft-graph-policy.json5",
     "examples/microsoft-graph-policy-v2.json5",
     "CHANGELOG.md",
