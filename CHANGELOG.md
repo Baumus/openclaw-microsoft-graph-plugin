@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.31.0
+
+- Add an opt-in sandbox copy for OneDrive and Outlook downloads while preserving the default private download.
+- Prepare sandbox uploads as session-bound, single-use snapshots for existing OneDrive, Outlook and To Do upload operations; retain their authorization and approval rules.
+- Transfer bytes in bounded blocks without an additional sandbox file-size ceiling. The current sandbox helper needs Python 3 and a writable transfer directory.
+
+
 ## 3.30.0
 
 - Explicitly select the OneDrive root (My files) with a whole-drive scope warning; adding it does not grant any agent access until reviewed and saved.

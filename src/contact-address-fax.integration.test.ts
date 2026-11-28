@@ -10,7 +10,7 @@ function harness() {
   const hooks: Record<string, (...args: any[]) => any> = {};
   const policy = graphPolicyFixture();
   policy.services.contacts = { agents: { main: { operations: ["read", "create", "update", "delete"], resources: ["me"] } } };
-  entry.register({ pluginConfig: { enabled: true, policy }, registerTool: (factory: any) => factories.push(factory), on: (name: string, handler: any) => { hooks[name] = handler; }, logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+  entry.register({ pluginConfig: { enabled: true, policy }, registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: (name: string, handler: any) => { hooks[name] = handler; }, logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
   const context = { agentId: "main", sessionId: "contact-address-fax" };
   const tools = Object.fromEntries(factories.map(factory => { const tool = factory(context); return [tool.name, tool]; }));
   let counter = 0;

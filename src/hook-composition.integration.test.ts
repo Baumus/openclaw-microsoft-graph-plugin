@@ -34,7 +34,7 @@ function candidatePlugin(pluginConfig: Record<string, unknown> = {}) {
   policy.services.calendar.agents.main.resources!.push("calendar-A");
   entry.register({
     pluginConfig: { enabled: true, policy, ...pluginConfig },
-    registerTool: (factory: ToolFactory) => factories.push(factory),
+    registerTool: (factory: ToolFactory) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create),
     on(name: string, handler: HookHandler, options?: { priority?: number }) {
       if (name === "before_tool_call") registration = { handler, priority: options?.priority };
     },

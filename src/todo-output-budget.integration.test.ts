@@ -14,7 +14,7 @@ function todoTool(maxReadOutputBytes?: number, agentId = "main") {
   const factories: Array<(context: any) => any> = [];
   entry.register({
     pluginConfig: { enabled: true, policy: graphPolicyFixture(), ...(maxReadOutputBytes ? { maxReadOutputBytes } : {}) },
-    registerTool: (factory: any) => factories.push(factory), on: vi.fn(),
+    registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: vi.fn(),
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   } as any);
   return factories.map((factory) => factory({ agentId })).find((tool) => tool.name === "microsoft_todo_read");

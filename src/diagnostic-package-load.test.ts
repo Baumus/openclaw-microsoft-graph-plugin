@@ -13,7 +13,7 @@ it.skipIf(!artifact)("loads the actual unpacked temporary artifact without host 
  plugin.register({
   pluginConfig: { enabled: false }, runtime: {},
   on: (name: string, handler: any) => hooks.set(name, handler),
-  registerTool: (factory: unknown) => factories.push(factory),
+  registerTool: (factory: unknown) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create),
   logger: { info: (line: string) => logs.push(JSON.parse(line)), warn() {}, error() {} },
  });
  expect(await hooks.get("before_tool_call")({

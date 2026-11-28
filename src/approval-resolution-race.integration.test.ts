@@ -21,7 +21,7 @@ function candidate() {
     pluginConfig: { enabled: true, policy: graphPolicyFixture() },
     runtime: { agent: { session: { getSessionEntryAsync: lookup, getSessionEntry: () => { throw new Error("deprecated getter"); } } } },
     on: (name: string, handler: (...args: any[]) => any) => { hooks[name] = handler; },
-    registerTool: (factory: (ctx: any) => any) => factories.push(factory),
+    registerTool: (factory: (ctx: any) => any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create),
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   } as never);
   const context = { agentId: "main", sessionKey: "agent:main:main", sessionId: "generation-A" };

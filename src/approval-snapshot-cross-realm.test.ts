@@ -69,7 +69,7 @@ describe("native approval snapshot store across module instances", () => {
       } } } },
       pluginConfig: config,
       on: (name: string, handler: (event: unknown, context: unknown) => Promise<any>) => { hooks[name] = handler; },
-      registerTool: (factory: (context: unknown) => any) => factories.push(factory),
+      registerTool: (factory: (context: unknown) => any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create),
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     };
     hookModule.default.register({ ...api, registerTool: vi.fn() });

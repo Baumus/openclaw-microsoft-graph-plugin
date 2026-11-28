@@ -81,7 +81,7 @@ describe("microsoft-graph plugin contract", () => {
     expect(metadata.tools.map((tool) => tool.name)).toEqual([
       "onedrive_search", "onedrive_list", "onedrive_read", "onedrive_download", "onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete",
       "outlook_calendar_read", "outlook_calendar_write", "outlook_mail_read", "outlook_mail_write", "outlook_contacts_read", "outlook_contacts_write", "microsoft_todo_read", "microsoft_todo_write",
-      "onedrive_agents_instructions", "microsoft_graph_capabilities",
+      "onedrive_agents_instructions", "microsoft_graph_capabilities", "microsoft_graph_stage_sandbox_upload",
     ]);
     expect(metadata.tools.every((tool) => tool.optional)).toBe(true);
     for (const tool of metadata.tools) expect(JSON.stringify(tool.parameters)).not.toMatch(/agent_?id|access_?token|refresh_?token|secret/i);
@@ -500,7 +500,7 @@ describe("microsoft-graph plugin contract", () => {
     const factories: Array<(context: any) => any> = [];
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     try {
-      entry.register({ pluginConfig: { enabled: true }, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+      entry.register({ pluginConfig: { enabled: true }, registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
       for (const index of [4, 5]) {
         const tool = factories[index]({ agentId: "main" });
         const response = await tool.execute("x", { rootLabel: "synthetic_documents", relativePath: "a.bin", sourceMediaUri: "/tmp/a.bin" });
@@ -516,7 +516,7 @@ describe("microsoft-graph plugin contract", () => {
     const factories: Array<(context: any) => any> = [];
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     try {
-      entry.register({ pluginConfig: { enabled: false }, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+      entry.register({ pluginConfig: { enabled: false }, registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
       const tools = Object.fromEntries(factories.map((factory) => {
         const tool = factory({ agentId: "main" });
         return [tool.name, tool];
@@ -620,7 +620,7 @@ describe("microsoft-graph plugin contract", () => {
     const factories: Array<(context: any) => any> = [];
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     try {
-      entry.register({ pluginConfig: { enabled: true }, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+      entry.register({ pluginConfig: { enabled: true }, registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
       const tool = factories[12]({ agentId: "main" });
       const response = await tool.execute("x", { action: "reply_draft", messageId: "message", bodyText: "Reply", bodyHtml: "<p>Reply</p>" });
       expect(response.details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
@@ -667,7 +667,7 @@ describe("microsoft-graph plugin contract", () => {
 
   it("exhaustively classifies only explicit read tools as approval-free", () => {
     const metadata = getToolPluginMetadata(entry)!;
-    const readTools = new Set(["onedrive_search", "onedrive_list", "onedrive_read", "onedrive_download", "onedrive_agents_instructions", "microsoft_graph_capabilities", "outlook_calendar_read", "outlook_mail_read", "outlook_contacts_read", "microsoft_todo_read"]);
+    const readTools = new Set(["microsoft_graph_stage_sandbox_upload", "onedrive_search", "onedrive_list", "onedrive_read", "onedrive_download", "onedrive_agents_instructions", "microsoft_graph_capabilities", "outlook_calendar_read", "outlook_mail_read", "outlook_contacts_read", "microsoft_todo_read"]);
     const oneDriveWrites = new Set(["onedrive_upload", "onedrive_update", "onedrive_metadata_update", "onedrive_create_folder", "onedrive_delete"]);
     for (const tool of metadata.tools) {
       const actions = (tool.parameters as any).properties?.action?.anyOf?.map((value: any) => value.const) ?? [undefined];
@@ -804,7 +804,7 @@ describe("microsoft-graph plugin contract", () => {
     const factories: Array<(context: any) => any> = [];
     entry.register({
       pluginConfig: { enabled: true, policy: graphPolicyFixture() },
-      registerTool: (factory: any) => factories.push(factory),
+      registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create),
       on: (name: string, handler: any) => { hooks[name] = handler; },
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     } as any);
@@ -830,7 +830,7 @@ describe("microsoft-graph plugin contract", () => {
     const factories: Array<(context: any) => any> = [];
     entry.register({
       pluginConfig: { enabled: true, policy: graphPolicyFixture() },
-      registerTool: (factory: any) => factories.push(factory),
+      registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create),
       on: (name: string, handler: any) => { hooks[name] = handler; },
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     } as any);
@@ -853,7 +853,7 @@ describe("microsoft-graph plugin contract", () => {
     const factories: Array<(context: any) => any> = [];
     entry.register({
       pluginConfig: { enabled: true, policy },
-      registerTool: (factory: any) => factories.push(factory),
+      registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create),
       on: (name: string, handler: any) => { hooks[name] = handler; },
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     } as any);
@@ -1088,7 +1088,7 @@ describe("microsoft-graph plugin contract", () => {
 
   it("fails closed before secret access without runtime identity", async () => {
     const factories: Array<(context: any) => any> = [];
-    entry.register({ pluginConfig: { enabled: true, credentialVaultKey: randomBytes(32).toString("base64url"), policy: graphPolicyFixture() }, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+    entry.register({ pluginConfig: { enabled: true, credentialVaultKey: randomBytes(32).toString("base64url"), policy: graphPolicyFixture() }, registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
     const tool = factories[9]({ agentId: undefined });
     const response = await tool.execute("x", { action: "list_calendars" });
     expect(response.details).toMatchObject({ ok: false, error: "trusted_agent_identity_required" });
@@ -1311,7 +1311,7 @@ describe("microsoft-graph plugin contract", () => {
     const factories: Array<(context: any) => any> = [];
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     try {
-      entry.register({ pluginConfig: { enabled: false }, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+      entry.register({ pluginConfig: { enabled: false }, registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
       const raw = "https://graph.microsoft.com/v1.0/me/calendarView?$skiptoken=raw";
       const calls = [
         [factories[1]({ agentId: "fixture-reader" }), { rootLabel: "synthetic_documents", relativePath: "", continuation: raw }],
@@ -1328,7 +1328,7 @@ describe("microsoft-graph plugin contract", () => {
 
   it("rejects calendarId where the action is not calendar-scoped before credential access", async () => {
     const factories: Array<(context: any) => any> = [];
-    entry.register({ pluginConfig: {}, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+    entry.register({ pluginConfig: {}, registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
     const tool = factories[9]({ agentId: "main" });
     const response = await tool.execute("x", { action: "list_calendars", calendarId: "fixture-calendar" });
     expect(response.details).toMatchObject({ ok: false, error: "invalid_calendar_target" });
@@ -1338,7 +1338,7 @@ describe("microsoft-graph plugin contract", () => {
     const factories: Array<(context: any) => any> = [];
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     try {
-      entry.register({ pluginConfig: {}, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+      entry.register({ pluginConfig: {}, registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
       const tool = factories[9]({ agentId: "main" });
       const malformed = "2026-02-30T09:00:00Z";
       const valid = "2026-03-01T10:00:00Z";
@@ -1364,7 +1364,7 @@ describe("microsoft-graph plugin contract", () => {
 
   it("rejects direct calendar mutations without an approval snapshot before credential access", async () => {
     const factories: Array<(context: any) => any> = [];
-    entry.register({ pluginConfig: {}, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+    entry.register({ pluginConfig: {}, registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
     const tool = factories[10]({ agentId: "main" });
     const response = await tool.execute("x", { action: "respond", eventId: "event", response: "forward" });
     expect(response.details).toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
