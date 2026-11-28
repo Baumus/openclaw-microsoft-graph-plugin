@@ -20,7 +20,7 @@ function runtime(options: { agentId?: string; operations?: string[]; enabled?: b
   const factories: any[] = [];
   entry.register({
     pluginConfig: { enabled: options.enabled ?? true, policy, warningApprovalsRequired: options.warning ?? true },
-    registerTool: (factory: any) => factories.push(factory),
+    registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create),
     on: (name: string, hook: any) => { hooks[name] = hook; },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   } as any);

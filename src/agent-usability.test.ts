@@ -12,7 +12,7 @@ import { graphPolicyFixture } from "./fixtures/graph-access-policy.js";
 function runtime(policy = graphPolicyFixture(), agentId = "main") {
   const factories: Array<(context: any) => any> = [];
   const hooks: Record<string, (...args: any[]) => any> = {};
-  entry.register({ pluginConfig: { enabled: true, policy }, registerTool: (factory: any) => factories.push(factory), on: (name: string, handler: any) => { hooks[name] = handler; }, logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+  entry.register({ pluginConfig: { enabled: true, policy }, registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: (name: string, handler: any) => { hooks[name] = handler; }, logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
   const context = { agentId, sessionId: "agent-usability" };
   const tools = Object.fromEntries(factories.map((factory) => { const tool = factory(context); return [tool.name, tool]; }));
   return { tools, hooks, context };

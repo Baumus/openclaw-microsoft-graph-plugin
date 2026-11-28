@@ -8,8 +8,10 @@ import { Type } from "typebox";
 import { compileToolParameterCheck } from "./tool-parameter-validation.js";
 import { root as secureRoot, type OpenResult } from "@openclaw/fs-safe";
 import { readLocalFileFromRoots } from "@openclaw/fs-safe/advanced";
+import { openSandboxSnapshot } from "./sandbox-transfer.js";
+import { stageDownloadedCopy } from "./sandbox-download.js";
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
-import { WorkspaceStagingError, stageWorkspaceFile, validateWorkspaceRelativeFilePath, workspaceFileContentType, workspaceStagingStore, type WorkspaceStagingLease } from "./stage-workspace-file.js";
+import { WorkspaceStagingError, stageUploadStream, stageWorkspaceFile, validateWorkspaceRelativeFilePath, workspaceFileContentType, workspaceStagingStore, type WorkspaceStagingLease } from "./stage-workspace-file.js";
 import { downloadOneDriveFile, downloadOutlookFileAttachment, publishPrivateMediaBytes } from "./attachment-download.js";
 import { exchangeRefreshToken, readCredential, selectScope, tokenForAuthorizedOperation } from "./credential.js";
 import { automaticServiceHealth, failureCategory, type Service } from "./service-health.js";
@@ -60,6 +62,43 @@ const SecretRefOnly = Type.Unsafe<string>({
   },
   additionalProperties: false,
 });
+
+const sandboxCopy = Type.Optional(Type.Boolean({ description: "Also copy this download into the current prepared sandbox (Python 3; existing file limits apply); the standard private download remains available if copying fails." }));
+type SandboxCopyContext = Parameters<typeof stageDownloadedCopy>[0];
+
+const sandboxUploadTokenPrefix = "media://inbound/graph-sandbox-token/";
+type SandboxUploadTokens = Map<string, {
+  agentId: string; sessionId: string; accountId?: string;
+  target: string; staged: Awaited<ReturnType<typeof stageUploadStream>>;
+  timer: ReturnType<typeof setTimeout>;
+}>;
+const SANDBOX_UPLOAD_TOKENS_KEY = Symbol.for("@baumus/openclaw-microsoft-graph/sandbox-upload-tokens/v1");
+const sandboxUploadTokens: SandboxUploadTokens = ((globalThis as Record<symbol, unknown>)[SANDBOX_UPLOAD_TOKENS_KEY] as SandboxUploadTokens | undefined)
+  ?? ((globalThis as Record<symbol, unknown>)[SANDBOX_UPLOAD_TOKENS_KEY] = new Map()) as SandboxUploadTokens;
+const sandboxUploadLimits = new Map<string, number>([
+  ["onedrive_upload", ONEDRIVE_WRITE_MAX_BYTES],
+  ["onedrive_update", ONEDRIVE_WRITE_MAX_BYTES],
+  ["outlook_mail_write:add_attachment", OUTLOOK_ATTACHMENT_MAX_BYTES],
+  ["outlook_calendar_write:attach", OUTLOOK_ATTACHMENT_MAX_BYTES],
+  ["microsoft_todo_write:add_attachment", TODO_ATTACHMENT_MAX_BYTES],
+]);
+function removeSandboxUploadToken(uri: string) {
+  const entry = sandboxUploadTokens.get(uri);
+  if (entry) {
+    clearTimeout(entry.timer);
+    sandboxUploadTokens.delete(uri);
+  }
+  return entry;
+}
+function expireSandboxUploadToken(uri: string) {
+  const entry = removeSandboxUploadToken(uri);
+  if (entry) void entry.staged.lease.cleanup().catch(() => workspaceStagingStore.retryCleanup(entry.staged.lease));
+}
+
+const sandboxUploadSchema = Type.Object({
+  relativePath: Type.String({ pattern: "^graph-transfer/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", description: "Exact finished file in the current sandbox transfer directory." }),
+  target: Type.Union([...sandboxUploadLimits.keys()].map(target => Type.Literal(target)), { description: "Existing Graph upload tool and attachment action where applicable." }),
+}, { additionalProperties: false });
 
 const Config = Type.Object({
   enabled: Type.Optional(Type.Boolean({ default: false })),
@@ -720,6 +759,7 @@ export async function openProtectedMediaUploadSource(sourceMediaUri: string, wor
 }
 
 const TOOL_GUIDANCE: Readonly<Record<string, string>> = {
+  microsoft_graph_stage_sandbox_upload: "Pass the finished sandbox relativePath under graph-transfer/ and the existing upload target. Returns a same-session one-use sourceMediaUri; use it as attachmentMediaUri for attachments. No Microsoft write or approval occurs until the existing upload tool is called.",
   onedrive_search: "Search an allowlisted OneDrive root. Supply its exact rootLabel; use provider search or filename modes. Results distinguish scan completion from match satisfaction; follow continuation until complete. Read matching relativePath with onedrive_read. Trusted AGENTS.md instructions may require acknowledgement first.",
   onedrive_list: "List one allowlisted OneDrive root or relative directory. Supply rootLabel; follow continuation for all items. Use returned relativePath for read/download/write. Trusted AGENTS.md instructions may require acknowledgement first.",
   onedrive_read: "Read bounded text or SHA-256 digest from rootLabel and exact relativePath discovered by list/search. Digest does not return bytes. Use download for private media; inspect truncation and narrow large reads.",
@@ -1199,6 +1239,7 @@ function publicStatePage(page: Record<string, unknown>, binding: ContinuationBin
 }
 
 const calendarReadSchema = Type.Object({
+  sandboxCopy,
   action: Type.Union([Type.Literal("list_calendars"), Type.Literal("list_events"), Type.Literal("search_events"), Type.Literal("get_event"), Type.Literal("get_schedule"), Type.Literal("list_attachments"), Type.Literal("download_attachment")]),
   calendarId: Type.Optional(calendarId), startDateTime: Type.Optional(dateTime), endDateTime: Type.Optional(dateTime), eventId: Type.Optional(resourceId), schedules: scheduleList, timeZone: Type.Optional(timeZone), limit,
   attachmentId: Type.Optional(resourceId),
@@ -1236,6 +1277,7 @@ const calendarWriteSchema = Type.Object({
   ...attachmentInputFields(OUTLOOK_ATTACHMENT_MAX_BYTES),
 }, { additionalProperties: false });
 const mailReadSchema = Type.Object({
+  sandboxCopy,
   action: Type.Union([Type.Literal("list_folders"), Type.Literal("list_messages"), Type.Literal("search_messages"), Type.Literal("get_message"), Type.Literal("list_attachments"), Type.Literal("download_attachment")]),
   folder: Type.Optional(Type.Union([Type.Literal("all"), Type.Literal("inbox"), Type.Literal("drafts"), Type.Literal("sentitems"), Type.Literal("deleteditems"), Type.Literal("archive"), Type.Literal("junkemail"), Type.Literal("outbox")])),
   folderId: Type.Optional(mailFolderId), parentFolderId: Type.Optional(mailFolderId), recursive: Type.Optional(Type.Boolean({ default: true })), includeHidden: Type.Optional(Type.Boolean({ default: true })),
@@ -1336,7 +1378,7 @@ export const READ_ACTION_FIELDS = {
     get_event: ["action", "calendarId", "eventId", "timeZone", "includeBody", "bodyContentType"],
     get_schedule: ["action", "startDateTime", "endDateTime", "schedules", "timeZone", "availabilityViewInterval"],
     list_attachments: ["action", "calendarId", "eventId", "limit", "continuation"],
-    download_attachment: ["action", "calendarId", "eventId", "attachmentId"],
+    download_attachment: ["action", "calendarId", "eventId", "attachmentId", "sandboxCopy"],
   },
   mail: {
     list_folders: ["action", "parentFolderId", "recursive", "includeHidden", "limit", "continuation"],
@@ -1344,7 +1386,7 @@ export const READ_ACTION_FIELDS = {
     search_messages: ["action", "folder", "folderId", "search", "searchKql", "includeBody", "includeUniqueBody", "includeHeaders", "bodyContentType", "limit", "continuation"],
     get_message: ["action", "messageId", "includeBody", "includeUniqueBody", "includeHeaders", "bodyContentType"],
     list_attachments: ["action", "messageId", "limit", "continuation"],
-    download_attachment: ["action", "messageId", "attachmentId"],
+    download_attachment: ["action", "messageId", "attachmentId", "sandboxCopy"],
   },
   contacts: {
     list_contacts: ["action", "limit", "continuation"],
@@ -1728,6 +1770,11 @@ export function mutationApprovalText(toolName: string, rawParams: unknown): { ti
         : "Changes remote To Do data.";
   }
 
+  if ((toolName === "outlook_calendar_write" && action === "attach") || (toolName === "microsoft_todo_write" && action === "add_attachment")) {
+    const fingerprint = sourceFingerprint(params);
+    if (fingerprint) risk += ` Content SHA-256 ${fingerprint.sourceSha256}, ${fingerprint.sourceByteSize} bytes.`;
+  }
+
   return {
     title: `Microsoft Graph: ${actionLabel}`,
     description: `Action: ${actionLabel}. Target: ${target}. Risk: ${risk}`,
@@ -1852,7 +1899,7 @@ const plugin = defineToolPlugin({
     }, { additionalProperties: false });
     const listSchema = Type.Object({ rootLabel, relativePath: optionalRelative, agentsInstructionAck, limit, continuation }, { additionalProperties: false });
     const readSchema = Type.Object({ rootLabel, relativePath: relative, agentsInstructionAck, mode: Type.Union([Type.Literal("text"), Type.Literal("digest")]) }, { additionalProperties: false });
-    const downloadSchema = Type.Object({ rootLabel, relativePath: relative, agentsInstructionAck }, { additionalProperties: false });
+    const downloadSchema = Type.Object({ rootLabel, relativePath: relative, agentsInstructionAck, sandboxCopy }, { additionalProperties: false });
     const uploadSchema = Type.Object({
       rootLabel,
       relativePath: relative,
@@ -1928,11 +1975,10 @@ const plugin = defineToolPlugin({
         }, (root) => { if (verified) providerPath = continuationStore.providerPath(verified, drivePath(root, path, "/children")); });
       }) }),
       accountTool({ name: "onedrive_read", label: "OneDrive Read", optional: true, description: "Read bounded text or stream a digest for supported files, including XLSX, in one allowlisted root. Digest mode returns metadata, byte count, and SHA-256 only.", parameters: readSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_read", readSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, mode }, signal) => withDrive(config, toolContext.agentId, rootLabel, "read", signal, (root, token, bounded) => driveRead(root, normalizeRelativePath(relativePath), token, mode, mode === "digest" ? config.maxReadBytes ?? ONEDRIVE_READ_MAX_BYTES : config.maxReadOutputBytes ?? DEFAULT_READ_OUTPUT_BYTES, bounded))) }),
-      accountTool({ name: "onedrive_download", label: "OneDrive Download", optional: true, description: "Stream any file type from a read-authorized OneDrive root into OpenClaw's private media store without exposing bytes or host paths. Opaque transfer only: no content parsing, rendering, or execution; content-reading restrictions remain separate.", parameters: downloadSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_download", downloadSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath }, signal) => withDrive(config, toolContext.agentId, rootLabel, "read", signal, async (root, token, bounded) => ({
-        ok: true,
-        operation: "download",
-        ...await downloadOneDriveFile({ root, relativePath: normalizeRelativePath(relativePath), token, signal: bounded }),
-      }), undefined, config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS)) }),
+      accountTool({ name: "onedrive_download", label: "OneDrive Download", optional: true, description: "Stream any file type from a read-authorized OneDrive root into OpenClaw's private media store without exposing bytes or host paths. Opaque transfer only: no content parsing, rendering, or execution; content-reading restrictions remain separate.", parameters: downloadSchema, factory: ({ config, toolContext, api }) => concrete("onedrive_download", downloadSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, sandboxCopy }, signal) => withDrive(config, toolContext.agentId, rootLabel, "read", signal, async (root, token, bounded) => {
+        const downloaded = await downloadOneDriveFile({ root, relativePath: normalizeRelativePath(relativePath), token, signal: bounded });
+        return { ok: true, operation: "download", ...downloaded, ...await stageDownloadedCopy(toolContext, sandboxCopy, downloaded.artifact, downloaded.sha256, bounded) };
+      }, undefined, config.oneDriveTransferTimeoutMs ?? DEFAULT_ONEDRIVE_TRANSFER_TIMEOUT_MS)) }),
       accountTool({ name: "onedrive_upload", label: "OneDrive Upload", optional: true, description: "Create one file without overwrite from a workspace-relative sourceWorkspacePath or existing media://inbound/... sourceMediaUri; supply exactly one. The plugin computes SHA-256 and size before native approval and rechecks them before transfer. Optional fingerprint fields are assertions, not prerequisites. A blocked preflight means no approval was requested; chat confirmation tokens cannot authorize the action. Uses a Graph upload session above 250 MB.", parameters: uploadSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("onedrive_upload", uploadSchema, toolContext.agentId, toolContext.sessionId, api.logger, async ({ rootLabel, relativePath, sourceMediaUri, sourceSha256, sourceByteSize, contentType = "application/octet-stream", chatConfirmed, chatConfirmationToken, agentsInstructionAck }, signal) => {
         void chatConfirmed; void chatConfirmationToken;
         const path = normalizeRelativePath(relativePath);
@@ -1987,9 +2033,9 @@ const plugin = defineToolPlugin({
         await enforceOneDriveInstructionExecution(config, { agentId: toolContext.agentId, sessionId: toolContext.sessionId }, "onedrive_delete", { rootLabel, relativePath: path, agentsInstructionAck }, signal);
         return withDrive(config, toolContext.agentId, rootLabel, "delete", signal, (root, token, bounded) => driveDelete(root, path, token, bounded));
       }, config, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
-      accountTool({ name: "outlook_calendar_read", label: "Outlook Calendar Read", optional: true, description: "Bounded default or explicitly authorized calendar reads, selected stable event fields, event search, free/busy, attachment metadata, and direct file downloads.", parameters: calendarReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_read", calendarReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarRead(config, toolContext.agentId, params, signal)) }),
+      accountTool({ name: "outlook_calendar_read", label: "Outlook Calendar Read", optional: true, description: "Bounded default or explicitly authorized calendar reads, selected stable event fields, event search, free/busy, attachment metadata, and direct file downloads.", parameters: calendarReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_read", calendarReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarRead(config, toolContext.agentId, params, signal, toolContext)) }),
       accountTool({ name: "outlook_calendar_write", label: "Outlook Calendar Write", optional: true, description: "Create, update, or non-atomically multiwrite stable Microsoft Graph v1.0 event settings, respond, attach private media up to 150 MB, or delete. Multiwrite is capped at 100 operations, ordered, and chunked into Graph batches of 20. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: calendarWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_calendar_write", calendarWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => calendarWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
-      accountTool({ name: "outlook_mail_read", label: "Outlook Mail Read", optional: true, description: "Bounded own-mailbox message reads, KQL/filter search, selected stable message fields, attachment metadata, and direct file downloads.", parameters: mailReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_read", mailReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailRead(config, toolContext.agentId, params, signal)) }),
+      accountTool({ name: "outlook_mail_read", label: "Outlook Mail Read", optional: true, description: "Bounded own-mailbox message reads, KQL/filter search, selected stable message fields, attachment metadata, and direct file downloads.", parameters: mailReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_mail_read", mailReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailRead(config, toolContext.agentId, params, signal, toolContext)) }),
       accountTool({ name: "outlook_mail_write", label: "Outlook Mail Write", optional: true, description: "Own-mailbox draft fields, reply/reply-all/forward drafts, copy/move, workspace-relative sourceWorkspacePath (64 MiB staging limit) or private attachmentMediaUri (150 MB), exactly one source, hash-bound before native approval and reverified before credentials; original-message .eml attachments up to 150 MB to existing drafts, send, and delete. Warning-level actions use configurable native approval; critical actions require native allow-once approval.", parameters: mailWriteSchema, factory: ({ config, toolContext, api }) => bindOneDriveStagingWorkspace(toolContext, concrete("outlook_mail_write", mailWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => mailWrite(config, toolContext.agentId, toolContext.workspaceDir, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId))) }),
       accountTool({ name: "outlook_contacts_read", label: "Outlook Contacts Read", optional: true, description: TOOL_GUIDANCE.outlook_contacts_read, parameters: contactsReadSchema, factory: ({ config, toolContext, api }) => concrete("outlook_contacts_read", contactsReadSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => contactsRead(config, toolContext.agentId, params, signal)) }),
       accountTool({ name: "outlook_contacts_write", label: "Outlook Contacts Write", optional: true, description: TOOL_GUIDANCE.outlook_contacts_write, parameters: contactsWriteSchema, factory: ({ config, toolContext, api }) => concrete("outlook_contacts_write", contactsWriteSchema, toolContext.agentId, toolContext.sessionId, api.logger, (params, signal) => contactsWrite(config, toolContext.agentId, params, signal), undefined, () => sessionIdentityCurrent(api.runtime?.agent?.session?.getSessionEntryAsync, toolContext.agentId, toolContext.sessionKey, toolContext.sessionId)) }),
@@ -2008,6 +2054,37 @@ const plugin = defineToolPlugin({
         });
         return { ...(config.policy || !config.accounts ? callerCapabilities(config, toolContext.agentId) : { ok: config.enabled === true }), ...(config.accounts ? { accounts } : {}) };
       }) }),
+      accountTool({
+        name: "microsoft_graph_stage_sandbox_upload", label: "Prepare Microsoft Graph sandbox upload", optional: true,
+        description: "Snapshot one file in graph-transfer/ from this session's prepared sandbox. No Microsoft call. Pass the one-use sourceMediaUri receipt to the specified existing upload tool, using attachmentMediaUri for attachment uploads. That tool enforces Microsoft policy and its existing approval. Receipt expires after ten minutes.",
+        parameters: sandboxUploadSchema,
+        factory: ({ config, toolContext, api }) => concrete(
+          "microsoft_graph_stage_sandbox_upload", sandboxUploadSchema, toolContext.agentId, toolContext.sessionId, api.logger,
+          async ({ relativePath, target }, signal) => {
+            const { agentId, sessionId, sandbox, assertInvocationCurrent } = toolContext as typeof toolContext & SandboxCopyContext;
+            const stateDir = getResolvePluginStateDir()?.();
+            const maxBytes = sandboxUploadLimits.get(target);
+            if (config.enabled !== true || !agentId || !sessionId || !sandbox || !assertInvocationCurrent || !stateDir || maxBytes === undefined) throw new Error("sandbox_unavailable");
+            if (sandboxUploadTokens.size >= 128) throw new Error("workspace_staging_quota_exceeded");
+            assertInvocationCurrent();
+            const source = await openSandboxSnapshot(sandbox, relativePath, maxBytes, signal);
+            const staged = await stageUploadStream({ ...source, name: relativePath.split("/").at(-1)! }, stateDir, workspaceFileContentType(relativePath), undefined, signal, workspaceStagingStore, stateDir, true);
+            try {
+              signal?.throwIfAborted();
+              assertInvocationCurrent();
+              if (sandboxUploadTokens.size >= 128) throw new Error("workspace_staging_quota_exceeded");
+              const uri = sandboxUploadTokenPrefix + randomBytes(32).toString("hex");
+              const timer = setTimeout(() => expireSandboxUploadToken(uri), 600_000);
+              timer.unref();
+              sandboxUploadTokens.set(uri, { agentId, sessionId, accountId: accountContext.getStore(), target, staged, timer });
+              return { ok: true, sourceMediaUri: uri, sourceSha256: staged.sourceSha256, sourceByteSize: staged.sourceByteSize };
+            } catch (error) {
+              await staged.lease.cleanup().catch(() => workspaceStagingStore.retryCleanup(staged.lease));
+              throw error;
+            }
+          },
+        ),
+      }),
     ];
     for (const definition of definitions) {
       const item = definition as { name: string; description?: string; parameters: { properties?: Record<string, unknown> } };
@@ -2607,7 +2684,7 @@ export function calendarViewQuery(startDateTime: string, endDateTime: string, zo
   return new URLSearchParams({ startDateTime: start, endDateTime: end, "$top": String(top) });
 }
 
-async function calendarRead(config: RuntimeConfig, agentId: string | undefined, p: any, signal?: AbortSignal) {
+async function calendarRead(config: RuntimeConfig, agentId: string | undefined, p: any, signal?: AbortSignal, toolContext: SandboxCopyContext = {}) {
   if (p.calendarId !== undefined && !new Set(["list_events", "search_events", "get_event", "list_attachments", "download_attachment"]).has(p.action)) throw new Error("invalid_calendar_target");
   assertReadActionFields(p, READ_ACTION_FIELDS.calendar);
   if (p.searchFields !== undefined && p.search === undefined) throw new Error("invalid_search");
@@ -2684,7 +2761,7 @@ async function calendarRead(config: RuntimeConfig, agentId: string | undefined, 
         readIdleTimeoutMs: config.requestTimeoutMs ?? 5000,
         signal: bounded,
       });
-      return { ok: true, action: p.action, ...downloaded };
+      return { ok: true, action: p.action, ...downloaded, ...await stageDownloadedCopy(toolContext, p.sandboxCopy, downloaded.artifact, downloaded.sourceSha256, bounded) };
     }
     throw new Error("unsupported_action");
   }, resource, readOperationTimeout(config, p));
@@ -3010,7 +3087,7 @@ export function readOperationTimeout(config: Pick<RuntimeConfig, "readOperationT
     : config.readOperationTimeoutMs ?? DEFAULT_READ_OPERATION_TIMEOUT_MS;
 }
 
-async function mailRead(config: RuntimeConfig, agentId: string | undefined, p: any, signal?: AbortSignal) {
+async function mailRead(config: RuntimeConfig, agentId: string | undefined, p: any, signal?: AbortSignal, toolContext: SandboxCopyContext = {}) {
   assertReadActionFields(p, READ_ACTION_FIELDS.mail);
   if (p.orderDirection !== undefined && p.orderBy === undefined) throw new Error("invalid_order");
   const max = boundedLimit(p.limit);
@@ -3075,7 +3152,7 @@ async function mailRead(config: RuntimeConfig, agentId: string | undefined, p: a
         readIdleTimeoutMs: config.requestTimeoutMs ?? 5000,
         signal: bounded,
       });
-      return { ok: true, action: p.action, ...downloaded };
+      return { ok: true, action: p.action, ...downloaded, ...await stageDownloadedCopy(toolContext, p.sandboxCopy, downloaded.artifact, downloaded.sourceSha256, bounded) };
     }
     throw new Error("unsupported_action");
   }, "me", readOperationTimeout(config, p));
@@ -3743,7 +3820,13 @@ async function beforeAccountToolCall(
   }
   // Bind caller input separately from private, pre-approved staging metadata.
   // Native Codex must execute the original input without any hook rewrite.
-  const originalArtifactParams = (event.toolName === "onedrive_upload" || event.toolName === "onedrive_update" || isMailAttachment(event.toolName, params)) ? params : undefined;
+  const oneDriveUpload = event.toolName === "onedrive_upload" || event.toolName === "onedrive_update";
+  const artifactField = oneDriveUpload ? "sourceMediaUri" : "attachmentMediaUri";
+  const publicUri = params[artifactField];
+  const sandboxToken = typeof publicUri === "string" && publicUri.startsWith(sandboxUploadTokenPrefix) ? publicUri : undefined;
+  const stageTarget = oneDriveUpload ? event.toolName : `${event.toolName}:${params.action}`;
+  if (sandboxToken && (!sandboxUploadLimits.has(stageTarget) || severity === "none" || params.sourceWorkspacePath !== undefined || !event.toolCallId)) return { block: true, blockReason: "invalid_source_media_uri" };
+  const originalArtifactParams = (sandboxToken || event.toolName === "onedrive_upload" || event.toolName === "onedrive_update" || isMailAttachment(event.toolName, params)) ? params : undefined;
   const hookParams = () => accountScopedParams(originalArtifactParams ? event.params as Record<string, unknown> : defaultTodoParams ?? params, accountId);
   let ownedLease: WorkspaceStagingLease | undefined;
   let reusedArtifact: ReturnType<NativeApprovalSnapshotStore["artifactForPreflight"]>;
@@ -3766,7 +3849,7 @@ async function beforeAccountToolCall(
     await cleanupBoundLease();
   };
   try {
-    if (originalArtifactParams && typeof params.sourceWorkspacePath === "string" && event.toolCallId) {
+    if (originalArtifactParams && (typeof params.sourceWorkspacePath === "string" || sandboxToken) && event.toolCallId) {
       reusedArtifact = approvalSnapshots.artifactForPreflight(event.toolCallId, {
         agentId: ctx.agentId, sessionId: ctx.sessionId, toolName: event.toolName,
         params: normalizedCriteria(accountScopedParams(originalArtifactParams, accountId)),
@@ -3777,6 +3860,16 @@ async function beforeAccountToolCall(
       if (!workspaceStagingStore.has(event.toolCallId!)) throw new Error("approval_context_invalid_or_changed");
       params = JSON.parse(reusedArtifact.params);
       approvalDiagnostic(diagnosticLogger, event.toolName, event.toolCallId, "artifact_reused");
+    } else if (sandboxToken) {
+      const entry = sandboxUploadTokens.get(sandboxToken);
+      if (!entry || entry.agentId !== ctx.agentId || entry.sessionId !== ctx.sessionId || entry.accountId !== accountId || entry.target !== stageTarget) return { block: true, blockReason: "invalid_source_media_uri" };
+      removeSandboxUploadToken(sandboxToken);
+      ownedLease = entry.staged.lease;
+      const { sourceSha256, sourceByteSize, sourceMediaUri } = entry.staged;
+      const asserted = sourceFingerprint(params);
+      if (asserted && (asserted.sourceSha256 !== sourceSha256 || asserted.sourceByteSize !== sourceByteSize)) throw new Error("invalid_source_fingerprint");
+      params = { ...params, [artifactField]: sourceMediaUri, sourceSha256, sourceByteSize };
+      if (oneDriveUpload) params = await bindOneDriveWriteArtifact(event.toolName, params, ctx, () => {});
     } else {
       params = isMailAttachment(event.toolName, params) ? await bindMailAttachmentArtifact(params, ctx, (lease) => { ownedLease = lease; }) : await bindOneDriveWriteArtifact(event.toolName, params, ctx, (lease) => { ownedLease = lease; });
     }
@@ -3955,7 +4048,19 @@ plugin.register = (api) => {
     setResolvePluginStateDir(() => stateResolver(process.env));
     workspaceStagingStore.startReconciliation(stateResolver(process.env), () => api.logger.warn("Microsoft Graph workspace staging reconciliation failed; retrying on the next interval"));
   }
-  originalRegister(api);
+  const sandboxAwareTools = new Set(["onedrive_download", "outlook_mail_read", "outlook_calendar_read", "microsoft_graph_stage_sandbox_upload"]);
+  const registerTool: typeof api.registerTool = (tool, options) => {
+    if (typeof tool === "function" && options?.name && sandboxAwareTools.has(options.name)) {
+      api.registerTool({ contextVersion: 2, create: tool }, options);
+    } else {
+      api.registerTool(tool, options);
+    }
+  };
+  originalRegister(new Proxy(api, {
+    get(target, key) {
+      return key === "registerTool" ? registerTool : Reflect.get(target, key);
+    },
+  }));
   if (typeof (api as unknown as { registerCli?: unknown }).registerCli === "function" && stateResolver) {
     registerCredentialCli(api as unknown as Parameters<typeof registerCredentialCli>[0]);
   }
@@ -3993,6 +4098,7 @@ plugin.register = (api) => {
     for (const pending of nativeApprovalResolutions.values()) if (pending.sessionId === ctx.sessionId) pending.cancel();
     oneDriveAgentsSessionCache.clearSession(ctx.sessionId);
     clearStagingWorkspaceSession(ctx.sessionId);
+    for (const [uri, entry] of sandboxUploadTokens) if (entry.sessionId === ctx.sessionId) expireSandboxUploadToken(uri);
     nativeApprovalSnapshots.clearSession(ctx.sessionId);
     workspaceStagingStore.clearSession(ctx.sessionId);
   });

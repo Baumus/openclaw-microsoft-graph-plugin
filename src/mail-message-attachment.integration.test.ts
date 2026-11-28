@@ -16,7 +16,7 @@ function registered(policy = graphPolicyFixture(), warningApprovalsRequired = tr
   const hooks: Record<string, (...args: any[]) => Promise<any>> = {};
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   entry.register({ pluginConfig: { enabled: true, policy, warningApprovalsRequired, requestTimeoutMs: 1000 },
-    registerTool: (factory: any) => factories.push(factory), on: (name: string, handler: any) => { hooks[name] = handler; }, logger } as any);
+    registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: (name: string, handler: any) => { hooks[name] = handler; }, logger } as any);
   const context = { agentId, sessionId: "synthetic-message-attachment" };
   const tool = factories.map((factory) => factory(context)).find((tool) => tool.name === "outlook_mail_write");
   const gate = (p = params, id = "call") => hooks.before_tool_call({ toolName: tool.name, toolCallId: id, params: p }, context);

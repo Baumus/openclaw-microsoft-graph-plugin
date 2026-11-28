@@ -198,6 +198,18 @@ describe("one-call workspace source staging", () => {
     expect(() => store.reserve(0)).not.toThrow();
   });
 
+  it("admits a sandbox reservation beyond both legacy workspace quotas", async () => {
+    const state = await mkdtemp(join(tmpdir(), "graph-sandbox-quota-"));
+    const store = new WorkspaceStagingStore();
+    try {
+      await store.ownRun(state);
+      const bytes = 150 * 1024 * 1024;
+      await expect(store.reserveShared(bytes, state)).rejects.toThrow("workspace_staging_quota_exceeded");
+      const reservation = await store.reserveShared(bytes, state, true);
+      await reservation.release();
+    } finally { await rm(state, { recursive: true, force: true }); }
+  });
+
   it("rejects oversized sparse files before saving", async () => {
     const directory = await workspace();
     await writeFile(join(directory, "reports", "large.pdf"), "");

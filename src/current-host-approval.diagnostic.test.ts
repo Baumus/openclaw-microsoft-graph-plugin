@@ -36,7 +36,7 @@ it.skipIf(!host)("qualifies exact markdown input through installed host approval
       getSessionEntryAsync: lookup,
     } } },
     on: (hookName: string, handler: any, options: any) => typedHooks.push({ pluginId: "microsoft-graph", hookName, handler, priority: options?.priority }),
-    registerTool: (factory: any) => factories.push(factory), logger,
+    registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), logger,
   } as never);
   hooks.a({ plugins: [{ id: "microsoft-graph" }], typedHooks, hooks: [], trustedToolPolicies: [] });
   const context = { agentId: "main", sessionId: "generation-A", sessionKey: "agent:main:main", workspaceDir };

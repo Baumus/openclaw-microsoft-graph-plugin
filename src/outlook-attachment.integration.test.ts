@@ -39,7 +39,7 @@ function registeredTool(name: string, config: Record<string, unknown> = {}, agen
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   entry.register({
     pluginConfig: { enabled: true, policy: graphPolicyFixture(), ...config },
-    registerTool: (factory: any) => factories.push(factory),
+    registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create),
     on: vi.fn(),
     logger,
   } as any);

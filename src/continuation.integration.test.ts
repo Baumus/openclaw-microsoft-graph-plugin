@@ -20,7 +20,7 @@ describe("opaque continuation tool integration", () => {
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     entry.register({
       pluginConfig: { enabled: true, policy: graphPolicyFixture() },
-      registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger,
+      registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: vi.fn(), logger,
     } as any);
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = new URL(String(input));
@@ -57,7 +57,7 @@ describe("opaque continuation tool integration", () => {
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     entry.register({
       pluginConfig: { enabled: true, policy: graphPolicyFixture() },
-      registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger,
+      registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: vi.fn(), logger,
     } as any);
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = new URL(String(input));
@@ -100,7 +100,7 @@ describe("opaque continuation tool integration", () => {
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     entry.register({
       pluginConfig: { enabled: true, policy: graphPolicyFixture() },
-      registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger,
+      registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: vi.fn(), logger,
     } as any);
     const searchPath = "/v1.0/drives/synthetic-drive/items/synthetic-root/search(q='quarterly')";
     const next = `https://graph.microsoft.com${searchPath}?$skiptoken=A%2BB%252F&$top=1`;
@@ -146,7 +146,7 @@ describe("opaque continuation tool integration", () => {
 
   it("blocks a modified calendarView range before another credential or network access", async () => {
     const factories: Array<(context: any) => any> = [];
-    entry.register({ pluginConfig: { enabled: true, policy: graphPolicyFixture() }, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+    entry.register({ pluginConfig: { enabled: true, policy: graphPolicyFixture() }, registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ value: [{ id: "one" }], "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/calendarView?$skiptoken=next" }), { status: 200 }));
     try {
       const tool = factories[9]({ agentId: "main" });
@@ -165,8 +165,9 @@ describe("opaque continuation tool integration", () => {
 
   it("rejects every schema-accepted field irrelevant to each read action before credentials or network", async () => {
     const factories: Array<(context: any) => any> = [];
-    entry.register({ pluginConfig: { enabled: true }, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+    entry.register({ pluginConfig: { enabled: true }, registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
     const values: Record<string, unknown> = {
+      sandboxCopy: true,
       calendarId: "calendar-id", startDateTime: "2026-09-07T09:00:00Z", endDateTime: "2026-09-07T10:00:00Z", eventId: "event-id",
       schedules: ["person@example.invalid"], timeZone: "UTC", limit: 1, search: "needle", searchFields: ["subject"], eventType: "singleInstance",
       showAs: "busy", sensitivity: "normal", importance: "high", categories: ["Blue"], isAllDay: false, isCancelled: false, hasAttachments: false,
@@ -224,7 +225,7 @@ describe("opaque continuation tool integration", () => {
       onedrive_search: ["rootLabel", "agentsInstructionAck", "query", "mode", "exhaustive", "limit", "continuation"],
       onedrive_list: ["rootLabel", "relativePath", "agentsInstructionAck", "limit", "continuation"],
       onedrive_read: ["rootLabel", "relativePath", "agentsInstructionAck", "mode"],
-      onedrive_download: ["rootLabel", "relativePath", "agentsInstructionAck"],
+      onedrive_download: ["rootLabel", "relativePath", "agentsInstructionAck", "sandboxCopy"],
     };
     for (const [toolName, fields] of Object.entries(oneDriveSchemas)) {
       const schema = metadata.tools.find((tool) => tool.name === toolName)!.parameters as any;
@@ -239,7 +240,7 @@ describe("opaque continuation tool integration", () => {
 
   it("rejects ignored criterion modifiers before credentials", async () => {
     const factories: Array<(context: any) => any> = [];
-    entry.register({ pluginConfig: { enabled: true }, registerTool: (factory: any) => factories.push(factory), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
+    entry.register({ pluginConfig: { enabled: true }, registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: vi.fn(), logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } as any);
     const credentialCalls = mocks.readCredential.mock.calls.length;
     const cases = [
       [factories[0]({ agentId: "fixture-reader" }), { rootLabel: "synthetic_documents", query: "../README.md", mode: "filename_exact" }, "invalid_search"],

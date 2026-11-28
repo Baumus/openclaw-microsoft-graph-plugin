@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, readdir, readlink, realpath } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, readlink, realpath, statfs } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { root as secureRoot, type OpenResult } from "@openclaw/fs-safe";
@@ -140,12 +140,12 @@ async function quotaUsage(directory: string): Promise<{ bytes: number; count: nu
           });
           if (content === undefined) continue;
           const value: unknown = JSON.parse(content);
-          if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > WORKSPACE_STAGING_FILE_MAX_BYTES) throw new Error("workspace_staging_quota_exceeded");
+          if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > ONEDRIVE_WRITE_MAX_BYTES) throw new Error("workspace_staging_quota_exceeded");
           usage.bytes += value as number;
         } else usage.bytes += info.size;
         usage.count++;
       } else throw new Error("workspace_staging_quota_exceeded");
-      if (usage.bytes > WORKSPACE_STAGING_QUOTA_BYTES || usage.count > MAX_WORKSPACE_STAGING_RESERVATIONS)
+      if (!Number.isSafeInteger(usage.bytes) || usage.count > MAX_WORKSPACE_STAGING_RESERVATIONS)
         throw new Error("workspace_staging_quota_exceeded");
     }
   }
@@ -342,24 +342,24 @@ export class WorkspaceStagingStore {
     this.reconciling.set(key, timer);
   }
 
-  reserve(size: number): () => void {
-    if (!Number.isSafeInteger(size) || size < 0 || this.reservations >= MAX_WORKSPACE_STAGING_RESERVATIONS || size > WORKSPACE_STAGING_FILE_MAX_BYTES
-      || size > WORKSPACE_STAGING_QUOTA_BYTES - this.reservedBytes) throw new Error("workspace_staging_quota_exceeded");
+  reserve(size: number, sandbox = false): () => void {
+    if (!Number.isSafeInteger(size) || size < 0 || this.reservations >= MAX_WORKSPACE_STAGING_RESERVATIONS || (sandbox ? size > ONEDRIVE_WRITE_MAX_BYTES : (size > WORKSPACE_STAGING_FILE_MAX_BYTES || size > WORKSPACE_STAGING_QUOTA_BYTES - this.reservedBytes))) throw new Error("workspace_staging_quota_exceeded");
     this.reservedBytes += size;
     this.reservations++;
     let released = false;
     return () => { if (!released) { released = true; this.reservedBytes -= size; this.reservations--; } };
   }
 
-  async reserveShared(size: number, stateDir: string): Promise<{ publish(): Promise<void>; release(): Promise<void> }> {
-    const releaseLocal = this.reserve(size);
+  async reserveShared(size: number, stateDir: string, sandbox = false): Promise<{ publish(): Promise<void>; release(): Promise<void> }> {
+    const releaseLocal = this.reserve(size, sandbox);
     const name = `.workspace-staging-reservation-${randomUUID()}`;
     const runPath = join(resolve(stateDir), "media", STAGING_SUBDIR, this.runId);
     let created = false;
     try {
       await withQuotaLock(stateDir, async (directory) => {
         const usage = await quotaUsage(directory);
-        if (size > WORKSPACE_STAGING_QUOTA_BYTES - usage.bytes || usage.count >= MAX_WORKSPACE_STAGING_RESERVATIONS)
+        const available = sandbox ? await statfs(directory, { bigint: true }).then(fs => fs.bavail * fs.bsize) : BigInt(WORKSPACE_STAGING_QUOTA_BYTES);
+        if (BigInt(size) + BigInt(usage.bytes) > available || usage.count >= MAX_WORKSPACE_STAGING_RESERVATIONS)
           throw new Error("workspace_staging_quota_exceeded");
         const run = await secureRoot(runPath, { symlinks: "reject", hardlinks: "reject" });
         await run.create(name, String(size), { private: true, mutationSymlinks: "reject" });
@@ -541,11 +541,7 @@ export async function stageWorkspaceFile(
   const relativePath = validateWorkspaceRelativeFilePath(sourceRelativePath);
   if (typeof workspaceDir !== "string" || !workspaceDir) throw new Error("workspace_context_unavailable");
   if (!validTransferContentType(contentType)) throw new Error("invalid_content_type");
-  let phase: WorkspaceStagingPhase = "source_open";
   let opened: OpenResult | undefined;
-  let release: (() => Promise<void>) | undefined;
-  let publish: (() => Promise<void>) | undefined;
-  let lease: WorkspaceStagingLease | undefined;
   try {
     signal?.throwIfAborted();
     const workspace = await secureRoot(workspaceDir, { symlinks: "reject", hardlinks: "reject" });
@@ -553,23 +549,10 @@ export async function stageWorkspaceFile(
     const initial = opened.stat;
     if (!initial.isFile() || !Number.isSafeInteger(initial.size) || initial.size < 0) throw new Error("invalid_workspace_file");
     if (initial.size > ONEDRIVE_WRITE_MAX_BYTES) throw new Error("provider_file_too_large");
-    if (stateDir) {
-      phase = "owner_init";
-      await store.ownRun(stateDir);
-      phase = "quota_reserve";
-      const reservation = await store.reserveShared(initial.size, stateDir);
-      release = reservation.release;
-      publish = reservation.publish;
-    } else {
-      const releaseLocal = store.reserve(initial.size);
-      release = async () => { releaseLocal(); };
-    }
     const sameIdentity = (current: typeof initial) => current.isFile()
       && current.dev === initial.dev && current.ino === initial.ino
       && current.size === initial.size && current.mtimeMs === initial.mtimeMs
       && current.ctimeMs === initial.ctimeMs && current.nlink === initial.nlink;
-    const hash = createHash("sha256");
-    let count = 0;
     async function* chunks() {
       for (let offset = 0; offset < initial.size;) {
         signal?.throwIfAborted();
@@ -577,14 +560,62 @@ export async function stageWorkspaceFile(
         const buffer = Buffer.allocUnsafe(length);
         const { bytesRead } = await opened!.handle.read(buffer, 0, length, offset);
         if (bytesRead !== length) throw new Error("workspace_file_changed");
-        hash.update(buffer);
-        count += bytesRead;
         offset += bytesRead;
         yield buffer;
       }
       if (!sameIdentity(await opened!.handle.stat())) throw new Error("workspace_file_changed");
     }
-    const name = sanitizeAttachmentName(basename(relativePath));
+    return await stageUploadStream({ name: basename(relativePath), size: initial.size, chunks }, workspaceDir, contentType, save, signal, store, stateDir);
+  } catch (error) {
+    if (error instanceof WorkspaceStagingError || error instanceof DOMException || (error instanceof Error && ["provider_file_too_large", "workspace_staging_quota_exceeded", "workspace_file_changed"].includes(error.message))) throw error;
+    throw new WorkspaceStagingError("source_open", error);
+  } finally {
+    await opened?.handle.close().catch(() => undefined);
+  }
+}
+
+export async function stageUploadStream(
+  source: { name: string; size: number; chunks(): AsyncIterable<Uint8Array> },
+  workspaceDir: string,
+  contentType = "application/octet-stream",
+  save: typeof saveMediaStream = saveMediaStream,
+  signal?: AbortSignal,
+  store = workspaceStagingStore,
+  stateDir?: string,
+  sandbox = false,
+) {
+  if (!validTransferContentType(contentType)) throw new Error("invalid_content_type");
+  if (!Number.isSafeInteger(source.size) || source.size < 0 || source.size > ONEDRIVE_WRITE_MAX_BYTES) throw new Error("provider_file_too_large");
+  let phase: WorkspaceStagingPhase = "source_open";
+  let release: (() => Promise<void>) | undefined;
+  let publish: (() => Promise<void>) | undefined;
+  let lease: WorkspaceStagingLease | undefined;
+  try {
+    signal?.throwIfAborted();
+    if (stateDir) {
+      phase = "owner_init";
+      await store.ownRun(stateDir);
+      phase = "quota_reserve";
+      const reservation = await store.reserveShared(source.size, stateDir, sandbox);
+      release = reservation.release;
+      publish = reservation.publish;
+    } else {
+      const releaseLocal = store.reserve(source.size);
+      release = async () => { releaseLocal(); };
+    }
+    const hash = createHash("sha256");
+    let count = 0;
+    async function* chunks() {
+      for await (const chunk of source.chunks()) {
+        signal?.throwIfAborted();
+        count += chunk.byteLength;
+        if (count > source.size) throw new Error("workspace_file_changed");
+        hash.update(chunk);
+        yield chunk;
+      }
+      if (count !== source.size) throw new Error("workspace_file_changed");
+    }
+    const name = sanitizeAttachmentName(source.name);
     signal?.throwIfAborted();
     phase = "media_save";
     const saved = await save(chunks(), contentType, `${STAGING_SUBDIR}/${store.runId}`, ONEDRIVE_WRITE_MAX_BYTES, name, name);
@@ -623,8 +654,7 @@ export async function stageWorkspaceFile(
     if (typeof saved.id !== "string" || saved.id !== savedName) throw new Error("workspace_file_unavailable");
     if (!identity.isFile() || identity.nlink !== 1 || identity.size !== saved.size) throw new Error("workspace_file_unavailable");
     signal?.throwIfAborted();
-    if (saved.size !== initial.size || count !== initial.size) throw new Error("workspace_file_changed");
-    if (!sameIdentity(await opened.handle.stat())) throw new Error("workspace_file_changed");
+    if (saved.size !== source.size || count !== source.size) throw new Error("workspace_file_changed");
     phase = "quota_publish";
     await publish?.();
     return { sourceMediaUri: `media://${STAGING_SUBDIR}/${store.runId}/${saved.id}`, sourceSha256: hash.digest("hex"), sourceByteSize: saved.size, lease };
@@ -634,7 +664,5 @@ export async function stageWorkspaceFile(
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     if (error instanceof Error && ["provider_file_too_large", "workspace_staging_quota_exceeded", "workspace_file_changed"].includes(error.message)) throw error;
     throw new WorkspaceStagingError(phase, error);
-  } finally {
-    await opened?.handle.close().catch(() => undefined);
   }
 }

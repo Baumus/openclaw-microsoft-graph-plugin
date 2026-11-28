@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,16 +23,16 @@ let stateRoot = "";
 const root = graphPolicyFixture().services.onedrive.allowed_roots[0];
 const params = { rootLabel: root.label, relativePath: "report.docx" };
 
-function registeredDownload(policy = graphPolicyFixture(), agentId = "fixture-reader") {
+function registeredDownload(policy = graphPolicyFixture(), agentId = "fixture-reader", sandboxContext = {}) {
   const factories: Array<(context: any) => any> = [];
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   entry.register({
     pluginConfig: { enabled: true, policy },
-    registerTool: (factory: any) => factories.push(factory),
+    registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create),
     on: vi.fn(),
     logger,
   } as any);
-  const tool = factories.map((factory) => factory({ agentId, sessionId: "synthetic-download-session" }))
+  const tool = factories.map((factory) => factory({ agentId, sessionId: "synthetic-download-session", ...sandboxContext }))
     .find((candidate) => candidate?.name === "onedrive_download");
   if (!tool) throw new Error("missing download tool");
   return { tool, logger };
@@ -62,6 +63,26 @@ afterEach(async () => {
 });
 
 describe("OneDrive generic opaque downloads through the real private-media SDK", () => {
+  it.each([true, false])("keeps the private download when sandbox availability is %s", async (available) => {
+    const bytes = randomBytes(1300000);
+    transport({ id: "synthetic-item", name: "report.xlsx", size: bytes.length, file: { mimeType: "application/octet-stream" } }, bytes);
+    const run = vi.fn(async ({ argv, input }) => {
+      const result = spawnSync(argv[0], argv.slice(1), { cwd: stateRoot, input, encoding: "utf8" });
+      return { code: result.status ?? -1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+    });
+    const { tool } = registeredDownload(undefined, undefined, available ? {
+      assertInvocationCurrent: () => {}, sandbox: { run },
+    } : {});
+    const output = (await tool.execute("sandbox-download", { ...params, sandboxCopy: true })).details;
+    expect(output.ok).toBe(true);
+    expect(await readFile(join(stateRoot, "media", "inbound", output.artifact.id))).toEqual(bytes);
+    expect(output.sandboxCopy).toMatchObject(available
+      ? { ok: true, bytes: bytes.length, relativePath: expect.stringMatching(/^graph-transfer\/.*\.xlsx$/) }
+      : { ok: false, error: "sandbox_unavailable" });
+    expect(run).toHaveBeenCalledTimes(available ? 4 : 0);
+    if (available) expect(await readFile(join(stateRoot, output.sandboxCopy.relativePath))).toEqual(bytes);
+  }, 60000);
+
   it.each([
     ["report.doc", "application/msword"],
     ["report?.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
@@ -87,6 +108,7 @@ describe("OneDrive generic opaque downloads through the real private-media SDK",
       artifact: { type: "file", name: name.replace("?", "_"), sizeBytes: bytes.byteLength },
       media: { outbound: false },
     });
+    expect(response.details).not.toHaveProperty("sandboxCopy");
     const artifact = response.details.artifact;
     expect(artifact.uri).toBe("media://inbound/" + artifact.id);
     expect(artifact.mimeType).toBe((mimeType ?? "application/octet-stream").split(";")[0].toLowerCase());

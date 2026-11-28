@@ -41,7 +41,7 @@ async function candidate(warningApprovalsRequired = true) {
     pluginConfig: { enabled: true, policy, warningApprovalsRequired },
     runtime: { state: { resolveStateDir: () => stateDir }, agent: { session: { getSessionEntryAsync, getSessionEntry: deprecatedGetSessionEntry } } },
     on: (name: string, handler: (event: unknown, context: unknown) => Promise<any>) => { hooks[name] = handler; },
-    registerTool: (factory: (context: any) => any) => factories.push(factory),
+    registerTool: (factory: (context: any) => any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create),
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   } as never);
   const toolContext = { agentId: "main", sessionKey: "agent:main:main", sessionId: "generation-A", workspaceDir };

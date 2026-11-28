@@ -28,7 +28,7 @@ function registeredTools(policy = graphPolicyFixture(), limits = {}) {
       policy,
       ...limits,
     },
-    registerTool: (factory: any) => factories.push(factory),
+    registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create),
     on: (name: string, handler: any) => { hooks[name] = handler; },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   } as any);

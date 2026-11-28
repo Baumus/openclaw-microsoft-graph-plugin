@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -162,7 +163,7 @@ describe("workspace-file OneDrive approval preflight", () => {
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     };
     first.default.register({ ...api, on: (name: string, handler: (...args: any[]) => Promise<any>) => { hooks[name] = handler; }, registerTool: vi.fn() } as never);
-    second.default.register({ ...api, on: vi.fn(), registerTool: (factory: (context: any) => any) => factories.push(factory) } as never);
+    second.default.register({ ...api, on: vi.fn(), registerTool: (factory: (context: any) => any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create) } as never);
     const context = { agentId: "main", sessionId: "cross-realm-stage", workspaceDir };
     const tool = factories.map((factory) => factory(context)).find((candidate) => candidate.name === "onedrive_upload");
     const approval = await hooks.before_tool_call({ toolName: "onedrive_upload", toolCallId: "cross-realm-stage", params: {
@@ -185,6 +186,46 @@ describe("workspace-file OneDrive approval preflight", () => {
     expect((await tool.execute("cross-realm-abandoned", abandoned.params)).details)
       .toMatchObject({ ok: false, error: "approval_context_invalid_or_changed" });
   });
+
+  it("binds a sandbox upload to the preparing session and preserves original approval arguments", async () => {
+    directory = await mkdtemp(join(tmpdir(), "mg-sandbox-stage-"));
+    const stateDir = join(directory, "state");
+    await mkdir(stateDir);
+    await mkdir(join(directory, "graph-transfer"));
+    await writeFile(join(directory, "graph-transfer", "synthetic.pdf"), "%PDF-1.7 synthetic");
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    const policy = graphPolicyFixture();
+    delete policy.services.onedrive.allowed_roots[0].agents_instructions;
+    policy.services.onedrive.allowed_roots[0].agents.main.permissions.read = true;
+    const hooks: Record<string, (...args: any[]) => Promise<any>> = {};
+    const factories = new Map<string, (context: any) => any>();
+    entry.register({
+      pluginConfig: { enabled: true, policy },
+      runtime: { state: { resolveStateDir: () => stateDir } },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      on: (name: string, hook: any) => { hooks[name] = hook; },
+      registerTool: (factory: any, options: any) => factories.set(options.name, typeof factory === "function" ? factory : factory.create),
+    } as never);
+    const ctx = { agentId: "main", sessionId: "sandbox-stage-session", workspaceDir: directory,
+      assertInvocationCurrent() {}, sandbox: { async run({ argv, input }: any) {
+        const child = spawnSync(argv[0], argv.slice(1), { cwd: directory, input, encoding: "utf8" });
+        return { code: child.status ?? -1, stdout: child.stdout ?? "", stderr: child.stderr ?? "" };
+      } },
+    };
+    const receipt = (await factories.get("microsoft_graph_stage_sandbox_upload")!(ctx).execute("prepare-sandbox", {
+      target: "onedrive_upload", relativePath: "graph-transfer/synthetic.pdf",
+    })).details;
+    expect(receipt).toMatchObject({ ok: true, sourceSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    const params = { rootLabel: "synthetic_documents", relativePath: "synthetic.pdf", sourceMediaUri: receipt.sourceMediaUri };
+    const event = { toolName: "onedrive_upload", toolCallId: "sandbox-upload", params };
+    expect(await hooks.before_tool_call(event, { ...ctx, sessionId: "different-session" })).toMatchObject({ block: true });
+    const approval = await hooks.before_tool_call(event, ctx);
+    expect(approval.params).toEqual(params);
+    expect(approval.requireApproval.description).toContain(receipt.sourceSha256);
+    await approval.requireApproval.onResolution("deny");
+    await vi.waitFor(async () => expect(await stagedFiles(stateDir)).toEqual([]));
+    expect(await hooks.before_tool_call({ ...event, toolCallId: "replay" }, ctx)).toMatchObject({ block: true });
+  }, 30000);
 
   it("stages a workspace PDF in the same upload call before approval, then binds its fingerprint", async () => {
     directory = await mkdtemp(join(tmpdir(), "mg-one-call-"));

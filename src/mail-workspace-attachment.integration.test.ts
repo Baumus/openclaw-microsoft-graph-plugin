@@ -31,7 +31,7 @@ async function setup(warnings = true) {
   const config = { enabled: true, warningApprovalsRequired: warnings, policy: graphPolicyFixture() };
   entry.register({ pluginConfig: config, runtime: { state: { resolveStateDir: () => stateDir } },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-    on: (n: string, h: any) => hooks[n] = h, registerTool: (f: any) => factories.push(f),
+    on: (n: string, h: any) => hooks[n] = h, registerTool: (f: any) => factories.push(typeof f === "function" ? f : (f as { create: any }).create),
   } as never);
   const ctx = { agentId: "main", sessionId: dir, workspaceDir };
   const tool = factories.map(f => f(ctx)).find(t => t.name === "outlook_mail_write");

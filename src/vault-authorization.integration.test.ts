@@ -23,7 +23,7 @@ function registeredTools(agentId: string) {
   entry.register({
     pluginConfig: { enabled: true, credentialVaultKey: key(), policy: vaultPolicy() },
     runtime: { state: { resolveStateDir: () => "/synthetic-state-never-read-when-denied" } },
-    registerTool: (factory: any) => factories.push(factory), on: vi.fn(),
+    registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: vi.fn(),
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   } as any);
   return Object.fromEntries(factories.map((factory) => {
@@ -38,7 +38,7 @@ function registeredRuntime(agentId: string, workspaceDir?: string) {
   entry.register({
     pluginConfig: { enabled: true, credentialVaultKey: key(), policy: vaultPolicy() },
     runtime: { state: { resolveStateDir: () => workspaceDir ?? "/synthetic-state-never-read-when-denied" } },
-    registerTool: (factory: any) => factories.push(factory), on: (name: string, handler: any) => { hooks[name] = handler; },
+    registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create), on: (name: string, handler: any) => { hooks[name] = handler; },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   } as any);
   return { hooks, tools: Object.fromEntries(factories.map((factory) => { const tool = factory({ agentId, sessionId: "denied-session", workspaceDir }); return [tool.name, tool]; })) };
@@ -115,7 +115,7 @@ describe("named connections", () => {
         accounts: { work: first, personal: first, private: denied },
       },
       runtime: { state: { resolveStateDir: () => "/synthetic-graph-state" } },
-      registerTool: (factory: any) => factories.push(factory),
+      registerTool: (factory: any) => factories.push(typeof factory === "function" ? factory : (factory as { create: any }).create),
       on: (name: string, handler: any) => { hooks[name] = handler; },
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     } as any);
