@@ -2061,7 +2061,7 @@ const plugin = defineToolPlugin({
         factory: ({ config, toolContext, api }) => concrete(
           "microsoft_graph_stage_sandbox_upload", sandboxUploadSchema, toolContext.agentId, toolContext.sessionId, api.logger,
           async ({ relativePath, target }, signal) => {
-            const { agentId, sessionId, sandbox, assertInvocationCurrent } = toolContext;
+            const { agentId, sessionId, sandbox, assertInvocationCurrent } = toolContext as typeof toolContext & SandboxCopyContext;
             const stateDir = getResolvePluginStateDir()?.();
             const maxBytes = sandboxUploadLimits.get(target);
             if (config.enabled !== true || !agentId || !sessionId || !sandbox || !assertInvocationCurrent || !stateDir || maxBytes === undefined) throw new Error("sandbox_unavailable");
